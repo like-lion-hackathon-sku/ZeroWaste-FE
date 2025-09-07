@@ -21,7 +21,6 @@ type FavoriteItem = {
     id: number
     name: string
     category?: string | null
-    // 필요 시 더 추가
   }
 }
 
@@ -97,15 +96,13 @@ export default function ProfilePage() {
     if (removingId) return
     setRemovingId(restaurantId)
 
-    // 1) 낙관적 업데이트: 즉시 목록에서 제거
+    // 1) 낙관적 업데이트
     const prev = favList
     setFavList((list) => list.filter((f) => f.restaurant_id !== restaurantId))
 
     try {
       const res = await apiClient.removeFavorite(restaurantId)
       if (!res.success) throw new Error(res.error || "즐겨찾기 삭제 실패")
-      // 필요 시 서버 상태 동기화
-      // router.refresh()
     } catch (e) {
       // 2) 실패 시 롤백
       setFavList(prev)
@@ -114,6 +111,11 @@ export default function ProfilePage() {
     } finally {
       setRemovingId(null)
     }
+  }
+
+  // ✅ 리뷰 수정 라우팅
+  const handleEditReview = (reviewId: number | string) => {
+    router.push(`/review/edit/${reviewId}`)
   }
 
   if (isLoading) {
@@ -258,9 +260,23 @@ export default function ProfilePage() {
                             {review.created_at ? formatDate(review.created_at) : "날짜 없음"}
                           </span>
                         </div>
+
                         <p className="text-foreground mb-3">{review.comment || "댓글 없음"}</p>
+
+                        {/* ✅ 리뷰 수정 버튼 */}
+                        <div className="flex justify-end">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleEditReview(review.id)}
+                            title="리뷰 수정"
+                          >
+                            수정
+                          </Button>
+                        </div>
+
                         {review.photos && review.photos.length > 0 && (
-                          <div className="flex gap-2">
+                          <div className="flex gap-2 mt-3">
                             {review.photos.map((photo: any, index: number) => (
                               <img
                                 key={index}
@@ -299,15 +315,12 @@ export default function ProfilePage() {
                   {favList.length > 0 ? (
                     favList.map((favorite) =>
                       favorite.restaurant ? (
-                        <div
-                          key={`${favorite.restaurant_id}-${favorite.id ?? "row"}`}
-                          className="relative"
-                        >
+                        <div key={`${favorite.restaurant_id}-${favorite.id ?? "row"}`} className="relative">
                           {/* 레스토랑 카드 */}
                           <RestaurantCard
                             restaurant={favorite.restaurant}
                             onClick={() => handleRestaurantClick(favorite.restaurant!.id)}
-                            showFavorite={false} // 내부 하트 숨김 (우리는 삭제 버튼으로 대체)
+                            showFavorite={false}
                           />
 
                           {/* 삭제 버튼 */}
@@ -328,7 +341,6 @@ export default function ProfilePage() {
                               ) : (
                                 <>
                                   <Trash2 className="h-4 w-4" />
-                                  
                                 </>
                               )}
                             </Button>

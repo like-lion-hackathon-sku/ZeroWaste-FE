@@ -9,7 +9,16 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Progress } from "@/components/ui/progress";
-import { ArrowLeft, Camera, Upload, Leaf, Sparkles, CheckCircle, AlertCircle } from "lucide-react";
+import {
+  ArrowLeft,
+  Camera,
+  Upload,
+  Leaf,
+  Sparkles,
+  CheckCircle,
+  AlertCircle,
+  Star,
+} from "lucide-react";
 
 // ---- 타입 & 목업 데이터 (숫자 키) ----
 type RestaurantInfo = { name: string; category: string };
@@ -43,7 +52,7 @@ export default function WriteReviewPage() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [reviewData, setReviewData] = useState({
     comment: "",
-    wasteScore: 0,
+    wasteScore: 0, // 0~100
   });
 
   // 안전 조회 (숫자 키)
@@ -118,6 +127,10 @@ export default function WriteReviewPage() {
 
   const canSubmit =
     uploadedImages.length >= 1 && reviewData.comment.trim().length > 0 && reviewData.wasteScore > 0;
+
+  // ====== 별점 관련 유틸 ======
+  const star5 = Math.round(reviewData.wasteScore / 20); // 0~5
+  const star5Float = Math.round((reviewData.wasteScore / 20) * 10) / 10; // 한 자리 반올림
 
   return (
     <div className="min-h-screen bg-background">
@@ -249,7 +262,7 @@ export default function WriteReviewPage() {
             </CardContent>
           </Card>
 
-          {/* AI Analysis Result */}
+          {/* AI Analysis Result (별점 + 숫자 병기) */}
           {reviewData.wasteScore > 0 && (
             <Card>
               <CardHeader>
@@ -260,13 +273,31 @@ export default function WriteReviewPage() {
               </CardHeader>
               <CardContent>
                 <div className="bg-primary/5 p-4 rounded-lg">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-sm font-medium text-foreground">잔반 없음 점수</span>
-                    <span className="text-2xl font-bold text-primary">{reviewData.wasteScore}점</span>
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="text-sm font-medium text-foreground">잔반 없음 별점</span>
+
+                    <div className="flex items-center gap-2">
+                      <div className="flex items-center">
+                        {Array.from({ length: 5 }).map((_, i) => (
+                          <Star
+                            key={i}
+                            className={`h-6 w-6 ${
+                              i < star5
+                                ? "text-yellow-400 fill-yellow-400"
+                                : "text-gray-300"
+                            }`}
+                          />
+                        ))}
+                      </div>
+                      <span className="text-sm text-muted-foreground">
+                        {reviewData.wasteScore}점 ({star5Float}/5)
+                      </span>
+                    </div>
                   </div>
+
                   <Progress value={reviewData.wasteScore} className="h-2" />
                   <p className="text-xs text-muted-foreground mt-2">
-                    AI가 분석한 결과를 바탕으로 자동 계산되었습니다
+                    AI가 분석한 점수를 별점(5점 만점)으로 변환했습니다
                   </p>
                 </div>
               </CardContent>
