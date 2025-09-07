@@ -27,17 +27,21 @@ export default function LoginPage() {
         setError(res.error || "로그인에 실패했어요.")
         return
       }
-      // HttpOnly 쿠키에 토큰 저장됨 → 보호 페이지 접근 가능
+      // ✅ 로그인 성공 → userId를 localStorage에 저장 (게스트와 구분용)
+      const uid = (res as any)?.data?.id
+      if (uid) localStorage.setItem("userId", String(uid))
+
+      // HttpOnly 쿠키는 서버가 설정함 → 페이지 이동
       window.location.href = "/map"
     })
   }
 
   const handleGoogleLogin = () => {
-    // TODO: BE OAuth 붙을 때 구현 (현재는 미구현)
     alert("Google 로그인은 준비 중입니다.")
   }
 
   const handleGuestMode = () => {
+    // 게스트 모드: userId 저장 없이 이동
     window.location.href = "/map"
   }
 

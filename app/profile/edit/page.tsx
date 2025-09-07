@@ -1,14 +1,13 @@
 "use client"
 
 import React from "react"
-
 import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
-import { ArrowLeft, User, Camera, Trash2, Loader2 } from "lucide-react"
+import { ArrowLeft, User, Camera, Loader2 } from "lucide-react"   // ← Trash2 제거
 import { useRouter } from "next/navigation"
 import { useUserProfile } from "@/lib/hooks/use-api-with-fallback"
 import { apiClient } from "@/lib/api/client"
@@ -18,75 +17,40 @@ export default function EditProfilePage() {
   const router = useRouter()
   const { data: user, loading, error, isUsingFallback } = useUserProfile()
 
-  const [formData, setFormData] = useState({
-    nickname: "",
-    email: "",
-  })
+  const [formData, setFormData] = useState({ nickname: "", email: "" })
   const [avatar, setAvatar] = useState("")
-  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
-  const [saving, setSaving] = useState(false)
+  const [saving, setSaving] = useState(false)                     // ← showDeleteConfirm 제거
 
   React.useEffect(() => {
     if (user) {
-      setFormData({
-        nickname: user.nickname,
-        email: user.email,
-      })
+      setFormData({ nickname: user.nickname, email: user.email })
       setAvatar(user.profile || "")
     }
   }, [user])
 
-  const handleInputChange = (field: string, value: string) => {
-    setFormData((prev) => ({
-      ...prev,
-      [field]: value,
-    }))
-  }
+  const handleInputChange = (field: string, value: string) =>
+    setFormData((prev) => ({ ...prev, [field]: value }))
 
   const handleImageChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
     if (file) {
       const reader = new FileReader()
-      reader.onload = (e) => {
-        setAvatar(e.target?.result as string)
-      }
+      reader.onload = (e) => setAvatar(e.target?.result as string)
       reader.readAsDataURL(file)
     }
   }
 
   const handleSave = async () => {
     if (!user) return
-
     setSaving(true)
     try {
-      const response = await apiClient.updateProfile({
-        nickname: formData.nickname,
-        profile: avatar,
-      })
-
-      if (response.success) {
-        console.log("[v0] Profile updated successfully")
-        router.back()
-      } else {
-        console.error("[v0] Failed to update profile:", response.error)
-        alert("프로필 업데이트에 실패했습니다")
-      }
-    } catch (error) {
-      console.error("[v0] Profile update error:", error)
+      const res = await apiClient.updateProfile({ nickname: formData.nickname, profile: avatar })
+      if (res.success) router.back()
+      else alert("프로필 업데이트에 실패했습니다")
+    } catch (e) {
       alert("프로필 업데이트 중 오류가 발생했습니다")
     } finally {
       setSaving(false)
-    }
-  }
-
-  const handleDeleteAccount = () => {
-    if (showDeleteConfirm) {
-      // TODO: Implement account deletion API call
-      console.log("Deleting account")
-      alert("계정 삭제 기능은 아직 구현되지 않았습니다")
-      router.push("/")
-    } else {
-      setShowDeleteConfirm(true)
     }
   }
 
@@ -157,13 +121,7 @@ export default function EditProfilePage() {
                     </span>
                   </Button>
                 </Label>
-                <input
-                  id="avatar-upload"
-                  type="file"
-                  accept="image/*"
-                  className="hidden"
-                  onChange={handleImageChange}
-                />
+                <input id="avatar-upload" type="file" accept="image/*" className="hidden" onChange={handleImageChange} />
                 <p className="text-sm text-muted-foreground mt-2">JPG, PNG 파일만 업로드 가능합니다.</p>
               </div>
             </div>
@@ -205,49 +163,17 @@ export default function EditProfilePage() {
           </CardContent>
         </Card>
 
-        {/* Action Buttons */}
-        <div className="space-y-4">
-          <Button onClick={handleSave} className="w-full" size="lg" disabled={saving}>
-            {saving ? (
-              <>
-                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                저장 중...
-              </>
-            ) : (
-              "변경사항 저장"
-            )}
-          </Button>
-
-          <Card className="border-red-200">
-            <CardHeader>
-              <CardTitle className="text-red-600">위험 구역</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-sm text-muted-foreground mb-4">
-                계정을 삭제하면 모든 데이터가 영구적으로 삭제되며 복구할 수 없습니다.
-              </p>
-              {showDeleteConfirm ? (
-                <div className="space-y-2">
-                  <p className="text-sm font-medium text-red-600">정말로 계정을 삭제하시겠습니까?</p>
-                  <div className="flex gap-2">
-                    <Button variant="destructive" size="sm" onClick={handleDeleteAccount}>
-                      <Trash2 className="h-4 w-4 mr-2" />
-                      네, 삭제합니다
-                    </Button>
-                    <Button variant="outline" size="sm" onClick={() => setShowDeleteConfirm(false)}>
-                      취소
-                    </Button>
-                  </div>
-                </div>
-              ) : (
-                <Button variant="destructive" size="sm" onClick={handleDeleteAccount}>
-                  <Trash2 className="h-4 w-4 mr-2" />
-                  계정 삭제
-                </Button>
-              )}
-            </CardContent>
-          </Card>
-        </div>
+        {/* Save Button only */}
+        <Button onClick={handleSave} className="w-full" size="lg" disabled={saving}>
+          {saving ? (
+            <>
+              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              저장 중...
+            </>
+          ) : (
+            "변경사항 저장"
+          )}
+        </Button>
       </div>
     </div>
   )

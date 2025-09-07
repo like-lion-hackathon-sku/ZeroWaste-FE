@@ -13,16 +13,11 @@ export type Bounds = {
   maxLng: number;
 };
 
-/** 아무 Promise라도 FE 표준 형태로 감싸주는 헬퍼 */
-const asApiResponse = async <T,>(p: Promise<T>): Promise<ApiResponse<T>> => {
-  try {
-    const data = await p;
-    return { success: true, data };
-  } catch (e: any) {
-    return { success: false, error: e?.message ?? "fallback failed" };
-  }
-};
-
+/**
+ * API + Fallback 공통 훅
+ * - apiCall이 실패하면 fallbackCall을 시도
+ * - 둘 다 FE 표준 응답(ApiResponse<T>)을 사용
+ */
 export function useApiWithFallback<T>(
   apiCall: () => Promise<ApiResponse<T>>,
   fallbackCall: () => Promise<ApiResponse<T>>,
@@ -49,7 +44,7 @@ export function useApiWithFallback<T>(
         } else {
           throw new Error(res.error || "API call failed");
         }
-      } catch (apiErr) {
+      } catch {
         // API 실패 → 폴백 시도
         try {
           const fres = await fallbackCall();
@@ -60,7 +55,7 @@ export function useApiWithFallback<T>(
           } else {
             throw new Error(fres.error || "Fallback call failed");
           }
-        } catch (fbErr) {
+        } catch {
           if (!mounted) return;
           setError("데이터를 불러올 수 없습니다");
         }
@@ -94,11 +89,12 @@ export function useRestaurants(params?: {
     // 1) 실제 API
     () => {
       if (params?.bounds) {
+        // apiClient는 category/search를 함께 받도록 설계되어 있어도 무방
         return apiClient.getRestaurantsInBounds({
-  ...params.bounds,
-  category: params.category,
-  search: params.search,
-} as any);
+          ...params.bounds,
+          category: params.category,
+          search: params.search,
+        } as any);
       }
       return apiClient.getRestaurants({
         category: params?.category,
@@ -108,28 +104,22 @@ export function useRestaurants(params?: {
 
     // 2) 폴백
     () => {
-      // 폴백 서비스에 bounds 기반 메서드가 구현돼 있으면 그것 사용
       const anyFallback = fallbackService as any;
+
+      // 폴백 서비스가 bounds 기반 메서드를 제공하면 bounds만 전달(타입 안전)
       if (
         params?.bounds &&
         anyFallback &&
         typeof anyFallback.getRestaurantsInBounds === "function"
       ) {
-        return asApiResponse(
-          anyFallback.getRestaurantsInBounds({
-            ...params.bounds,
-            category: params.category,
-            search: params.search,
-          })
-        );
+        return anyFallback.getRestaurantsInBounds(params.bounds);
       }
-      // 없으면 전체 목록 받아서 클라이언트 필터링(폴백 서비스 구현에 맞춤)
-      return asApiResponse(
-        fallbackService.getRestaurants({
-          category: params?.category,
-          search: params?.search,
-        })
-      );
+
+      // 그렇지 않으면 카테고리/검색 기반 폴백 사용
+      return fallbackService.getRestaurants({
+        category: params?.category,
+        search: params?.search,
+      });
     },
 
     // 의존성
@@ -141,7 +131,7 @@ export function useRestaurants(params?: {
 export function useRestaurant(id: number) {
   return useApiWithFallback(
     () => apiClient.getRestaurant(id),
-    () => asApiResponse(fallbackService.getRestaurant(id)),
+    () => fallbackService.getRestaurant(id),
     [id]
   );
 }
@@ -150,7 +140,7 @@ export function useRestaurant(id: number) {
 export function useUserProfile() {
   return useApiWithFallback(
     () => apiClient.getProfile(),
-    () => asApiResponse(fallbackService.getUserProfile()),
+    () => fallbackService.getUserProfile(),
     []
   );
 }
@@ -159,7 +149,7 @@ export function useUserProfile() {
 export function useUserBadges() {
   return useApiWithFallback(
     () => apiClient.getUserBadges(),
-    () => asApiResponse(fallbackService.getUserBadges()),
+    () => fallbackService.getUserBadges(),
     []
   );
 }
@@ -168,7 +158,7 @@ export function useUserBadges() {
 export function useFavorites() {
   return useApiWithFallback(
     () => apiClient.getFavorites(),
-    () => asApiResponse(fallbackService.getFavorites()),
+    () => fallbackService.getFavorites(),
     []
   );
 }
@@ -177,7 +167,7 @@ export function useFavorites() {
 export function useUserReviews() {
   return useApiWithFallback(
     () => apiClient.getUserReviews(),
-    () => asApiResponse(fallbackService.getUserReviews()),
+    () => fallbackService.getUserReviews(),
     []
   );
 }

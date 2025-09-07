@@ -167,8 +167,8 @@ class ApiClient {
     return this.request(`/restaurants/nearby?q=${encodeURIComponent(q)}`)
   }
 
-  async getRestaurant(id: number) {
-    return this.request(`/restaurants/${id}`)
+  async getRestaurantDetail(id: number) {
+    return this.request(`/restaurants/${id}/detail`, { method: "GET" })
   }
 
   async getRestaurantReviews(id: number) {
