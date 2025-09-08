@@ -67,6 +67,7 @@
     "zod": "3.25.67"
   },
   "devDependencies": {
+    "@gradio/client": "^1.17.1",
     "@tailwindcss/postcss": "^4.1.9",
     "@types/node": "^22.18.0",
     "@types/react": "^19.1.12",
