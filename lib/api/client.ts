@@ -151,7 +151,7 @@ class ApiClient {
   if (data.profileImage instanceof File) fd.append("profileImage", data.profileImage)
 
   // 절대 Content-Type 수동 설정 금지 (FormData가 자동으로 multipart 설정)
-  return this.request("/auth/profile", { method: "PUT", body: fd })
+  return this.request("/auth/profile", { method: "POST", body: fd })
 }
 
   // ───────────────── Restaurants
