@@ -1,3 +1,4 @@
+// app/map/page.tsx
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -15,6 +16,7 @@ import {
   MapPin,
   Loader2,
   LocateFixed,
+  User,
 } from "lucide-react";
 
 import { useRestaurants } from "@/lib/hooks/use-api-with-fallback";
@@ -28,8 +30,8 @@ declare global {
 }
 
 type RestaurantItem = {
-  id?: number;              // 검색 결과에는 없을 수도 있음
-  restaurantId?: number;    // BE가 이 키로 줄 수 있어 방어
+  id?: number;
+  restaurantId?: number;
   name: string;
   image?: string | null;
   category?: string | null;
@@ -47,9 +49,29 @@ type RestaurantItem = {
   mapy?: number | null; // lat (deg)
 };
 
+const SIDEBAR_WIDTH_PX = 360; // 좌측 리스트 고정폭
+
 export default function MapWithListPage() {
   const router = useRouter();
   const [naverReady, setNaverReady] = useState(false);
+
+  /** 로그인 여부: 로컬 저장소만 신뢰(쿠키/프로필 호출 X) */
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  useEffect(() => {
+    const read = () => {
+      try {
+        setIsLoggedIn(!!localStorage.getItem("userId"));
+      } catch {
+        setIsLoggedIn(false);
+      }
+    };
+    read();
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === "userId") read();
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
 
   // 지도 참조
   const mapRef = useRef<HTMLDivElement | null>(null);
@@ -73,12 +95,11 @@ export default function MapWithListPage() {
   const [kw, setKw] = useState("카페");
 
   /* ───────────────── 유틸 ───────────────── */
-
   const fixCoord = (v: any) => {
     if (v == null) return null;
     const n = Number(v);
     if (!Number.isFinite(n)) return null;
-    if (Math.abs(n) <= 180) return n;      // 이미 deg(WGS84)
+    if (Math.abs(n) <= 180) return n; // 이미 deg(WGS84)
     if (Math.abs(n) > 1e3) return n / 1e7; // E7 → deg 추정
     return null;
   };
@@ -120,7 +141,9 @@ export default function MapWithListPage() {
     if (!mapObjRef.current) return [keyword];
 
     const b = mapObjRef.current.getBounds();
-    const c = b.getCenter(), sw = b.getSW(), ne = b.getNE();
+    const c = b.getCenter(),
+      sw = b.getSW(),
+      ne = b.getNE();
 
     const pts = [
       { lat: c.y, lng: c.x },
@@ -128,7 +151,9 @@ export default function MapWithListPage() {
       { lat: ne.y, lng: ne.x },
     ];
 
-    const regions = await Promise.all(pts.map((p) => reverseToRegion(p.lat, p.lng)));
+    const regions = await Promise.all(
+      pts.map((p) => reverseToRegion(p.lat, p.lng)),
+    );
 
     const qs = new Set<string>();
     const base = (keyword || "카페").trim();
@@ -143,7 +168,11 @@ export default function MapWithListPage() {
 
   // BE /restaurants/nearby 호출
   const callNearby = async (q: string, display = 30, start = 1) => {
-    const search = new URLSearchParams({ q, display: String(display), start: String(start) });
+    const search = new URLSearchParams({
+      q,
+      display: String(display),
+      start: String(start),
+    });
     return fetchJson(`/restaurants/nearby?${search.toString()}`);
   };
 
@@ -164,7 +193,8 @@ export default function MapWithListPage() {
 
   function filterInBounds(list: RestaurantItem[]) {
     const b = mapObjRef.current.getBounds();
-    const sw = b.getSW(), ne = b.getNE();
+    const sw = b.getSW(),
+      ne = b.getNE();
     const pad = 0.1 * Math.max(ne.y - sw.y, ne.x - sw.x);
     return list.filter(
       (r) =>
@@ -178,15 +208,17 @@ export default function MapWithListPage() {
   }
 
   /* ───────────────── 즐겨찾기 토글 ───────────────── */
-
   const toggleFavorite = async (idx: number) => {
+    if (!isLoggedIn) return; // 게스트는 방어
     const r = restaurants[idx];
     if (!r) return;
 
     // 낙관적 토글
     const prev = !!r.favorited;
     const applyLocal = (v: boolean) => {
-      const next = restaurants.map((x, i) => (i === idx ? { ...x, favorited: v } : x));
+      const next = restaurants.map((x, i) =>
+        i === idx ? { ...x, favorited: v } : x,
+      );
       setMapRestaurants(next);
       setUseMapList(true);
     };
@@ -204,12 +236,17 @@ export default function MapWithListPage() {
           if (!rs?.success) throw new Error(rs?.error || "즐겨찾기 추가 실패");
         } else {
           // 외부 place만 있는 경우: deg → micro-deg(정수)로 변환해서 전송
-          if (r.name && (r.address || r.description) && r.mapx != null && r.mapy != null) {
+          if (
+            r.name &&
+            (r.address || r.description) &&
+            r.mapx != null &&
+            r.mapy != null
+          ) {
             const place = {
               name: r.name,
               address: r.address ?? r.description ?? "",
-              mapx: Math.round((r.mapx as number) * 1e7), // ★ deg → micro-deg
-              mapy: Math.round((r.mapy as number) * 1e7), // ★ deg → micro-deg
+              mapx: Math.round((r.mapx as number) * 1e7),
+              mapy: Math.round((r.mapy as number) * 1e7),
               category: r.category || undefined,
               telephone: r.telephone || undefined,
             };
@@ -244,7 +281,7 @@ export default function MapWithListPage() {
       const raw = await fetchNearbyForQueries(qs);
 
       const mapped: RestaurantItem[] = raw.map((r: any) => ({
-        id: r.restaurantId ?? r.id ?? undefined, // 있을 수도/없을 수도
+        id: r.restaurantId ?? r.id ?? undefined,
         restaurantId: r.restaurantId,
         name: r.name,
         image: r.image ?? null,
@@ -255,7 +292,8 @@ export default function MapWithListPage() {
         description: r.address ?? r.description ?? null,
         distance: r.distance ?? null,
         favorited: !!r.favorited,
-        wasteScore: r.wasteScore ?? r.waste_score ?? r.score ?? r.ecoScore ?? 80,
+        wasteScore:
+          r.wasteScore ?? r.waste_score ?? r.score ?? r.ecoScore ?? 80,
         mapx: fixCoord(r.lng ?? r.mapx),
         mapy: fixCoord(r.lat ?? r.mapy),
       }));
@@ -282,7 +320,7 @@ export default function MapWithListPage() {
   };
 
   const restaurants: RestaurantItem[] = useMemo(() => {
-    const src = useMapList ? mapRestaurants : (rawRestaurants as any[] ?? []);
+    const src = useMapList ? mapRestaurants : ((rawRestaurants as any[]) ?? []);
     if (!Array.isArray(src)) return [];
     return [...src]
       .map((r: any) => {
@@ -305,12 +343,16 @@ export default function MapWithListPage() {
 
   const topRestaurants = useMemo(() => restaurants.slice(0, 5), [restaurants]);
 
+  // 로그아웃: 서버 실패해도 UI는 정리
   const handleLogout = async () => {
     try {
-      await apiClient.logout();
+      await apiClient.logout().catch(() => {});
+    } finally {
+      try {
+        localStorage.removeItem("userId");
+      } catch {}
+      setIsLoggedIn(false);
       router.push("/login");
-    } catch (err) {
-      console.error("[v0] Logout failed:", err);
     }
   };
 
@@ -462,34 +504,80 @@ export default function MapWithListPage() {
         </div>
       )}
 
-      <header className="bg-card border-b border-border p-4 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <Leaf className="h-6 w-6 text-primary" />
-          <span className="font-semibold text-foreground">EcoEats</span>
-        </div>
+      {/* 헤더 */}
+      <header className="relative bg-card border-b border-border p-4 flex items-center justify-between">
+  {/* 좌측 로고 */}
+  <div className="flex items-center gap-2">
+    <Leaf className="h-6 w-6 text-primary" />
+    <span className="font-semibold text-foreground">EcoEats</span>
+  </div>
 
-        {/* 키워드 입력 + 버튼 */}
-        <div className="flex items-center gap-2">
-          <input
-            value={kw}
-            onChange={(e) => setKw(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && handleSearchCurrentBounds()}
-            placeholder="예: 카페, 분식, 라멘…"
-            className="h-9 w-56 px-3 rounded-md border border-border bg-background text-sm outline-none focus:ring-2 focus:ring-primary/30"
-          />
-          <Button size="sm" onClick={handleSearchCurrentBounds}>
-            검색
-          </Button>
-          <Button variant="ghost" size="sm" onClick={handleLogout}>
-            <LogOut className="h-4 w-4 mr-2" />
-            로그아웃
-          </Button>
-        </div>
-      </header>
+  {/* (sm 이상) 경계선 정렬 검색바: 사이드바 경계부터 시작
+      - pointer-events-none 로 겹침 문제 제거
+      - 내부에 pointer-events-auto 로 입력 가능하게 */}
+  <div
+    className="
+      hidden sm:block absolute top-1/2 -translate-y-1/2
+      left-[360px] right-40 z-0 pointer-events-none
+    "
+  >
+    <div className="flex items-center gap-2 pointer-events-auto">
+      <input
+        value={kw}
+        onChange={(e) => setKw(e.target.value)}
+        onKeyDown={(e) => e.key === "Enter" && handleSearchCurrentBounds()}
+        placeholder="예: 카페, 분식, 라멘…"
+        className="h-9 w-full max-w-[400px] px-3 rounded-md border border-border bg-background text-sm outline-none focus:ring-2 focus:ring-primary/30"
+      />
+      <Button size="sm" onClick={handleSearchCurrentBounds}>
+        검색
+      </Button>
+    </div>
+  </div>
+
+  {/* 우측 버튼들 — z-20 로 확실히 위로 올림 */}
+  <div className="relative z-20 flex items-center gap-2">
+    {/* (모바일) 기본 검색바 */}
+    <div className="flex sm:hidden items-center gap-2">
+      <input
+        value={kw}
+        onChange={(e) => setKw(e.target.value)}
+        onKeyDown={(e) => e.key === "Enter" && handleSearchCurrentBounds()}
+        placeholder="예: 카페, 분식, 라멘…"
+        className="h-9 w-40 px-3 rounded-md border border-border bg-background text-sm outline-none focus:ring-2 focus:ring-primary/30"
+      />
+      <Button size="sm" onClick={handleSearchCurrentBounds}>
+        검색
+      </Button>
+    </div>
+
+    {/* 프로필 버튼(로그인시에만) */}
+    {isLoggedIn && (
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={() => router.push("/profile")}
+        title="프로필"
+      >
+        <User className="h-4 w-4 mr-2" />
+        프로필
+      </Button>
+    )}
+
+    {/* 로그아웃 */}
+    <Button variant="ghost" size="sm" onClick={handleLogout}>
+      <LogOut className="h-4 w-4 mr-2" />
+      로그아웃
+    </Button>
+  </div>
+</header>
 
       <div className="flex flex-1 min-h-0">
         {/* 좌측 목록 */}
-        <div className="w-[360px] border-r border-border overflow-y-auto p-4 space-y-3">
+        <div
+          className="border-r border-border overflow-y-auto p-4 space-y-3"
+          style={{ width: SIDEBAR_WIDTH_PX }}
+        >
           {loading ? (
             <div className="flex items-center justify-center py-8 text-muted-foreground">
               <Loader2 className="h-5 w-5 animate-spin mr-2" />
@@ -551,21 +639,24 @@ export default function MapWithListPage() {
                       <MapPin className="h-4 w-4" />
                     </Button>
                   )}
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      toggleFavorite(idx); // 즐겨찾기 토글
-                    }}
-                    title={r.favorited ? "즐겨찾기 해제" : "즐겨찾기 추가"}
-                  >
-                    <Heart
-                      className={`h-4 w-4 ${
-                        r.favorited ? "fill-red-500 text-red-500" : ""
-                      }`}
-                    />
-                  </Button>
+                  {/* 로그인 사용자에게만 하트 노출 */}
+                  {isLoggedIn && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleFavorite(idx);
+                      }}
+                      title={r.favorited ? "즐겨찾기 해제" : "즐겨찾기 추가"}
+                    >
+                      <Heart
+                        className={`h-4 w-4 ${
+                          r.favorited ? "fill-red-500 text-red-500" : ""
+                        }`}
+                      />
+                    </Button>
+                  )}
                 </div>
               </Card>
             ))
@@ -574,7 +665,11 @@ export default function MapWithListPage() {
 
         {/* 우측 지도 */}
         <div className="flex-1 relative">
-          <div ref={mapRef} id="map" className="absolute inset-0 w-full h-full" />
+          <div
+            ref={mapRef}
+            id="map"
+            className="absolute inset-0 w-full h-full"
+          />
           <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 flex gap-2">
             <Button
               onClick={handleSearchCurrentBounds}
@@ -609,7 +704,9 @@ export default function MapWithListPage() {
           {loading ? (
             <div className="flex items-center justify-center py-8">
               <Loader2 className="h-6 w-6 animate-spin mr-2" />
-              <span className="text-muted-foreground">식당 정보를 불러오는 중...</span>
+              <span className="text-muted-foreground">
+                식당 정보를 불러오는 중...
+              </span>
             </div>
           ) : error ? (
             <div className="text-center text-red-500 py-8">
@@ -639,7 +736,9 @@ export default function MapWithListPage() {
                             {restaurant.name}
                           </h4>
                           <Badge
-                            variant={restaurant.category ? "secondary" : "outline"}
+                            variant={
+                              restaurant.category ? "secondary" : "outline"
+                            }
                             className="text-xs"
                           >
                             {restaurant.category || "기타"}
@@ -663,10 +762,14 @@ export default function MapWithListPage() {
                               />
                             ))}
                             <span>
-                              {calculateWasteStarRating(restaurant.wasteScore ?? 80)}
+                              {calculateWasteStarRating(
+                                restaurant.wasteScore ?? 80,
+                              )}
                             </span>
                           </div>
-                          {restaurant.distance && <span>{restaurant.distance}</span>}
+                          {restaurant.distance && (
+                            <span>{restaurant.distance}</span>
+                          )}
                         </div>
                       </div>
                     </div>

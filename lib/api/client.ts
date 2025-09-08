@@ -137,7 +137,7 @@ class ApiClient {
     if (data.name) fd.append("name", data.name)
     if (data.nickname) fd.append("nickname", data.nickname)
     if (data.profileImage instanceof File) fd.append("profileImage", data.profileImage)
-    return this.request("/auth/profile", { method: "POST", body: fd })
+    return this.request("/auth/me", { method: "POST", body: fd })
   }
 
   // ───────────────── Restaurants
@@ -167,8 +167,8 @@ class ApiClient {
     return this.request(`/restaurants/nearby?q=${encodeURIComponent(q)}`)
   }
 
-  async getRestaurant(id: number) {
-    return this.request(`/restaurants/${id}`)
+  async getRestaurantDetail(id: number) {
+    return this.request(`/restaurants/${id}/detail`, { method: "GET" })
   }
 
   async getRestaurantReviews(id: number) {
