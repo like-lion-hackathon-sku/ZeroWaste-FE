@@ -1,13 +1,13 @@
 // app/restaurant/[id]/page.tsx
-"use client";
+"use client"
 
-import { useEffect, useMemo, useState } from "react";
-import { useParams, useRouter, useSearchParams } from "next/navigation";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { Separator } from "@/components/ui/separator";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useEffect, useMemo, useState } from "react"
+import { useParams, useRouter } from "next/navigation"
+import { Button } from "@/components/ui/button"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Badge } from "@/components/ui/badge"
+import { Separator } from "@/components/ui/separator"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   ArrowLeft,
   Star,
@@ -21,48 +21,48 @@ import {
   Leaf,
   Users,
   Loader2,
-} from "lucide-react";
-import { apiClient } from "@/lib/api/client";
-import { calculateWasteStarRating } from "@/lib/utils/database-helpers";
+} from "lucide-react"
+import { apiClient } from "@/lib/api/client"
+import { calculateWasteStarRating } from "@/lib/utils/database-helpers"
 
 // ✅ 목업
-import { mockRestaurants } from "@/lib/mock/restaurant-presets";
+import { mockRestaurants } from "@/lib/mock/restaurant-presets"
 
 type UIReview = {
-  id?: number;
-  userName?: string;
-  wasteRating?: number;
-  date?: string;
-  comment?: string;
-  images?: string[];
-};
-type UIMenuItem = { name?: string; price?: string; description?: string };
+  id?: number
+  userName?: string
+  wasteRating?: number
+  date?: string
+  comment?: string
+  images?: string[]
+}
+type UIMenuItem = { name?: string; price?: string; description?: string }
 type UIRestaurant = {
-  id: number;
-  name: string;
-  image?: string | null;
-  badge?: string | null;
-  wasteScore?: number | null;
-  totalReviews?: number | null;
-  category?: string | null;
-  distance?: string | null;
-  address?: string | null;
-  telephone?: string | null;
-  hours?: string | null;
-  description?: string | null;
-  favorited?: boolean;
-  menu?: UIMenuItem[];
-  gallery?: string[];
-  reviews?: UIReview[];
-  infoSections?: { title: string; body: string }[];
-};
+  id: number
+  name: string
+  image?: string | null
+  badge?: string | null
+  wasteScore?: number | null
+  totalReviews?: number | null
+  category?: string | null
+  distance?: string | null
+  address?: string | null
+  telephone?: string | null
+  hours?: string | null
+  description?: string | null
+  favorited?: boolean
+  menu?: UIMenuItem[]
+  gallery?: string[]
+  reviews?: UIReview[]
+  /** 목업: 접이식 섹션 */
+  infoSections?: { title: string; body: string }[]
+}
 
-/** 여러 백엔드 필드명을 흡수해서 UI 형태로 정규화 */
+/** BE 응답 → UI 타입으로 안전 변환 (header/tabs 구조 & 구형 external 둘 다 지원) */
 function normalizeRestaurant(raw: any): UIRestaurant {
-  // 1) 신규 포맷(header/tabs)
   if (raw?.header && raw?.tabs) {
-    const h = raw.header ?? {};
-    const t = raw.tabs ?? {};
+    const h = raw.header ?? {}
+    const t = raw.tabs ?? {}
 
     const menuItems: UIMenuItem[] = Array.isArray(t.menu?.items)
       ? t.menu.items.map((m: any) => ({
@@ -70,21 +70,13 @@ function normalizeRestaurant(raw: any): UIRestaurant {
           price: m?.price ?? "",
           description: m?.description ?? "",
         }))
-      : [];
+      : []
 
     const gallery: string[] = Array.isArray(t.gallery?.photos)
       ? t.gallery.photos
           .map((p: any) => (typeof p === "string" ? p : p?.url))
           .filter(Boolean)
-      : [];
-
-    const fav =
-      !!h.isFavorite ||
-      !!h.is_favorite ||
-      !!h.favorited ||
-      !!raw?.isFavorite ||
-      !!raw?.is_favorite ||
-      !!raw?.favorited;
+      : []
 
     return {
       id: Number(h.id ?? 0),
@@ -99,27 +91,18 @@ function normalizeRestaurant(raw: any): UIRestaurant {
       telephone: t.info?.telephone ?? h.telephone ?? null,
       hours: null,
       description: t.info?.description ?? null,
-      favorited: fav,
+      favorited: !!h.isFavorite,
       menu: menuItems,
       gallery,
       reviews: [],
-    };
+    }
   }
 
-  // 2) 구 포맷(external)
-  const ext = raw?.external ?? {};
-  const eco = raw?.stats?.ecoScore;
+  const ext = raw?.external ?? {}
+  const eco = raw?.stats?.ecoScore
   const photos: string[] = Array.isArray(ext.photos)
     ? (ext.photos as any[]).map((p) => p?.url).filter(Boolean)
-    : [];
-
-  const fav =
-    !!raw?.isFavorite ||
-    !!raw?.is_favorite ||
-    !!raw?.favorited ||
-    !!ext?.isFavorite ||
-    !!ext?.is_favorite ||
-    !!ext?.favorited;
+    : []
 
   return {
     id: Number(raw?.id ?? 0),
@@ -139,7 +122,7 @@ function normalizeRestaurant(raw: any): UIRestaurant {
     telephone: ext.telephone ?? raw?.telephone ?? null,
     hours: raw?.hours ?? null,
     description: raw?.description ?? null,
-    favorited: fav,
+    favorited: !!raw?.isFavorite,
     menu: Array.isArray(ext.menus)
       ? (ext.menus as any[]).map((m) => ({
           name: m?.name,
@@ -149,121 +132,87 @@ function normalizeRestaurant(raw: any): UIRestaurant {
       : [],
     gallery: photos,
     reviews: [],
-  };
+  }
 }
 
 export default function RestaurantDetailPage() {
-  const params = useParams();
-  const router = useRouter();
-  const searchParams = useSearchParams();
-  const routeFav = searchParams.get("fav") === "1";
+  const params = useParams()
+  const router = useRouter()
+  const restaurantId = Number.parseInt((params as any).id as string)
 
-  const restaurantId = Number.parseInt((params as any).id as string);
-
-  const [activeTab, setActiveTab] = useState("info");
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [raw, setRaw] = useState<any | null>(null);
+  const [activeTab, setActiveTab] = useState("info")
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [raw, setRaw] = useState<any | null>(null)
 
   useEffect(() => {
-    let mounted = true;
-    (async () => {
-      setLoading(true);
-      setError(null);
+    let mounted = true
+    ;(async () => {
+      setLoading(true)
+      setError(null)
       try {
-        const res = await apiClient.getRestaurantDetail(restaurantId);
-        if (!mounted) return;
+        const res = await apiClient.getRestaurantDetail(restaurantId)
+        if (!mounted) return
         if (!res.success) {
-          setError(res.error || "식당 정보를 불러올 수 없습니다.");
-          setRaw(null);
+          setError(res.error || "식당 정보를 불러올 수 없습니다.")
+          setRaw(null)
         } else {
-          setRaw(res.data);
+          setRaw(res.data)
         }
       } catch (e: any) {
-        if (!mounted) return;
-        setError(e?.message || "네트워크 오류가 발생했어요.");
-        setRaw(null);
+        if (!mounted) return
+        setError(e?.message || "네트워크 오류가 발생했어요.")
+        setRaw(null)
       } finally {
-        if (mounted) setLoading(false);
+        if (mounted) setLoading(false)
       }
-    })();
+    })()
     return () => {
-      mounted = false;
-    };
-  }, [restaurantId]);
+      mounted = false
+    }
+  }, [restaurantId])
 
   /** BE → UI 변환 + 목업 병합 */
   const restaurant = useMemo<UIRestaurant | null>(() => {
-    if (!raw) return null;
-    const base = normalizeRestaurant(raw);
+    if (!raw) return null
+    const base = normalizeRestaurant(raw)
 
-    const mock = mockRestaurants[base.id];
-    if (!mock) return base;
+    const mock = mockRestaurants[base.id]
+    if (!mock) return base
 
     const mergedDescription = [base.description, mock.facilities]
       .filter(Boolean)
-      .join("\n\n");
+      .join("\n\n")
 
     const mergedMenu =
-      Array.isArray(mock.menu) && mock.menu.length > 0 ? mock.menu : base.menu;
+      Array.isArray(mock.menu) && mock.menu.length > 0 ? mock.menu : base.menu
 
     return {
       ...base,
       description: mergedDescription,
       menu: mergedMenu,
-      infoSections: mock.infoSections,
-    };
-  }, [raw]);
-
-  /** UI 표시용 하트 상태: 응답값 OR 쿼리파람 */
-  const isFav = ((restaurant?.favorited ?? false) || routeFav) as boolean;
-
-  /** 즐겨찾기 토글(낙관적 업데이트 + 실패 시 롤백) */
-  const toggleFavorite = async () => {
-    if (!restaurant?.id) return;
-    const prev = isFav;
-    const nextFav = !prev;
-
-    // 1) 낙관적 반영 (raw 내부 포맷 고려)
-    setRaw((r: any) => {
-      if (!r) return r;
-      const copy = JSON.parse(JSON.stringify(r));
-      if (copy?.header) copy.header.isFavorite = nextFav;
-      else copy.isFavorite = nextFav;
-      return copy;
-    });
-
-    // URL 쿼리도 동기화(새로고침 시 보존)
-    router.replace(`/restaurant/${restaurantId}?fav=${nextFav ? 1 : 0}`, {
-      scroll: false,
-    });
-
-    try {
-      if (nextFav) {
-        const rs = await apiClient.addFavorite(restaurant.id);
-        if (!rs?.success) throw new Error(rs?.error || "즐겨찾기 추가 실패");
-      } else {
-        const rs = await apiClient.removeFavorite(restaurant.id);
-        if (!rs?.success) throw new Error(rs?.error || "즐겨찾기 해제 실패");
-      }
-    } catch (err: any) {
-      // 2) 실패 시 롤백
-      setRaw((r: any) => {
-        if (!r) return r;
-        const copy = JSON.parse(JSON.stringify(r));
-        if (copy?.header) copy.header.isFavorite = prev;
-        else copy.isFavorite = prev;
-        return copy;
-      });
-      router.replace(`/restaurant/${restaurantId}?fav=${prev ? 1 : 0}`, {
-        scroll: false,
-      });
-      alert(err?.message || "즐겨찾기 처리가 실패했어요.");
+      infoSections: mock.infoSections, // 👉 접이식 섹션 제공
     }
-  };
+  }, [raw])
+
+  const toggleFavorite = async () => {
+    if (!restaurant?.id) return
+    try {
+      if (restaurant.favorited) {
+        await apiClient.removeFavorite(restaurant.id)
+      } else {
+        await apiClient.addFavorite(restaurant.id)
+      }
+      const res = await apiClient.getRestaurantDetail(restaurant.id)
+      if (res.success) setRaw(res.data)
+    } catch (err) {
+      console.error("[toggle favorite] failed:", err)
+      alert("즐겨찾기 처리가 실패했어요.")
+    }
+  }
 
   const handleShare = () => {
-    if (!restaurant) return;
+    if (!restaurant) return
     if (navigator.share) {
       navigator
         .share({
@@ -271,15 +220,15 @@ export default function RestaurantDetailPage() {
           text: "에코 친화 식당 정보 공유",
           url: typeof window !== "undefined" ? window.location.href : "",
         })
-        .catch(() => {});
+        .catch(() => {})
     } else {
-      alert("이 브라우저는 공유 기능을 지원하지 않아요.");
+      alert("이 브라우저는 공유 기능을 지원하지 않아요.")
     }
-  };
+  }
 
   const handleWriteReview = () => {
-    router.push(`/review/write?restaurantId=${restaurantId}`);
-  };
+    router.push(`/review/write?restaurantId=${restaurantId}`)
+  }
 
   if (loading) {
     return (
@@ -289,23 +238,21 @@ export default function RestaurantDetailPage() {
           <div className="text-muted-foreground">식당 정보를 불러오는 중...</div>
         </div>
       </div>
-    );
+    )
   }
 
   if (error || !restaurant) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="text-center">
-          <div className="text-red-500 mb-4">
-            {error || "식당 정보를 불러올 수 없습니다"}
-          </div>
+          <div className="text-red-500 mb-4">{error || "식당 정보를 불러올 수 없습니다"}</div>
           <Button onClick={() => router.back()}>뒤로가기</Button>
         </div>
       </div>
-    );
+    )
   }
 
-  const star = calculateWasteStarRating(restaurant.wasteScore ?? 0);
+  const star = calculateWasteStarRating(restaurant.wasteScore ?? 0)
 
   return (
     <div className="min-h-screen bg-background">
@@ -320,16 +267,8 @@ export default function RestaurantDetailPage() {
             <Button variant="ghost" size="sm" onClick={handleShare} title="공유하기">
               <Share2 className="h-4 w-4" />
             </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={toggleFavorite}
-              title={isFav ? "즐겨찾기 해제" : "즐겨찾기 추가"}
-              aria-pressed={isFav}
-            >
-              <Heart
-                className={`h-4 w-4 ${isFav ? "fill-red-500 text-red-500" : ""}`}
-              />
+            <Button variant="ghost" size="sm" onClick={toggleFavorite} title="즐겨찾기">
+              <Heart className={`h-4 w-4 ${restaurant.favorited ? "fill-red-500 text-red-500" : ""}`} />
             </Button>
           </div>
         </div>
@@ -346,9 +285,7 @@ export default function RestaurantDetailPage() {
         <div className="absolute bottom-4 left-4 right-4">
           <div className="flex items-center gap-2 mb-2">
             {restaurant.badge && (
-              <Badge
-                variant={restaurant.badge === "착한 식당" ? "default" : "secondary"}
-              >
+              <Badge variant={restaurant.badge === "착한 식당" ? "default" : "secondary"}>
                 {restaurant.badge}
               </Badge>
             )}
@@ -415,7 +352,7 @@ export default function RestaurantDetailPage() {
                     </p>
                   )}
 
-                  {/* 목업 섹션 */}
+                  {/* 🔻 목업 섹션: 접었다/폈다 (details/summary) */}
                   {restaurant.infoSections?.length ? (
                     <div className="mt-4 space-y-2">
                       {restaurant.infoSections.map((sec, i) => (
@@ -568,5 +505,5 @@ export default function RestaurantDetailPage() {
         </div>
       </div>
     </div>
-  );
+  )
 }
