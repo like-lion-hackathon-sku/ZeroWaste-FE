@@ -14,16 +14,32 @@ import { useUserProfile, useUserBadges, useFavorites, useUserReviews } from "@/l
 import { apiClient } from "@/lib/api/client"
 import { formatDate } from "@/lib/utils/database-helpers"
 
-type FavoriteItem = {
-  id?: number
-  restaurant_id: number
-  restaurant?: {
-    id: number
-    name: string
-    category?: string | null
-  }
+/* ────────────────────────────────────────────────────────────
+   타입
+──────────────────────────────────────────────────────────── */
+type RestaurantLite = {
+  id: number
+  name: string
+  category?: string | null
+  address?: string | null
+  telephone?: string | null
 }
 
+type FavoriteItem = {
+  id?: number                   // favorite row id
+  restaurant_id: number         // 실제 식당 id
+  restaurant?: RestaurantLite   // 카드에서 사용하는 데이터
+  // ↓ 평평한 응답 대비용(옵션)
+  name?: string
+  category?: string | null
+  restaurantId?: number
+  address?: string | null
+  telephone?: string | null
+}
+
+/* ────────────────────────────────────────────────────────────
+   컴포넌트
+──────────────────────────────────────────────────────────── */
 export default function ProfilePage() {
   const router = useRouter()
   const [activeTab, setActiveTab] = useState("reviews")
@@ -41,15 +57,51 @@ export default function ProfilePage() {
   const [favList, setFavList] = useState<FavoriteItem[]>([])
   const [removingId, setRemovingId] = useState<number | null>(null)
 
+  /* ──────────────────────────────────────────────────────────
+     응답 정규화: 중첩형/평평한 두 포맷 모두 지원 + address/telephone 포함
+  ─────────────────────────────────────────────────────────── */
+  function toFavoriteItem(f: any): FavoriteItem {
+    const restaurant_id =
+      f.restaurant_id ??
+      f.restaurantId ??
+      f.restaurant?.id ??
+      null
+
+    const restaurant: RestaurantLite | undefined =
+      f.restaurant ??
+      (f.name
+        ? {
+            id: restaurant_id,
+            name: f.name,
+            category: f.category ?? null,
+            address: f.address ?? null,
+            telephone: f.telephone ?? null,
+          }
+        : undefined)
+
+    return {
+      id: f.id,
+      restaurant_id,
+      restaurant,
+    }
+  }
+
   useEffect(() => {
-    if (Array.isArray(favorites)) {
+    // favorites가 배열 또는 {items} 또는 {success:{items}}인 경우 모두 처리
+    const raw =
+      Array.isArray(favorites)
+        ? favorites
+        : favorites?.items ??
+          favorites?.success?.items
+
+    if (Array.isArray(raw)) {
       setFavList(
-        favorites.map((f: any) => ({
-          id: f.id,
-          restaurant_id: f.restaurant_id ?? f.restaurant?.id,
-          restaurant: f.restaurant,
-        }))
+        raw
+          .map(toFavoriteItem)
+          .filter((x) => !!x.restaurant_id && !!x.restaurant)
       )
+    } else {
+      setFavList([])
     }
   }, [favorites])
 
@@ -78,12 +130,6 @@ export default function ProfilePage() {
     },
   ]
 
-  const getBadgesByCategory = (category: string) => {
-    return earnedBadges.filter((badge: any) =>
-      badge.badge?.name.includes(category === "activity" ? "리뷰" : category === "environment" ? "친환경" : "지역")
-    )
-  }
-
   const handleRestaurantClick = (restaurantId: number) => {
     router.push(`/restaurant/${restaurantId}`)
   }
@@ -101,7 +147,7 @@ export default function ProfilePage() {
     setFavList((list) => list.filter((f) => f.restaurant_id !== restaurantId))
 
     try {
-      const res = await apiClient.removeFavorite(restaurantId)
+      const res = await apiClient.removeFavorite(restaurantId) // 식당 id 기준 API
       if (!res.success) throw new Error(res.error || "즐겨찾기 삭제 실패")
     } catch (e) {
       // 2) 실패 시 롤백
@@ -339,9 +385,7 @@ export default function ProfilePage() {
                                   삭제 중…
                                 </>
                               ) : (
-                                <>
-                                  <Trash2 className="h-4 w-4" />
-                                </>
+                                <Trash2 className="h-4 w-4" />
                               )}
                             </Button>
                           </div>
