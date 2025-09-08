@@ -81,7 +81,7 @@ export default function HomePage() {
             친환경 식당 리뷰 앱으로 지속가능한 식문화에 동참하세요
           </p>
           <Button asChild size="lg" className="text-lg px-8">
-            <Link href="/login">회원가입하기</Link>
+            <Link href="/auth/signup">회원가입하기</Link>
           </Button>
         </div>
       </div>

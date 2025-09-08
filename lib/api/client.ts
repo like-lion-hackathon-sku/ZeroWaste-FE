@@ -128,16 +128,21 @@ class ApiClient {
     return this.request("/auth/refresh", { method: "POST" })
   }
 
+  /** ✅ 프로필 조회: GET /api/auth/me */
   async getProfile() {
-    return this.request("/auth/profile", { method: "GET" })
+    return this.request("/auth/me", { method: "GET" })
   }
 
+  /**
+   * ✅ 프로필 수정: PUT /api/auth/me
+   *  - multipart(FormData) 지원
+   */
   async updateProfile(data: { name?: string; nickname?: string; profileImage?: File | null }) {
     const fd = new FormData()
     if (data.name) fd.append("name", data.name)
     if (data.nickname) fd.append("nickname", data.nickname)
     if (data.profileImage instanceof File) fd.append("profileImage", data.profileImage)
-    return this.request("/auth/me", { method: "POST", body: fd })
+    return this.request("/auth/me", { method: "PUT", body: fd })
   }
 
   // ───────────────── Restaurants
@@ -184,27 +189,27 @@ class ApiClient {
   async addFavorite(restaurantId: number) {
     return this.request(`/favorites`, {
       method: "PUT",
-       headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ restaurantId }),
     })
   }
 
   /** 외부 place로 즐겨찾기 추가 – 규격: PUT /favorites, body: { place: {...} } */
   async addFavoriteExternal(place: {
-  name: string
-  address: string
-  mapx: number // micro-deg
-  mapy: number // micro-deg
-  category?: string
-  telephone?: string
-}) {
-  const payload = { ...place, mapx: Math.round(place.mapx), mapy: Math.round(place.mapy) }
-  return this.request(`/favorites`, { method: "PUT", body: JSON.stringify({ place: payload }) })
-}
+    name: string
+    address: string
+    mapx: number // micro-deg
+    mapy: number // micro-deg
+    category?: string
+    telephone?: string
+  }) {
+    const payload = { ...place, mapx: Math.round(place.mapx), mapy: Math.round(place.mapy) }
+    return this.request(`/favorites`, { method: "PUT", body: JSON.stringify({ place: payload }) })
+  }
 
   async removeFavorite(restaurantId: number) {
-  return this.request(`/favorites/${restaurantId}`, { method: "DELETE" })
-}
+    return this.request(`/favorites/${restaurantId}`, { method: "DELETE" })
+  }
 
   // ───────────────── Badges
   async getBadges() {

@@ -130,7 +130,7 @@ export function useRestaurants(params?: {
 /** 식당 상세 훅 */
 export function useRestaurant(id: number) {
   return useApiWithFallback(
-    () => apiClient.getRestaurantDetail(id),
+    () => apiClient.getRestaurant(id),
     () => fallbackService.getRestaurant(id),
     [id]
   );

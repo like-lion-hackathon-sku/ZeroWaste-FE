@@ -1,7 +1,6 @@
-// app/restaurant/[id]/page.tsx
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useMemo, useState } from "react"
 import { useParams, useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -22,11 +21,9 @@ import {
   Users,
   Loader2,
 } from "lucide-react"
+import { useRestaurant } from "@/lib/hooks/use-api-with-fallback"
 import { apiClient } from "@/lib/api/client"
 import { calculateWasteStarRating } from "@/lib/utils/database-helpers"
-
-// ✅ 목업
-import { mockRestaurants } from "@/lib/mock/restaurant-presets"
 
 type UIReview = {
   id?: number
@@ -36,7 +33,9 @@ type UIReview = {
   comment?: string
   images?: string[]
 }
+
 type UIMenuItem = { name?: string; price?: string; description?: string }
+
 type UIRestaurant = {
   id: number
   name: string
@@ -54,84 +53,36 @@ type UIRestaurant = {
   menu?: UIMenuItem[]
   gallery?: string[]
   reviews?: UIReview[]
-  /** 목업: 접이식 섹션 */
-  infoSections?: { title: string; body: string }[]
 }
 
-/** BE 응답 → UI 타입으로 안전 변환 (header/tabs 구조 & 구형 external 둘 다 지원) */
+/** 들어온 원시 restaurant를 UI friendly 형태로 안전 변환 */
 function normalizeRestaurant(raw: any): UIRestaurant {
-  if (raw?.header && raw?.tabs) {
-    const h = raw.header ?? {}
-    const t = raw.tabs ?? {}
-
-    const menuItems: UIMenuItem[] = Array.isArray(t.menu?.items)
-      ? t.menu.items.map((m: any) => ({
-          name: m?.name,
-          price: m?.price ?? "",
-          description: m?.description ?? "",
-        }))
-      : []
-
-    const gallery: string[] = Array.isArray(t.gallery?.photos)
-      ? t.gallery.photos
-          .map((p: any) => (typeof p === "string" ? p : p?.url))
-          .filter(Boolean)
-      : []
-
-    return {
-      id: Number(h.id ?? 0),
-      name: String(h.name ?? "알 수 없는 식당"),
-      image: h.heroPhoto ?? null,
-      badge: h.badge ?? null,
-      wasteScore: typeof h.ecoScore === "number" ? h.ecoScore : null,
-      totalReviews: typeof h.reviewCount === "number" ? h.reviewCount : 0,
-      category: h.category ?? null,
-      distance: null,
-      address: t.info?.address ?? h.address ?? null,
-      telephone: t.info?.telephone ?? h.telephone ?? null,
-      hours: null,
-      description: t.info?.description ?? null,
-      favorited: !!h.isFavorite,
-      menu: menuItems,
-      gallery,
-      reviews: [],
-    }
-  }
-
-  const ext = raw?.external ?? {}
-  const eco = raw?.stats?.ecoScore
-  const photos: string[] = Array.isArray(ext.photos)
-    ? (ext.photos as any[]).map((p) => p?.url).filter(Boolean)
-    : []
-
   return {
     id: Number(raw?.id ?? 0),
     name: String(raw?.name ?? "알 수 없는 식당"),
     image: raw?.image ?? null,
     badge: raw?.badge ?? null,
-    wasteScore: typeof eco === "number" ? eco : null,
-    totalReviews:
-      typeof raw?.stats?._count === "number"
-        ? raw.stats._count
-        : typeof raw?.totalReviews === "number"
-        ? raw.totalReviews
-        : 0,
-    category: ext.category ?? raw?.category ?? null,
+    wasteScore: typeof raw?.wasteScore === "number" ? raw.wasteScore : raw?.waste_score ?? null,
+    totalReviews: typeof raw?.totalReviews === "number" ? raw.totalReviews : raw?.total_reviews ?? 0,
+    category: raw?.category ?? null,
     distance: raw?.distance ?? null,
-    address: ext.address ?? raw?.address ?? null,
-    telephone: ext.telephone ?? raw?.telephone ?? null,
+    address: raw?.address ?? null,
+    telephone: raw?.telephone ?? null,
     hours: raw?.hours ?? null,
     description: raw?.description ?? null,
-    favorited: !!raw?.isFavorite,
-    menu: Array.isArray(ext.menus)
-      ? (ext.menus as any[]).map((m) => ({
-          name: m?.name,
-          price: m?.price,
-          description: m?.description,
+    favorited: !!raw?.favorited,
+    menu: Array.isArray(raw?.menu) ? raw.menu as UIMenuItem[] : [],
+    gallery: Array.isArray(raw?.gallery) ? (raw.gallery as string[]) : [],
+    reviews: Array.isArray(raw?.reviews)
+      ? (raw.reviews as any[]).map((rv) => ({
+          id: rv?.id,
+          userName: rv?.userName ?? rv?.user_name ?? "익명",
+          wasteRating: rv?.wasteRating ?? rv?.waste_rating ?? undefined,
+          date: rv?.date ?? rv?.created_at ?? "",
+          comment: rv?.comment ?? "",
+          images: Array.isArray(rv?.images) ? rv.images : [],
         }))
       : [],
-    gallery: photos,
-    reviews: [],
   }
 }
 
@@ -139,60 +90,14 @@ export default function RestaurantDetailPage() {
   const params = useParams()
   const router = useRouter()
   const restaurantId = Number.parseInt((params as any).id as string)
-
   const [activeTab, setActiveTab] = useState("info")
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [raw, setRaw] = useState<any | null>(null)
 
-  useEffect(() => {
-    let mounted = true
-    ;(async () => {
-      setLoading(true)
-      setError(null)
-      try {
-        const res = await apiClient.getRestaurantDetail(restaurantId)
-        if (!mounted) return
-        if (!res.success) {
-          setError(res.error || "식당 정보를 불러올 수 없습니다.")
-          setRaw(null)
-        } else {
-          setRaw(res.data)
-        }
-      } catch (e: any) {
-        if (!mounted) return
-        setError(e?.message || "네트워크 오류가 발생했어요.")
-        setRaw(null)
-      } finally {
-        if (mounted) setLoading(false)
-      }
-    })()
-    return () => {
-      mounted = false
-    }
-  }, [restaurantId])
+  const { data: raw, loading, error, isUsingFallback } = useRestaurant(restaurantId)
 
-  /** BE → UI 변환 + 목업 병합 */
+  // 안전한 형태로 변환
   const restaurant = useMemo<UIRestaurant | null>(() => {
     if (!raw) return null
-    const base = normalizeRestaurant(raw)
-
-    const mock = mockRestaurants[base.id]
-    if (!mock) return base
-
-    const mergedDescription = [base.description, mock.facilities]
-      .filter(Boolean)
-      .join("\n\n")
-
-    const mergedMenu =
-      Array.isArray(mock.menu) && mock.menu.length > 0 ? mock.menu : base.menu
-
-    return {
-      ...base,
-      description: mergedDescription,
-      menu: mergedMenu,
-      infoSections: mock.infoSections, // 👉 접이식 섹션 제공
-    }
+    return normalizeRestaurant(raw)
   }, [raw])
 
   const toggleFavorite = async () => {
@@ -203,17 +108,16 @@ export default function RestaurantDetailPage() {
       } else {
         await apiClient.addFavorite(restaurant.id)
       }
-      const res = await apiClient.getRestaurantDetail(restaurant.id)
-      if (res.success) setRaw(res.data)
+      // 필요 시 router.refresh()로 재요청
+      // router.refresh()
+      // 또는 낙관적 갱신을 하려면 별도 로컬 상태로 감싸서 setState 해도 됨
     } catch (err) {
-      console.error("[toggle favorite] failed:", err)
-      alert("즐겨찾기 처리가 실패했어요.")
+      console.error("[v0] Failed to toggle favorite:", err)
     }
   }
 
   const handleShare = () => {
-    if (!restaurant) return
-    if (navigator.share) {
+    if (navigator.share && restaurant) {
       navigator
         .share({
           title: restaurant.name,
@@ -222,7 +126,8 @@ export default function RestaurantDetailPage() {
         })
         .catch(() => {})
     } else {
-      alert("이 브라우저는 공유 기능을 지원하지 않아요.")
+      console.log("Share:", restaurant?.name)
+      alert("이 브라우저는 Web Share를 지원하지 않아요.")
     }
   }
 
@@ -245,17 +150,25 @@ export default function RestaurantDetailPage() {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="text-center">
-          <div className="text-red-500 mb-4">{error || "식당 정보를 불러올 수 없습니다"}</div>
+          <div className="text-red-500 mb-4">식당 정보를 불러올 수 없습니다</div>
           <Button onClick={() => router.back()}>뒤로가기</Button>
         </div>
       </div>
     )
   }
 
-  const star = calculateWasteStarRating(restaurant.wasteScore ?? 0)
+  const star = calculateWasteStarRating(restaurant.wasteScore ?? 80)
 
   return (
     <div className="min-h-screen bg-background">
+      {isUsingFallback && (
+        <div className="bg-yellow-50 border-b border-yellow-200 p-2">
+          <div className="container mx-auto text-center text-sm text-yellow-800">
+            ⚠️ 연결되면 실제 데이터가 표시됩니다
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <header className="bg-card border-b border-border p-4 sticky top-0 z-10">
         <div className="flex items-center justify-between">
@@ -274,7 +187,7 @@ export default function RestaurantDetailPage() {
         </div>
       </header>
 
-      {/* Hero */}
+      {/* Hero Image */}
       <div className="relative h-64 bg-muted">
         <img
           src={restaurant.image || "/placeholder.svg"}
@@ -313,9 +226,9 @@ export default function RestaurantDetailPage() {
             <TabsTrigger value="reviews">리뷰</TabsTrigger>
           </TabsList>
 
-          {/* Info */}
           <TabsContent value="info" className="mt-6">
             <div className="space-y-6">
+              {/* Basic Info */}
               <Card>
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2">
@@ -342,37 +255,14 @@ export default function RestaurantDetailPage() {
                       <span>{restaurant.hours}</span>
                     </div>
                   )}
-
                   {(restaurant.description?.trim()?.length ?? 0) > 0 && <Separator />}
-
-                  {/* 본문 + 줄바꿈 유지 */}
-                  {restaurant.description && (
-                    <p className="text-muted-foreground leading-relaxed whitespace-pre-wrap">
-                      {restaurant.description}
-                    </p>
-                  )}
-
-                  {/* 🔻 목업 섹션: 접었다/폈다 (details/summary) */}
-                  {restaurant.infoSections?.length ? (
-                    <div className="mt-4 space-y-2">
-                      {restaurant.infoSections.map((sec, i) => (
-                        <details
-                          key={`${sec.title}-${i}`}
-                          className="rounded-lg border border-border p-3 bg-muted/40"
-                        >
-                          <summary className="cursor-pointer font-medium text-foreground">
-                            {sec.title}
-                          </summary>
-                          <div className="mt-2 text-sm text-muted-foreground whitespace-pre-wrap">
-                            {sec.body}
-                          </div>
-                        </details>
-                      ))}
-                    </div>
-                  ) : null}
+                  <p className="text-muted-foreground leading-relaxed">
+                    {restaurant.description || "설명 정보가 없습니다"}
+                  </p>
                 </CardContent>
               </Card>
 
+              {/* Eco Stats */}
               <Card>
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2">
@@ -382,9 +272,7 @@ export default function RestaurantDetailPage() {
                 </CardHeader>
                 <CardContent>
                   <div className="text-center p-4 bg-green-50 rounded-lg">
-                    <div className="text-2xl font-bold text-green-600 mb-1">
-                      {calculateWasteStarRating(restaurant.wasteScore ?? 0)}
-                    </div>
+                    <div className="text-2xl font-bold text-green-600 mb-1">{star}</div>
                     <div className="text-sm text-muted-foreground">잔반 별점</div>
                   </div>
                 </CardContent>
@@ -392,7 +280,6 @@ export default function RestaurantDetailPage() {
             </div>
           </TabsContent>
 
-          {/* Menu */}
           <TabsContent value="menu" className="mt-6">
             <Card>
               <CardHeader>
@@ -402,36 +289,22 @@ export default function RestaurantDetailPage() {
                 <div className="space-y-4">
                   {restaurant.menu && restaurant.menu.length > 0 ? (
                     restaurant.menu.map((item, index) => (
-                      <div
-                        key={index}
-                        className="flex justify-between items-start p-4 border border-border rounded-lg"
-                      >
+                      <div key={index} className="flex justify-between items-start p-4 border border-border rounded-lg">
                         <div className="flex-1">
-                          <h3 className="font-medium text-foreground mb-1">
-                            {item.name || "메뉴"}
-                          </h3>
-                          <p className="text-sm text-muted-foreground whitespace-pre-wrap">
-                            {item.description || ""}
-                          </p>
+                          <h3 className="font-medium text-foreground mb-1">{item.name || "메뉴"}</h3>
+                          <p className="text-sm text-muted-foreground">{item.description || ""}</p>
                         </div>
-                        {item.price && (
-                          <div className="text-lg font-semibold text-primary ml-4">
-                            {item.price}
-                          </div>
-                        )}
+                        {item.price && <div className="text-lg font-semibold text-primary ml-4">{item.price}</div>}
                       </div>
                     ))
                   ) : (
-                    <div className="text-center text-muted-foreground py-8">
-                      메뉴 정보가 없습니다
-                    </div>
+                    <div className="text-center text-muted-foreground py-8">메뉴 정보가 없습니다</div>
                   )}
                 </div>
               </CardContent>
             </Card>
           </TabsContent>
 
-          {/* Gallery */}
           <TabsContent value="gallery" className="mt-6">
             <Card>
               <CardHeader>
@@ -444,10 +317,7 @@ export default function RestaurantDetailPage() {
                 <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
                   {restaurant.gallery && restaurant.gallery.length > 0 ? (
                     restaurant.gallery.map((image, index) => (
-                      <div
-                        key={index}
-                        className="aspect-square bg-muted rounded-lg overflow-hidden"
-                      >
+                      <div key={index} className="aspect-square bg-muted rounded-lg overflow-hidden">
                         <img
                           src={image || "/placeholder.svg"}
                           alt={`${restaurant.name} 사진 ${index + 1}`}
@@ -456,18 +326,16 @@ export default function RestaurantDetailPage() {
                       </div>
                     ))
                   ) : (
-                    <div className="col-span-full text-center text-muted-foreground py-8">
-                      사진이 없습니다
-                    </div>
+                    <div className="col-span-full text-center text-muted-foreground py-8">사진이 없습니다</div>
                   )}
                 </div>
               </CardContent>
             </Card>
           </TabsContent>
 
-          {/* Reviews */}
           <TabsContent value="reviews" className="mt-6">
             <div className="space-y-4">
+              {/* Review Summary */}
               <Card>
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2">
@@ -478,20 +346,63 @@ export default function RestaurantDetailPage() {
                 <CardContent>
                   <div className="grid grid-cols-2 gap-4 text-center">
                     <div>
-                      <div className="text-2xl font-bold text-primary mb-1">
-                        {restaurant.totalReviews || 0}
-                      </div>
+                      <div className="text-2xl font-bold text-primary mb-1">{restaurant.totalReviews || 0}</div>
                       <div className="text-sm text-muted-foreground">총 리뷰</div>
                     </div>
                     <div>
-                      <div className="text-2xl font-bold text-green-600 mb-1">
-                        {calculateWasteStarRating(restaurant.wasteScore ?? 0)}
-                      </div>
+                      <div className="text-2xl font-bold text-green-600 mb-1">{star}</div>
                       <div className="text-sm text-muted-foreground">평균 잔반 별점</div>
                     </div>
                   </div>
                 </CardContent>
               </Card>
+
+              {/* Individual Reviews */}
+              <div className="space-y-4">
+                {restaurant.reviews && restaurant.reviews.length > 0 ? (
+                  restaurant.reviews.map((review) => (
+                    <Card key={review.id ?? Math.random()}>
+                      <CardContent className="p-4">
+                        <div className="flex items-start justify-between mb-3">
+                          <div>
+                            <div className="font-medium text-foreground mb-1">{review.userName || "익명"}</div>
+                            <div className="flex items-center gap-4 text-sm text-muted-foreground">
+                              {typeof review.wasteRating === "number" && (
+                                <div className="flex items-center gap-1">
+                                  <Star className="h-3 w-3 fill-current text-green-500" />
+                                  <span className="text-green-600 font-medium">{review.wasteRating}</span>
+                                </div>
+                              )}
+                              {review.date && <span>{review.date}</span>}
+                            </div>
+                          </div>
+                        </div>
+                        {review.comment && <p className="text-foreground mb-3">{review.comment}</p>}
+                        {review.images && review.images.length > 0 && (
+                          <div className="flex gap-2">
+                            {review.images.map((image, i) => (
+                              <img
+                                key={i}
+                                src={image || "/placeholder.svg"}
+                                alt={`리뷰 사진 ${i + 1}`}
+                                className="w-16 h-16 object-cover rounded-lg"
+                              />
+                            ))}
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+                  ))
+                ) : (
+                  <Card className="p-8 text-center">
+                    <div className="text-muted-foreground">
+                      <Users className="h-12 w-12 mx-auto mb-4 opacity-50" />
+                      <h3 className="text-lg font-medium mb-2">리뷰가 없습니다</h3>
+                      <p>첫 번째 리뷰를 작성해보세요</p>
+                    </div>
+                  </Card>
+                )}
+              </div>
             </div>
           </TabsContent>
         </Tabs>
