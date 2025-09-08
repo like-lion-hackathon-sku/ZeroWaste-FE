@@ -128,17 +128,31 @@ class ApiClient {
     return this.request("/auth/refresh", { method: "POST" })
   }
 
+  /** ✅ 프로필 조회: GET /api/auth/me */
   async getProfile() {
-    return this.request("/auth/profile", { method: "GET" })
+    return this.request("/auth/me", { method: "GET" })
   }
 
-  async updateProfile(data: { name?: string; nickname?: string; profileImage?: File | null }) {
-    const fd = new FormData()
-    if (data.name) fd.append("name", data.name)
-    if (data.nickname) fd.append("nickname", data.nickname)
-    if (data.profileImage instanceof File) fd.append("profileImage", data.profileImage)
-    return this.request("/auth/me", { method: "POST", body: fd })
-  }
+  /**
+   * ✅ 프로필 수정: PUT /api/auth/profile
+   *  - multipart(FormData) 지원
+   */
+ async updateProfile(data: {
+  name?: string;
+  nickname?: string;
+  profileImage?: File | null;
+  defaultImage?: boolean; // ← 추가
+}) {
+  const fd = new FormData()
+  if (data.name) fd.append("name", data.name)
+  if (data.nickname) fd.append("nickname", data.nickname)
+  // 🔴 항상 넣어주세요: BE가 JSON.parse로 파싱합니다
+  fd.append("defaultImage", String(!!data.defaultImage))
+  if (data.profileImage instanceof File) fd.append("profileImage", data.profileImage)
+
+  // 절대 Content-Type 수동 설정 금지 (FormData가 자동으로 multipart 설정)
+  return this.request("/auth/profile", { method: "PUT", body: fd })
+}
 
   // ───────────────── Restaurants
   async getRestaurants(params?: { search?: string }) {
@@ -184,27 +198,27 @@ class ApiClient {
   async addFavorite(restaurantId: number) {
     return this.request(`/favorites`, {
       method: "PUT",
-       headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ restaurantId }),
     })
   }
 
   /** 외부 place로 즐겨찾기 추가 – 규격: PUT /favorites, body: { place: {...} } */
   async addFavoriteExternal(place: {
-  name: string
-  address: string
-  mapx: number // micro-deg
-  mapy: number // micro-deg
-  category?: string
-  telephone?: string
-}) {
-  const payload = { ...place, mapx: Math.round(place.mapx), mapy: Math.round(place.mapy) }
-  return this.request(`/favorites`, { method: "PUT", body: JSON.stringify({ place: payload }) })
-}
+    name: string
+    address: string
+    mapx: number // micro-deg
+    mapy: number // micro-deg
+    category?: string
+    telephone?: string
+  }) {
+    const payload = { ...place, mapx: Math.round(place.mapx), mapy: Math.round(place.mapy) }
+    return this.request(`/favorites`, { method: "PUT", body: JSON.stringify({ place: payload }) })
+  }
 
   async removeFavorite(restaurantId: number) {
-  return this.request(`/favorites/${restaurantId}`, { method: "DELETE" })
-}
+    return this.request(`/favorites/${restaurantId}`, { method: "DELETE" })
+  }
 
   // ───────────────── Badges
   async getBadges() {

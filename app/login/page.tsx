@@ -1,3 +1,4 @@
+// app/auth/login/page.tsx
 "use client"
 
 import type React from "react"
@@ -18,6 +19,11 @@ export default function LoginPage() {
   const [error, setError] = useState<string | null>(null)
   const [isPending, startTransition] = useTransition()
 
+  // 닉네임 모달 관련 상태
+  const [needProfile, setNeedProfile] = useState(false)
+  const [nickname, setNickname] = useState("")
+  const [saving, setSaving] = useState(false)
+
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault()
     setError(null)
@@ -27,12 +33,17 @@ export default function LoginPage() {
         setError(res.error || "로그인에 실패했어요.")
         return
       }
-      // ✅ 로그인 성공 → userId를 localStorage에 저장 (게스트와 구분용)
-      const uid = (res as any)?.data?.id
+
+      const user = (res as any).data
+      const uid = user?.id
       if (uid) localStorage.setItem("userId", String(uid))
 
-      // HttpOnly 쿠키는 서버가 설정함 → 페이지 이동
-      window.location.href = "/map"
+      if (user?.isCompleted === false) {
+        // 닉네임 설정 필요
+        setNeedProfile(true)
+      } else {
+        window.location.href = "/map"
+      }
     })
   }
 
@@ -41,9 +52,29 @@ export default function LoginPage() {
   }
 
   const handleGuestMode = () => {
-    // 게스트 모드: userId 저장 없이 이동
     window.location.href = "/map"
   }
+
+  const submitNickname = async () => {
+  if (!nickname.trim()) {
+    alert("닉네임을 입력해주세요.")
+    return
+  }
+  setSaving(true)
+  const res = await apiClient.updateProfile({
+    nickname,
+    defaultImage: true,
+    profileImage: null,
+  })
+  setSaving(false)
+
+  if (!res.success) {
+    // ⬇️ 여기! error는 string이야
+    alert(res.error || "프로필 저장에 실패했어요.")
+    return
+  }
+  window.location.href = "/map"
+}
 
   return (
     <div className="min-h-screen bg-background flex items-center justify-center p-4">
@@ -135,6 +166,27 @@ export default function LoginPage() {
           </div>
         </CardContent>
       </Card>
+
+      {/* 닉네임 설정 모달 */}
+      {needProfile && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center">
+          <div className="bg-white rounded-lg shadow-lg p-6 w-full max-w-sm space-y-4">
+            <h2 className="text-lg font-semibold">닉네임 설정</h2>
+            <p className="text-sm text-muted-foreground">처음 오셨네요! 다른 사용자에게 보일 닉네임을 설정해주세요.</p>
+            <Input
+              placeholder="닉네임"
+              value={nickname}
+              onChange={(e) => setNickname(e.target.value)}
+            />
+            <div className="flex justify-end gap-2">
+              <Button variant="ghost" onClick={() => setNeedProfile(false)}>나중에</Button>
+              <Button onClick={submitNickname} disabled={saving}>
+                {saving ? "저장 중..." : "저장"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

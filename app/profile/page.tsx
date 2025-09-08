@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -8,10 +8,21 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Progress } from "@/components/ui/progress"
 import { RestaurantCard } from "@/components/restaurant-card"
-import { ArrowLeft, User, Star, Heart, Award, Users, Edit, Loader2 } from "lucide-react"
+import { ArrowLeft, User, Star, Heart, Award, Users, Edit, Loader2, Trash2 } from "lucide-react"
 import { useRouter } from "next/navigation"
 import { useUserProfile, useUserBadges, useFavorites, useUserReviews } from "@/lib/hooks/use-api-with-fallback"
+import { apiClient } from "@/lib/api/client"
 import { formatDate } from "@/lib/utils/database-helpers"
+
+type FavoriteItem = {
+  id?: number
+  restaurant_id: number
+  restaurant?: {
+    id: number
+    name: string
+    category?: string | null
+  }
+}
 
 export default function ProfilePage() {
   const router = useRouter()
@@ -26,7 +37,24 @@ export default function ProfilePage() {
   const hasError = userError
   const isUsingFallback = userFallback || badgesFallback || favoritesFallback || reviewsFallback
 
-  const earnedBadges = userBadges?.filter((badge) => badge.badge) || []
+  // 즐겨찾기 삭제용 로컬 상태(낙관적 업데이트)
+  const [favList, setFavList] = useState<FavoriteItem[]>([])
+  const [removingId, setRemovingId] = useState<number | null>(null)
+
+  useEffect(() => {
+    if (Array.isArray(favorites)) {
+      setFavList(
+        favorites.map((f: any) => ({
+          id: f.id,
+          restaurant_id: f.restaurant_id ?? f.restaurant?.id,
+          restaurant: f.restaurant,
+        }))
+      )
+    }
+  }, [favorites])
+
+  const earnedBadges = (userBadges || []).filter((badge: any) => badge.badge)
+
   const mockInProgressBadges = [
     {
       id: "good_customer_3",
@@ -51,8 +79,8 @@ export default function ProfilePage() {
   ]
 
   const getBadgesByCategory = (category: string) => {
-    return earnedBadges.filter((badge) =>
-      badge.badge?.name.includes(category === "activity" ? "리뷰" : category === "environment" ? "친환경" : "지역"),
+    return earnedBadges.filter((badge: any) =>
+      badge.badge?.name.includes(category === "activity" ? "리뷰" : category === "environment" ? "친환경" : "지역")
     )
   }
 
@@ -62,6 +90,32 @@ export default function ProfilePage() {
 
   const handleEditProfile = () => {
     router.push("/profile/edit")
+  }
+
+  const handleRemoveFavorite = async (restaurantId: number) => {
+    if (removingId) return
+    setRemovingId(restaurantId)
+
+    // 1) 낙관적 업데이트
+    const prev = favList
+    setFavList((list) => list.filter((f) => f.restaurant_id !== restaurantId))
+
+    try {
+      const res = await apiClient.removeFavorite(restaurantId)
+      if (!res.success) throw new Error(res.error || "즐겨찾기 삭제 실패")
+    } catch (e) {
+      // 2) 실패 시 롤백
+      setFavList(prev)
+      alert("즐겨찾기 삭제에 실패했습니다.")
+      console.error(e)
+    } finally {
+      setRemovingId(null)
+    }
+  }
+
+  // ✅ 리뷰 수정 라우팅
+  const handleEditReview = (reviewId: number | string) => {
+    router.push(`/review/edit/${reviewId}`)
   }
 
   if (isLoading) {
@@ -139,19 +193,15 @@ export default function ProfilePage() {
                   {Array.from({ length: 5 }).map((_, i) => (
                     <Star
                       key={i}
-                      className={`h-5 w-5 ${
-                        i < Math.round(4.6) // Mock average rating
-                          ? "fill-current text-green-500"
-                          : "text-gray-300"
-                      }`}
+                      className={`h-5 w-5 ${i < Math.round(4.6) ? "fill-current text-green-500" : "text-gray-300"}`}
                     />
                   ))}
                 </div>
                 <div className="text-xs text-green-600 font-medium mb-1">4.6</div>
-                <div className="text-sm text-muted-foreground">평균 잔반 없음</div>
+                <div className="text-sm text-muted-foreground">잔반 별점</div>
               </div>
               <div className="text-center p-3 bg-accent/5 rounded-lg">
-                <div className="text-2xl font-bold text-accent mb-1">{favorites?.length || 0}</div>
+                <div className="text-2xl font-bold text-accent mb-1">{favList.length}</div>
                 <div className="text-sm text-muted-foreground">즐겨찾기</div>
               </div>
               <div className="text-center p-3 bg-orange-100 rounded-lg">
@@ -170,6 +220,7 @@ export default function ProfilePage() {
             <TabsTrigger value="badges">뱃지</TabsTrigger>
           </TabsList>
 
+          {/* 리뷰 탭 */}
           <TabsContent value="reviews" className="mt-6">
             <Card>
               <CardHeader>
@@ -181,7 +232,7 @@ export default function ProfilePage() {
               <CardContent>
                 <div className="space-y-6">
                   {reviews && reviews.length > 0 ? (
-                    reviews.map((review) => (
+                    reviews.map((review: any) => (
                       <div key={review.id} className="border border-border rounded-lg p-4">
                         <div className="flex items-start justify-between mb-3">
                           <div>
@@ -209,10 +260,24 @@ export default function ProfilePage() {
                             {review.created_at ? formatDate(review.created_at) : "날짜 없음"}
                           </span>
                         </div>
+
                         <p className="text-foreground mb-3">{review.comment || "댓글 없음"}</p>
+
+                        {/* ✅ 리뷰 수정 버튼 */}
+                        <div className="flex justify-end">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleEditReview(review.id)}
+                            title="리뷰 수정"
+                          >
+                            수정
+                          </Button>
+                        </div>
+
                         {review.photos && review.photos.length > 0 && (
-                          <div className="flex gap-2">
-                            {review.photos.map((photo, index) => (
+                          <div className="flex gap-2 mt-3">
+                            {review.photos.map((photo: any, index: number) => (
                               <img
                                 key={index}
                                 src={`/ceholder-svg-key-review.png?key=review${photo.id}`}
@@ -236,27 +301,52 @@ export default function ProfilePage() {
             </Card>
           </TabsContent>
 
+          {/* 즐겨찾기 탭 */}
           <TabsContent value="favorites" className="mt-6">
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <Heart className="h-5 w-5 text-red-500" />
-                  즐겨찾기 식당 ({favorites?.length || 0})
+                  즐겨찾기 식당 ({favList.length})
                 </CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="space-y-4">
-                  {favorites && favorites.length > 0 ? (
-                    favorites.map(
-                      (favorite) =>
-                        favorite.restaurant && (
+                  {favList.length > 0 ? (
+                    favList.map((favorite) =>
+                      favorite.restaurant ? (
+                        <div key={`${favorite.restaurant_id}-${favorite.id ?? "row"}`} className="relative">
+                          {/* 레스토랑 카드 */}
                           <RestaurantCard
-                            key={favorite.id}
                             restaurant={favorite.restaurant}
                             onClick={() => handleRestaurantClick(favorite.restaurant!.id)}
-                            showFavorite={true}
+                            showFavorite={false}
                           />
-                        ),
+
+                          {/* 삭제 버튼 */}
+                          <div className="absolute right-3 top-3">
+                            <Button
+                              variant="destructive"
+                              size="sm"
+                              className="gap-2"
+                              onClick={() => handleRemoveFavorite(favorite.restaurant_id)}
+                              disabled={removingId === favorite.restaurant_id}
+                              title="즐겨찾기 삭제"
+                            >
+                              {removingId === favorite.restaurant_id ? (
+                                <>
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                  삭제 중…
+                                </>
+                              ) : (
+                                <>
+                                  <Trash2 className="h-4 w-4" />
+                                </>
+                              )}
+                            </Button>
+                          </div>
+                        </div>
+                      ) : null
                     )
                   ) : (
                     <div className="text-center text-muted-foreground py-8">
@@ -270,6 +360,7 @@ export default function ProfilePage() {
             </Card>
           </TabsContent>
 
+          {/* 뱃지 탭 */}
           <TabsContent value="badges" className="mt-6">
             <div className="space-y-6">
               {/* 획득한 뱃지 */}
@@ -283,7 +374,7 @@ export default function ProfilePage() {
                 <CardContent>
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                     {earnedBadges.length > 0 ? (
-                      earnedBadges.map((acquiredBadge) => (
+                      earnedBadges.map((acquiredBadge: any) => (
                         <div
                           key={acquiredBadge.id}
                           className="p-4 bg-orange-50 border border-orange-200 rounded-lg text-center"
