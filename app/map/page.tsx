@@ -1,4 +1,3 @@
-// app/map/page.tsx
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -73,7 +72,7 @@ export default function MapWithListPage() {
     return () => window.removeEventListener("storage", onStorage);
   }, []);
 
-  /** ☆ 추가: 내 즐겨찾기 ID Set (새로고침 유지용) */
+  /** 내 즐겨찾기 ID Set (새로고침 유지용) */
   const [favoriteIds, setFavoriteIds] = useState<Set<number>>(new Set());
 
   // 로그인 상태가 되면 내 즐겨찾기 목록 1회 로드
@@ -84,7 +83,6 @@ export default function MapWithListPage() {
     }
     (async () => {
       try {
-        // 만료 대비(선택)
         await apiClient.refresh().catch(() => {});
         const res = await apiClient.getFavorites();
         const items =
@@ -250,7 +248,7 @@ export default function MapWithListPage() {
       setMapRestaurants(next);
       setUseMapList(true);
 
-      // ☆ Set 동기화
+      // Set 동기화
       if (Number.isFinite(id)) {
         setFavoriteIds((old) => {
           const s = new Set(old);
@@ -323,7 +321,7 @@ export default function MapWithListPage() {
           telephone: r.telephone ?? null,
           description: r.address ?? r.description ?? null,
           distance: r.distance ?? null,
-          favorited: isFavByServer || isFavByMe, // ☆ 덮어쓰기
+          favorited: isFavByServer || isFavByMe, // 보정
           wasteScore: r.wasteScore ?? r.waste_score ?? r.score ?? r.ecoScore ?? 80,
           mapx: fixCoord(r.lng ?? r.mapx),
           mapy: fixCoord(r.lat ?? r.mapy),
@@ -360,7 +358,7 @@ export default function MapWithListPage() {
         const waste = r.wasteScore ?? r.waste_score ?? r.score ?? r.ecoScore ?? 80;
         const lng = fixCoord(r.lng ?? r.mapx);
         const lat = fixCoord(r.lat ?? r.mapy);
-        const fav = r.favorited || (id != null && favoriteIds.has(Number(id))); // ☆ 보정
+        const fav = r.favorited || (id != null && favoriteIds.has(Number(id)));
         return {
           ...r,
           id,
@@ -389,12 +387,14 @@ export default function MapWithListPage() {
     }
   };
 
-  const goDetail = (restaurantId?: number) => {
+  /** ✅ 상세 이동 시 현재 하트 상태도 함께 전달 */
+  const goDetail = (restaurantId?: number, favorited?: boolean) => {
     if (!restaurantId) {
       alert("식당 상세를 보려면 먼저 즐겨찾기 추가(멱등 확보) 후 가능합니다.");
       return;
     }
-    router.push(`/restaurant/${restaurantId}`);
+    const fav = favorited ? "1" : "0";
+    router.push(`/restaurant/${restaurantId}?fav=${fav}`);
   };
 
   const flyTo = (lat: number, lng: number) => {
@@ -416,7 +416,7 @@ export default function MapWithListPage() {
           title: r.name,
         });
         window.naver.maps.Event.addListener(marker, "click", () =>
-          r.id ? goDetail(r.id) : undefined,
+          r.id ? goDetail(r.id, r.favorited) : undefined,
         );
         markersRef.current.push(marker);
       }
@@ -617,7 +617,7 @@ export default function MapWithListPage() {
               <Card
                 key={`list-${r.name}-${idx}`}
                 className="relative p-4 cursor-pointer hover:shadow-md transition-shadow"
-                onClick={() => r.id && goDetail(r.id)}
+                onClick={() => r.id && goDetail(r.id, r.favorited)}  
               >
                 <div className="flex gap-4">
                   <img
@@ -732,7 +732,7 @@ export default function MapWithListPage() {
                 <Card
                   key={`top-${restaurant.name}-${index}`}
                   className="cursor-pointer hover:shadow-md transition-shadow"
-                  onClick={() => restaurant.id && goDetail(restaurant.id)}
+                  onClick={() => restaurant.id && goDetail(restaurant.id, restaurant.favorited)} // ⬅ 전달
                 >
                   <CardContent className="p-3">
                     <div className="flex items-center gap-3">
