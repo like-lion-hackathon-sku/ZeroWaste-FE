@@ -40,7 +40,7 @@ type RestaurantItem = {
   mapy?: number | null
 }
 
-const SIDEBAR_WIDTH_PX = 360
+const SIDEBAR_WIDTH_PX = 400
 
 export default function MapWithListPage() {
   const router = useRouter()
@@ -98,7 +98,7 @@ export default function MapWithListPage() {
   const hereMarkerRef = useRef<any>(null)
 
   // 초기(DB) 목록
-  const { data: rawRestaurants, loading, error, isUsingFallback } = useRestaurants()
+  const { data: rawRestaurants, loading, error } = useRestaurants()
 
   // 지도 검색 목록 / 로딩 / 지도 결과 우선 플래그
   const [mapRestaurants, setMapRestaurants] = useState<RestaurantItem[]>([])
@@ -588,7 +588,13 @@ export default function MapWithListPage() {
                       {/* 본문 */}
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 mb-1.5">
-                          <h3 className="font-semibold text-foreground truncate text-lg">{r.name}</h3>
+                          {/* 이름: 두 줄 노출 + 단어깨짐 방지 + 툴팁 */}
+                          <h3
+                            className="font-semibold text-foreground text-base md:text-lg leading-snug break-keep line-clamp-2"
+                            title={r.name}
+                          >
+                            {r.name}
+                          </h3>
                           {r.badge && (
                             <Badge
                               variant="secondary"
@@ -617,7 +623,7 @@ export default function MapWithListPage() {
                         </div>
                       </div>
 
-                      {/* ▶ 버튼 세로 컬럼: 내용과 겹치지 않음 */}
+                      {/* 우측 아이콘들 */}
                       <div className="flex flex-col items-end gap-2 shrink-0 self-start">
                         {r.mapy != null && r.mapx != null && (
                           <Button
@@ -662,7 +668,7 @@ export default function MapWithListPage() {
         <div className="flex-1 relative">
           <div ref={mapRef} id="map" className="absolute inset-0 w-full h-full" />
 
-          {/* 부동 컨트롤(맵 기본 UI 안 가리도록 살짝 위로) */}
+          {/* 부동 컨트롤 */}
           <motion.div
             className="absolute bottom-20 md:bottom-16 left-1/2 -translate-x-1/2 z-10 flex gap-3"
             initial={{ opacity: 0, y: 16 }}
@@ -728,19 +734,26 @@ export default function MapWithListPage() {
           ) : topRestaurants.length ? (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
               {topRestaurants.map((restaurant, index) => (
-                <motion.div key={`top-${restaurant.name}-${index}`} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
+                <motion.div
+                  key={`top-${restaurant.name}-${index}`}
+                  initial={{ opacity: 0, y: 12 }}
+                  animate={{ opacity: 1, y: 0 }}
+                >
                   <Card
                     className="cursor-pointer bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm hover:bg-white/90 dark:hover:bg-slate-800/90 border-white/20 dark:border-slate-700/50 shadow-lg transition-all duration-200 rounded-2xl group"
                     onClick={() => restaurant.id && goDetail(restaurant.id, restaurant.favorited)}
                   >
                     <CardContent className="p-4">
                       <div className="flex items-center gap-4">
+                        {/* 순위 */}
                         <div className="relative">
                           <div className="bg-gradient-to-br from-green-500 to-emerald-600 text-white rounded-2xl w-10 h-10 flex items-center justify-center text-lg font-bold shadow-lg">
                             {index + 1}
                           </div>
                           <div className="absolute -top-1 -right-1 w-4 h-4 bg-yellow-400 rounded-full animate-pulse" />
                         </div>
+
+                        {/* 썸네일 */}
                         <div className="relative overflow-hidden rounded-xl">
                           <img
                             src={restaurant.image || "/placeholder.svg"}
@@ -748,16 +761,29 @@ export default function MapWithListPage() {
                             className="w-14 h-14 object-cover transition-transform duration-300 group-hover:scale-110"
                           />
                         </div>
+
+                        {/* 본문 */}
                         <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 mb-1.5">
-                            <h4 className="font-semibold text-foreground truncate text-sm">{restaurant.name}</h4>
+                          <div className="flex items-center gap-2 mb-1.5 min-w-0">
+                            {/* 이름: 두 줄, 단어깨짐 방지, 툴팁 */}
+                            <h4
+                              className="flex-1 min-w-0 font-semibold text-foreground text-[15px] leading-snug break-keep line-clamp-2"
+                              title={restaurant.name}
+                            >
+                              {restaurant.name}
+                            </h4>
+
+                            {/* 배지: 고정폭, 길면 말기 */}
                             <Badge
                               variant={restaurant.category ? "secondary" : "outline"}
-                              className="text-xs bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300"
+                              className="shrink-0 max-w-[50%] truncate text-xs bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300"
+                              title={restaurant.category || "기타"}
                             >
                               {restaurant.category || "기타"}
                             </Badge>
                           </div>
+
+                          {/* 평점/거리 */}
                           <div className="flex items-center gap-3 text-sm text-muted-foreground">
                             <div className="flex items-center gap-1">
                               {[...Array(5)].map((_, i) => (
@@ -774,7 +800,9 @@ export default function MapWithListPage() {
                                 {calculateWasteStarRating(restaurant.wasteScore ?? 80)}
                               </span>
                             </div>
-                            {restaurant.distance && <span className="text-xs opacity-75">{restaurant.distance}</span>}
+                            {restaurant.distance && (
+                              <span className="text-xs opacity-75">{restaurant.distance}</span>
+                            )}
                           </div>
                         </div>
                       </div>
