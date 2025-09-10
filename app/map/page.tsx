@@ -25,7 +25,7 @@ import { calculateWasteStarRating } from "@/lib/utils/database-helpers";
 
 declare global {
   interface Window {
-    naver: any;
+    naver: any; // Naver Maps SDK 전역 객체
   }
 }
 
@@ -53,6 +53,8 @@ const SIDEBAR_WIDTH_PX = 360;
 
 export default function MapWithListPage() {
   const router = useRouter();
+
+  /** ✅ Naver Maps 스크립트 로딩 완료 여부 */
   const [naverReady, setNaverReady] = useState(false);
 
   /** 로그인 여부: 로컬 저장소만 신뢰(쿠키/프로필 호출 X) */
@@ -73,10 +75,8 @@ export default function MapWithListPage() {
     return () => window.removeEventListener("storage", onStorage);
   }, []);
 
-  /** ☆ 추가: 내 즐겨찾기 ID Set (새로고침 유지용) */
+  /** 내 즐겨찾기 ID Set (새로고침 유지용) */
   const [favoriteIds, setFavoriteIds] = useState<Set<number>>(new Set());
-
-  // 로그인 상태가 되면 내 즐겨찾기 목록 1회 로드
   useEffect(() => {
     if (!isLoggedIn) {
       setFavoriteIds(new Set());
@@ -84,7 +84,6 @@ export default function MapWithListPage() {
     }
     (async () => {
       try {
-        // 만료 대비(선택)
         await apiClient.refresh().catch(() => {});
         const res = await apiClient.getFavorites();
         const items =
@@ -94,7 +93,7 @@ export default function MapWithListPage() {
         const ids = new Set<number>(
           items
             .map((it: any) => it.restaurant_id ?? it.restaurantId ?? it.id)
-            .filter((x: any) => Number.isFinite(x)),
+            .filter((x: any) => Number.isFinite(x))
         );
         setFavoriteIds(ids);
       } catch (e) {
@@ -108,7 +107,6 @@ export default function MapWithListPage() {
   const mapObjRef = useRef<any>(null);
   const markersRef = useRef<any[]>([]);
   const hereMarkerRef = useRef<any>(null);
-  const idleTimerRef = useRef<number | null>(null);
 
   // 초기(DB) 목록
   const { data: rawRestaurants, loading, error, isUsingFallback } =
@@ -146,7 +144,7 @@ export default function MapWithListPage() {
     return r2.json();
   };
 
-  // ▶ 중심 좌표 → 역지오코딩(구/동) → 키워드 조합
+  // ▶ 중심 좌표 → 역지오코딩(구/동) → 키워드 조합 (Naver Geocoder)
   async function reverseToRegion(lat: number, lng: number) {
     const svc = window.naver?.maps?.Service;
     if (!svc) return { gu: "", dong: "" };
@@ -160,7 +158,7 @@ export default function MapWithListPage() {
             gu: region?.area2?.name || "",
             dong: region?.area3?.name || "",
           });
-        },
+        }
       );
     });
   }
@@ -194,11 +192,7 @@ export default function MapWithListPage() {
 
   // BE /restaurants/nearby 호출
   const callNearby = async (q: string, display = 30, start = 1) => {
-    const search = new URLSearchParams({
-      q,
-      display: String(display),
-      start: String(start),
-    });
+    const search = new URLSearchParams({ q, display: String(display), start: String(start) });
     return fetchJson(`/restaurants/nearby?${search.toString()}`);
   };
 
@@ -219,8 +213,7 @@ export default function MapWithListPage() {
 
   function filterInBounds(list: RestaurantItem[]) {
     const b = mapObjRef.current.getBounds();
-    const sw = b.getSW(),
-      ne = b.getNE();
+    const sw = b.getSW(), ne = b.getNE();
     const pad = 0.1 * Math.max(ne.y - sw.y, ne.x - sw.x);
     return list.filter(
       (r) =>
@@ -229,7 +222,7 @@ export default function MapWithListPage() {
         r.mapy >= sw.y - pad &&
         r.mapy <= ne.y + pad &&
         r.mapx >= sw.x - pad &&
-        r.mapx <= ne.x + pad,
+        r.mapx <= ne.x + pad
     );
   }
 
@@ -244,13 +237,11 @@ export default function MapWithListPage() {
 
     const applyLocal = (v: boolean) => {
       // 리스트 UI 반영
-      const next = restaurants.map((x, i) =>
-        i === idx ? { ...x, favorited: v } : x,
-      );
+      const next = restaurants.map((x, i) => (i === idx ? { ...x, favorited: v } : x));
       setMapRestaurants(next);
       setUseMapList(true);
 
-      // ☆ Set 동기화
+      // Set 동기화
       if (Number.isFinite(id)) {
         setFavoriteIds((old) => {
           const s = new Set(old);
@@ -265,12 +256,10 @@ export default function MapWithListPage() {
       applyLocal(!prev);
 
       if (!prev) {
-        // 추가
         if (Number.isFinite(id)) {
           const rs = await apiClient.addFavorite(Number(id));
           if (!rs?.success) throw new Error(rs?.error || "즐겨찾기 추가 실패");
         } else {
-          // 외부 place만 있는 경우
           if (r.name && (r.address || r.description) && r.mapx != null && r.mapy != null) {
             const place = {
               name: r.name,
@@ -287,7 +276,6 @@ export default function MapWithListPage() {
           }
         }
       } else {
-        // 해제
         if (!Number.isFinite(id)) throw new Error("restaurantId가 없어서 해제할 수 없어요.");
         const rs = await apiClient.removeFavorite(Number(id));
         if (!rs?.success) throw new Error(rs?.error || "즐겨찾기 해제 실패");
@@ -300,7 +288,6 @@ export default function MapWithListPage() {
   };
 
   /* ───────────────── 검색/지도 렌더 ───────────────── */
-
   const handleSearchCurrentBounds = async () => {
     if (!mapObjRef.current) return;
     try {
@@ -323,7 +310,7 @@ export default function MapWithListPage() {
           telephone: r.telephone ?? null,
           description: r.address ?? r.description ?? null,
           distance: r.distance ?? null,
-          favorited: isFavByServer || isFavByMe, // ☆ 덮어쓰기
+          favorited: isFavByServer || isFavByMe,
           wasteScore: r.wasteScore ?? r.waste_score ?? r.score ?? r.ecoScore ?? 80,
           mapx: fixCoord(r.lng ?? r.mapx),
           mapy: fixCoord(r.lat ?? r.mapy),
@@ -335,13 +322,6 @@ export default function MapWithListPage() {
 
       setMapRestaurants(filtered);
       setUseMapList(true);
-
-      console.log("[nearby]", {
-        qs,
-        total: mapped.length,
-        shown: filtered.length,
-        sample: filtered[0],
-      });
     } catch (e) {
       console.error("[nearby error]", e);
       setMapRestaurants([]);
@@ -360,7 +340,7 @@ export default function MapWithListPage() {
         const waste = r.wasteScore ?? r.waste_score ?? r.score ?? r.ecoScore ?? 80;
         const lng = fixCoord(r.lng ?? r.mapx);
         const lat = fixCoord(r.lat ?? r.mapy);
-        const fav = r.favorited || (id != null && favoriteIds.has(Number(id))); // ☆ 보정
+        const fav = r.favorited || (id != null && favoriteIds.has(Number(id)));
         return {
           ...r,
           id,
@@ -376,7 +356,6 @@ export default function MapWithListPage() {
 
   const topRestaurants = useMemo(() => restaurants.slice(0, 5), [restaurants]);
 
-  // 로그아웃
   const handleLogout = async () => {
     try {
       await apiClient.logout().catch(() => {});
@@ -389,12 +368,13 @@ export default function MapWithListPage() {
     }
   };
 
-  const goDetail = (restaurantId?: number) => {
+  const goDetail = (restaurantId?: number, favorited?: boolean) => {
     if (!restaurantId) {
       alert("식당 상세를 보려면 먼저 즐겨찾기 추가(멱등 확보) 후 가능합니다.");
       return;
     }
-    router.push(`/restaurant/${restaurantId}`);
+    const fav = favorited ? "1" : "0";
+    router.push(`/restaurant/${restaurantId}?fav=${fav}`);
   };
 
   const flyTo = (lat: number, lng: number) => {
@@ -416,14 +396,14 @@ export default function MapWithListPage() {
           title: r.name,
         });
         window.naver.maps.Event.addListener(marker, "click", () =>
-          r.id ? goDetail(r.id) : undefined,
+          r.id ? goDetail(r.id, r.favorited) : undefined
         );
         markersRef.current.push(marker);
       }
     });
   };
 
-  // 지도 초기화
+  // 지도 초기화 (Naver)
   useEffect(() => {
     if (!naverReady || !mapRef.current || mapObjRef.current) return;
 
@@ -437,10 +417,7 @@ export default function MapWithListPage() {
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
         (pos) => {
-          const here = new window.naver.maps.LatLng(
-            pos.coords.latitude,
-            pos.coords.longitude,
-          );
+          const here = new window.naver.maps.LatLng(pos.coords.latitude, pos.coords.longitude);
           hereMarkerRef.current = new window.naver.maps.Marker({
             position: here,
             map,
@@ -455,7 +432,7 @@ export default function MapWithListPage() {
         },
         () => {
           console.warn("초기 위치 접근 실패");
-        },
+        }
       );
     }
 
@@ -466,7 +443,6 @@ export default function MapWithListPage() {
       markersRef.current = [];
       mapObjRef.current = null;
       hereMarkerRef.current = null;
-      if (idleTimerRef.current) window.clearTimeout(idleTimerRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [naverReady]);
@@ -492,11 +468,7 @@ export default function MapWithListPage() {
     }
     navigator.geolocation.getCurrentPosition(
       (pos) => {
-        const here = new window.naver.maps.LatLng(
-          pos.coords.latitude,
-          pos.coords.longitude,
-        );
-
+        const here = new window.naver.maps.LatLng(pos.coords.latitude, pos.coords.longitude);
         if (hereMarkerRef.current) {
           hereMarkerRef.current.setPosition(here);
         } else {
@@ -510,7 +482,6 @@ export default function MapWithListPage() {
             },
           });
         }
-
         mapObjRef.current.setCenter(here);
         mapObjRef.current.setZoom(14);
       },
@@ -518,12 +489,13 @@ export default function MapWithListPage() {
         alert("현재 위치를 불러올 수 없습니다. 위치 접근 권한을 허용해주세요.");
         console.warn("위치 접근 실패:", err);
       },
-      { enableHighAccuracy: true, maximumAge: 10000, timeout: 10000 },
+      { enableHighAccuracy: true, maximumAge: 10000, timeout: 10000 }
     );
   };
 
   return (
     <div className="h-screen flex flex-col bg-background">
+      {/* ✅ Naver Maps SDK (반드시 ncpClientId 사용!) */}
       <Script
         src={`https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=${process.env.NEXT_PUBLIC_NAVER_MAP_CLIENT_ID}&submodules=geocoder`}
         strategy="afterInteractive"
@@ -544,6 +516,7 @@ export default function MapWithListPage() {
           <span className="font-semibold text-foreground">EcoEats</span>
         </div>
 
+        {/* 좌측 리스트 경계선에 정렬된 검색바 */}
         <div
           className="
             hidden sm:block absolute top-1/2 -translate-y-1/2
@@ -565,6 +538,7 @@ export default function MapWithListPage() {
         </div>
 
         <div className="relative z-20 flex items-center gap-2">
+          {/* 모바일 검색바 */}
           <div className="flex sm:hidden items-center gap-2">
             <input
               value={kw}
@@ -578,6 +552,7 @@ export default function MapWithListPage() {
             </Button>
           </div>
 
+          {/* 프로필 버튼 (로그인시에만) */}
           {isLoggedIn && (
             <Button
               variant="ghost"
@@ -609,15 +584,13 @@ export default function MapWithListPage() {
               식당 정보를 불러오는 중...
             </div>
           ) : error ? (
-            <div className="text-center text-red-500 py-8">
-              식당 정보를 불러올 수 없습니다.
-            </div>
+            <div className="text-center text-red-500 py-8">식당 정보를 불러올 수 없습니다.</div>
           ) : (
             restaurants.map((r, idx) => (
               <Card
                 key={`list-${r.name}-${idx}`}
                 className="relative p-4 cursor-pointer hover:shadow-md transition-shadow"
-                onClick={() => r.id && goDetail(r.id)}
+                onClick={() => r.id && goDetail(r.id, r.favorited)}
               >
                 <div className="flex gap-4">
                   <img
@@ -627,9 +600,7 @@ export default function MapWithListPage() {
                   />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-2">
-                      <h3 className="font-semibold text-foreground truncate">
-                        {r.name}
-                      </h3>
+                      <h3 className="font-semibold text-foreground truncate">{r.name}</h3>
                       {r.badge && (
                         <Badge variant="secondary" className="text-xs">
                           {r.badge}
@@ -732,7 +703,7 @@ export default function MapWithListPage() {
                 <Card
                   key={`top-${restaurant.name}-${index}`}
                   className="cursor-pointer hover:shadow-md transition-shadow"
-                  onClick={() => restaurant.id && goDetail(restaurant.id)}
+                  onClick={() => restaurant.id && goDetail(restaurant.id, restaurant.favorited)}
                 >
                   <CardContent className="p-3">
                     <div className="flex items-center gap-3">
@@ -746,9 +717,7 @@ export default function MapWithListPage() {
                       />
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 mb-1">
-                          <h4 className="font-medium text-foreground truncate">
-                            {restaurant.name}
-                          </h4>
+                          <h4 className="font-medium text-foreground truncate">{restaurant.name}</h4>
                           <Badge
                             variant={restaurant.category ? "secondary" : "outline"}
                             className="text-xs"
@@ -764,16 +733,14 @@ export default function MapWithListPage() {
                                 className={`h-3 w-3 ${
                                   i <
                                   Math.round(
-                                    calculateWasteStarRating(restaurant.wasteScore ?? 80),
+                                    calculateWasteStarRating(restaurant.wasteScore ?? 80)
                                   )
                                     ? "fill-current text-green-500"
                                     : "text-gray-300"
                                 }`}
                               />
                             ))}
-                            <span>
-                              {calculateWasteStarRating(restaurant.wasteScore ?? 80)}
-                            </span>
+                            <span>{calculateWasteStarRating(restaurant.wasteScore ?? 80)}</span>
                           </div>
                           {restaurant.distance && <span>{restaurant.distance}</span>}
                         </div>
