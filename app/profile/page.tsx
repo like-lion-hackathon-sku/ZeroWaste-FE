@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useState } from "react"
+import { motion } from "framer-motion"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -26,9 +27,9 @@ type RestaurantLite = {
 }
 
 type FavoriteItem = {
-  id?: number                   // favorite row id
-  restaurant_id: number         // 실제 식당 id
-  restaurant?: RestaurantLite   // 카드에서 사용하는 데이터
+  id?: number // favorite row id
+  restaurant_id: number // 실제 식당 id
+  restaurant?: RestaurantLite // 카드에서 사용하는 데이터
   // ↓ 평평한 응답 대비용(옵션)
   name?: string
   category?: string | null
@@ -61,11 +62,7 @@ export default function ProfilePage() {
      응답 정규화: 중첩형/평평한 두 포맷 모두 지원 + address/telephone 포함
   ─────────────────────────────────────────────────────────── */
   function toFavoriteItem(f: any): FavoriteItem {
-    const restaurant_id =
-      f.restaurant_id ??
-      f.restaurantId ??
-      f.restaurant?.id ??
-      null
+    const restaurant_id = f.restaurant_id ?? f.restaurantId ?? f.restaurant?.id ?? null
 
     const restaurant: RestaurantLite | undefined =
       f.restaurant ??
@@ -88,18 +85,10 @@ export default function ProfilePage() {
 
   useEffect(() => {
     // favorites가 배열 또는 {items} 또는 {success:{items}}인 경우 모두 처리
-    const raw =
-      Array.isArray(favorites)
-        ? favorites
-        : favorites?.items ??
-          favorites?.success?.items
+    const raw = Array.isArray(favorites) ? favorites : (favorites?.items ?? favorites?.success?.items)
 
     if (Array.isArray(raw)) {
-      setFavList(
-        raw
-          .map(toFavoriteItem)
-          .filter((x) => !!x.restaurant_id && !!x.restaurant)
-      )
+      setFavList(raw.map(toFavoriteItem).filter((x) => !!x.restaurant_id && !!x.restaurant))
     } else {
       setFavList([])
     }
@@ -166,316 +155,436 @@ export default function ProfilePage() {
 
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
-        <div className="text-center">
-          <Loader2 className="h-8 w-8 animate-spin mx-auto mb-4" />
-          <div className="text-muted-foreground">프로필 정보를 불러오는 중...</div>
-        </div>
+      <div className="min-h-screen bg-gradient-to-br from-green-50 via-sky-50 to-emerald-50 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900 flex items-center justify-center">
+        <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} className="text-center">
+          <motion.div
+            animate={{ rotate: 360 }}
+            transition={{ duration: 1, repeat: Number.POSITIVE_INFINITY, ease: "linear" }}
+            className="w-12 h-12 border-4 border-green-500 border-t-transparent rounded-full mx-auto mb-4"
+          />
+          <div className="text-gray-600 dark:text-gray-300">프로필 정보를 불러오는 중...</div>
+        </motion.div>
       </div>
     )
   }
 
   if (hasError || !user) {
     return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
-        <div className="text-center">
+      <div className="min-h-screen bg-gradient-to-br from-green-50 via-sky-50 to-emerald-50 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900 flex items-center justify-center">
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="text-center">
           <div className="text-red-500 mb-4">프로필 정보를 불러올 수 없습니다</div>
-          <Button onClick={() => window.location.reload()}>다시 시도</Button>
-        </div>
+          <Button onClick={() => window.location.reload()} className="bg-gradient-to-r from-green-500 to-emerald-600">
+            다시 시도
+          </Button>
+        </motion.div>
       </div>
     )
   }
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen bg-gradient-to-br from-green-50 via-sky-50 to-emerald-50 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900">
       {isUsingFallback && (
-        <div className="bg-yellow-50 border-b border-yellow-200 p-2">
-          <div className="container mx-auto text-center text-sm text-yellow-800">
+        <motion.div
+          initial={{ opacity: 0, y: -20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="bg-yellow-500/20 backdrop-blur-sm border-b border-yellow-200/30 p-3"
+        >
+          <div className="container mx-auto text-center text-sm text-yellow-800 dark:text-yellow-200">
             ⚠️ 연결되면 실제 데이터가 표시됩니다
           </div>
-        </div>
+        </motion.div>
       )}
 
-      {/* Header */}
-      <header className="bg-card border-b border-border p-4 sticky top-0 z-10">
+      <motion.header
+        initial={{ opacity: 0, y: -20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-b border-white/20 p-4 sticky top-0 z-10"
+      >
         <div className="flex items-center justify-between">
-          <Button variant="ghost" size="sm" onClick={() => router.back()}>
+          <Button variant="ghost" size="sm" onClick={() => router.back()} className="hover:bg-white/20">
             <ArrowLeft className="h-4 w-4 mr-2" />
             뒤로가기
           </Button>
-          <h1 className="font-semibold text-foreground">프로필</h1>
-          <Button variant="ghost" size="sm" onClick={handleEditProfile}>
+          <h1 className="font-bold text-xl bg-gradient-to-r from-green-600 to-sky-600 bg-clip-text text-transparent">
+            프로필
+          </h1>
+          <Button variant="ghost" size="sm" onClick={handleEditProfile} className="hover:bg-white/20">
             <Edit className="h-4 w-4" />
           </Button>
         </div>
-      </header>
+      </motion.header>
 
       <div className="container mx-auto p-4 max-w-4xl">
-        {/* User Info Card */}
-        <Card className="mb-6">
-          <CardContent className="p-6">
-            <div className="flex items-center gap-4 mb-6">
-              <Avatar className="h-20 w-20">
-                <AvatarImage src={user.profile || "/placeholder.svg"} alt={user.nickname} />
-                <AvatarFallback>
-                  <User className="h-8 w-8" />
-                </AvatarFallback>
-              </Avatar>
-              <div className="flex-1">
-                <h2 className="text-2xl font-bold text-foreground mb-1">{user.nickname}</h2>
-                <p className="text-muted-foreground mb-2">{user.email}</p>
-                <p className="text-sm text-muted-foreground">가입일: {formatDate(user.created_at)}</p>
-              </div>
-            </div>
-
-            {/* Stats */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <div className="text-center p-3 bg-primary/5 rounded-lg">
-                <div className="text-2xl font-bold text-primary mb-1">{reviews?.length || 0}</div>
-                <div className="text-sm text-muted-foreground">총 리뷰</div>
-              </div>
-              <div className="text-center p-3 bg-secondary/5 rounded-lg">
-                <div className="flex items-center justify-center gap-1 mb-1">
-                  {Array.from({ length: 5 }).map((_, i) => (
-                    <Star
-                      key={i}
-                      className={`h-5 w-5 ${i < Math.round(4.6) ? "fill-current text-green-500" : "text-gray-300"}`}
-                    />
-                  ))}
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
+          <Card className="mb-6 backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-2xl">
+            <CardContent className="p-6">
+              <div className="flex items-center gap-4 mb-6">
+                <motion.div
+                  initial={{ scale: 0 }}
+                  animate={{ scale: 1 }}
+                  transition={{ delay: 0.3, type: "spring", stiffness: 200 }}
+                >
+                  <Avatar className="h-20 w-20 ring-4 ring-green-500/20">
+                    <AvatarImage src={user.profile || "/placeholder.svg"} alt={user.nickname} />
+                    <AvatarFallback className="bg-gradient-to-br from-green-500 to-emerald-600 text-white">
+                      <User className="h-8 w-8" />
+                    </AvatarFallback>
+                  </Avatar>
+                </motion.div>
+                <div className="flex-1">
+                  <motion.h2
+                    initial={{ opacity: 0, x: -20 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ delay: 0.4 }}
+                    className="text-2xl font-bold bg-gradient-to-r from-gray-900 to-gray-700 dark:from-white dark:to-gray-300 bg-clip-text text-transparent mb-1"
+                  >
+                    {user.nickname}
+                  </motion.h2>
+                  <motion.p
+                    initial={{ opacity: 0, x: -20 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ delay: 0.5 }}
+                    className="text-gray-600 dark:text-gray-300 mb-2"
+                  >
+                    {user.email}
+                  </motion.p>
+                  <motion.p
+                    initial={{ opacity: 0, x: -20 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ delay: 0.6 }}
+                    className="text-sm text-gray-500 dark:text-gray-400"
+                  >
+                    가입일: {formatDate(user.created_at)}
+                  </motion.p>
                 </div>
-                <div className="text-xs text-green-600 font-medium mb-1">4.6</div>
-                <div className="text-sm text-muted-foreground">잔반 별점</div>
               </div>
-              <div className="text-center p-3 bg-accent/5 rounded-lg">
-                <div className="text-2xl font-bold text-accent mb-1">{favList.length}</div>
-                <div className="text-sm text-muted-foreground">즐겨찾기</div>
-              </div>
-              <div className="text-center p-3 bg-orange-100 rounded-lg">
-                <div className="text-2xl font-bold text-orange-600 mb-1">{earnedBadges.length}</div>
-                <div className="text-sm text-muted-foreground">획득 뱃지</div>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
 
-        {/* Tabs */}
-        <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-          <TabsList className="grid w-full grid-cols-3">
-            <TabsTrigger value="reviews">리뷰</TabsTrigger>
-            <TabsTrigger value="favorites">즐겨찾기</TabsTrigger>
-            <TabsTrigger value="badges">뱃지</TabsTrigger>
-          </TabsList>
-
-          {/* 리뷰 탭 */}
-          <TabsContent value="reviews" className="mt-6">
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Star className="h-5 w-5 text-primary" />
-                  작성한 리뷰 ({reviews?.length || 0})
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-6">
-                  {reviews && reviews.length > 0 ? (
-                    reviews.map((review: any) => (
-                      <div key={review.id} className="border border-border rounded-lg p-4">
-                        <div className="flex items-start justify-between mb-3">
-                          <div>
-                            <h3 className="font-semibold text-foreground mb-1">
-                              {review.restaurant?.name || "식당 정보 없음"}
-                            </h3>
-                            <div className="flex items-center gap-4 text-sm text-muted-foreground">
-                              <div className="flex items-center gap-1">
-                                {Array.from({ length: 5 }).map((_, i) => (
-                                  <Star
-                                    key={i}
-                                    className={`h-3 w-3 ${
-                                      i < Math.round(review.waste_rating || 0)
-                                        ? "fill-current text-green-500"
-                                        : "text-gray-300"
-                                    }`}
-                                  />
-                                ))}
-                                <span>{review.waste_rating?.toFixed(1) || "0.0"}</span>
-                              </div>
-                              <span>{review.restaurant?.category || "카테고리 없음"}</span>
-                            </div>
-                          </div>
-                          <span className="text-sm text-muted-foreground">
-                            {review.created_at ? formatDate(review.created_at) : "날짜 없음"}
-                          </span>
-                        </div>
-
-                        <p className="text-foreground mb-3">{review.comment || "댓글 없음"}</p>
-
-                        {/* ✅ 리뷰 수정 버튼 */}
-                        <div className="flex justify-end">
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => handleEditReview(review.id)}
-                            title="리뷰 수정"
-                          >
-                            수정
-                          </Button>
-                        </div>
-
-                        {review.photos && review.photos.length > 0 && (
-                          <div className="flex gap-2 mt-3">
-                            {review.photos.map((photo: any, index: number) => (
-                              <img
-                                key={index}
-                                src={`/ceholder-svg-key-review.png?key=review${photo.id}`}
-                                alt={`리뷰 사진 ${index + 1}`}
-                                className="w-16 h-16 object-cover rounded-lg"
-                              />
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    ))
-                  ) : (
-                    <div className="text-center text-muted-foreground py-8">
-                      <Star className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                      <h3 className="text-lg font-medium mb-2">작성한 리뷰가 없습니다</h3>
-                      <p>첫 번째 리뷰를 작성해보세요</p>
-                    </div>
-                  )}
-                </div>
-              </CardContent>
-            </Card>
-          </TabsContent>
-
-          {/* 즐겨찾기 탭 */}
-          <TabsContent value="favorites" className="mt-6">
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Heart className="h-5 w-5 text-red-500" />
-                  즐겨찾기 식당 ({favList.length})
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-4">
-                  {favList.length > 0 ? (
-                    favList.map((favorite) =>
-                      favorite.restaurant ? (
-                        <div key={`${favorite.restaurant_id}-${favorite.id ?? "row"}`} className="relative">
-                          {/* 레스토랑 카드 */}
-                          <RestaurantCard
-                            restaurant={favorite.restaurant}
-                            onClick={() => handleRestaurantClick(favorite.restaurant!.id)}
-                            showFavorite={false}
-                          />
-
-                          {/* 삭제 버튼 */}
-                          <div className="absolute right-3 top-3">
-                            <Button
-                              variant="destructive"
-                              size="sm"
-                              className="gap-2"
-                              onClick={() => handleRemoveFavorite(favorite.restaurant_id)}
-                              disabled={removingId === favorite.restaurant_id}
-                              title="즐겨찾기 삭제"
-                            >
-                              {removingId === favorite.restaurant_id ? (
-                                <>
-                                  <Loader2 className="h-4 w-4 animate-spin" />
-                                  삭제 중…
-                                </>
-                              ) : (
-                                <Trash2 className="h-4 w-4" />
-                              )}
-                            </Button>
-                          </div>
-                        </div>
-                      ) : null
-                    )
-                  ) : (
-                    <div className="text-center text-muted-foreground py-8">
-                      <Heart className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                      <h3 className="text-lg font-medium mb-2">즐겨찾기한 식당이 없습니다</h3>
-                      <p>마음에 드는 식당을 즐겨찾기에 추가해보세요</p>
-                    </div>
-                  )}
-                </div>
-              </CardContent>
-            </Card>
-          </TabsContent>
-
-          {/* 뱃지 탭 */}
-          <TabsContent value="badges" className="mt-6">
-            <div className="space-y-6">
-              {/* 획득한 뱃지 */}
-              <Card>
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2">
-                    <Award className="h-5 w-5 text-orange-500" />
-                    획득한 뱃지 ({earnedBadges.length})
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                    {earnedBadges.length > 0 ? (
-                      earnedBadges.map((acquiredBadge: any) => (
-                        <div
-                          key={acquiredBadge.id}
-                          className="p-4 bg-orange-50 border border-orange-200 rounded-lg text-center"
-                        >
-                          <div className="text-3xl mb-2">🏆</div>
-                          <h3 className="font-semibold text-foreground mb-1">{acquiredBadge.badge?.name}</h3>
-                          <p className="text-sm text-muted-foreground mb-2">{acquiredBadge.badge?.description}</p>
-                          <Badge variant="secondary" className="bg-orange-100 text-orange-700">
-                            {formatDate(acquiredBadge.acquired_at)}
-                          </Badge>
-                        </div>
-                      ))
-                    ) : (
-                      <div className="col-span-full text-center text-muted-foreground py-8">
-                        <Award className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                        <h3 className="text-lg font-medium mb-2">획득한 뱃지가 없습니다</h3>
-                        <p>활동을 통해 뱃지를 획득해보세요</p>
-                      </div>
-                    )}
-                  </div>
-                </CardContent>
-              </Card>
-
-              {/* 진행 중인 뱃지 */}
-              <Card>
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2">
-                    <Users className="h-5 w-5 text-muted-foreground" />
-                    진행 중인 뱃지 ({mockInProgressBadges.length})
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                    {mockInProgressBadges.map((badge) => (
-                      <div key={badge.id} className="p-4 bg-muted/50 border border-border rounded-lg text-center">
-                        <div className="text-3xl mb-2 opacity-50">{badge.icon}</div>
-                        <h3 className="font-semibold text-foreground mb-1">{badge.name}</h3>
-                        <p className="text-sm text-muted-foreground mb-3">{badge.description}</p>
-                        {badge.progress !== undefined && badge.target !== undefined && (
-                          <div className="space-y-2">
-                            <div className="flex justify-between text-sm">
-                              <span>진행률</span>
-                              <span>
-                                {badge.progress}/{badge.target}
-                              </span>
-                            </div>
-                            <Progress value={(badge.progress / badge.target) * 100} className="h-2" />
-                          </div>
-                        )}
-                      </div>
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.7 }}
+                className="grid grid-cols-2 md:grid-cols-4 gap-4"
+              >
+                <motion.div
+                  whileHover={{ scale: 1.05 }}
+                  className="text-center p-4 bg-gradient-to-br from-green-500/10 to-emerald-500/10 backdrop-blur-sm rounded-2xl border border-green-200/30"
+                >
+                  <div className="text-2xl font-bold text-green-600 mb-1">{reviews?.length || 0}</div>
+                  <div className="text-sm text-gray-600 dark:text-gray-300">총 리뷰</div>
+                </motion.div>
+                <motion.div
+                  whileHover={{ scale: 1.05 }}
+                  className="text-center p-4 bg-gradient-to-br from-sky-500/10 to-blue-500/10 backdrop-blur-sm rounded-2xl border border-sky-200/30"
+                >
+                  <div className="flex items-center justify-center gap-1 mb-1">
+                    {Array.from({ length: 5 }).map((_, i) => (
+                      <Star
+                        key={i}
+                        className={`h-4 w-4 ${i < Math.round(4.6) ? "fill-current text-green-500" : "text-gray-300"}`}
+                      />
                     ))}
                   </div>
-                </CardContent>
-              </Card>
-            </div>
-          </TabsContent>
-        </Tabs>
+                  <div className="text-xs text-green-600 font-medium mb-1">4.6</div>
+                  <div className="text-sm text-gray-600 dark:text-gray-300">잔반 별점</div>
+                </motion.div>
+                <motion.div
+                  whileHover={{ scale: 1.05 }}
+                  className="text-center p-4 bg-gradient-to-br from-red-500/10 to-pink-500/10 backdrop-blur-sm rounded-2xl border border-red-200/30"
+                >
+                  <div className="text-2xl font-bold text-red-500 mb-1">{favList.length}</div>
+                  <div className="text-sm text-gray-600 dark:text-gray-300">즐겨찾기</div>
+                </motion.div>
+                <motion.div
+                  whileHover={{ scale: 1.05 }}
+                  className="text-center p-4 bg-gradient-to-br from-orange-500/10 to-yellow-500/10 backdrop-blur-sm rounded-2xl border border-orange-200/30"
+                >
+                  <div className="text-2xl font-bold text-orange-600 mb-1">{earnedBadges.length}</div>
+                  <div className="text-sm text-gray-600 dark:text-gray-300">획득 뱃지</div>
+                </motion.div>
+              </motion.div>
+            </CardContent>
+          </Card>
+        </motion.div>
+
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}>
+          <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+            <TabsList className="grid w-full grid-cols-3 backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 h-12">
+              <TabsTrigger
+                value="reviews"
+                className="data-[state=active]:bg-green-500/20 data-[state=active]:text-green-700 dark:data-[state=active]:text-green-400"
+              >
+                리뷰
+              </TabsTrigger>
+              <TabsTrigger
+                value="favorites"
+                className="data-[state=active]:bg-red-500/20 data-[state=active]:text-red-700 dark:data-[state=active]:text-red-400"
+              >
+                즐겨찾기
+              </TabsTrigger>
+              <TabsTrigger
+                value="badges"
+                className="data-[state=active]:bg-orange-500/20 data-[state=active]:text-orange-700 dark:data-[state=active]:text-orange-400"
+              >
+                뱃지
+              </TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="reviews" className="mt-6">
+              <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }}>
+                <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-xl">
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <Star className="h-5 w-5 text-green-500" />
+                      작성한 리뷰 ({reviews?.length || 0})
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="space-y-6">
+                      {reviews && reviews.length > 0 ? (
+                        reviews.map((review: any, index: number) => (
+                          <motion.div
+                            key={review.id}
+                            initial={{ opacity: 0, y: 20 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            transition={{ delay: 0.1 * index }}
+                            className="backdrop-blur-sm bg-white/50 dark:bg-gray-800/50 border border-white/20 rounded-2xl p-4 hover:shadow-lg transition-all duration-300"
+                          >
+                            {/* ... existing review content ... */}
+                            <div className="flex items-start justify-between mb-3">
+                              <div>
+                                <h3 className="font-semibold text-gray-900 dark:text-white mb-1">
+                                  {review.restaurant?.name || "식당 정보 없음"}
+                                </h3>
+                                <div className="flex items-center gap-4 text-sm text-gray-600 dark:text-gray-300">
+                                  <div className="flex items-center gap-1">
+                                    {Array.from({ length: 5 }).map((_, i) => (
+                                      <Star
+                                        key={i}
+                                        className={`h-3 w-3 ${
+                                          i < Math.round(review.waste_rating || 0)
+                                            ? "fill-current text-green-500"
+                                            : "text-gray-300"
+                                        }`}
+                                      />
+                                    ))}
+                                    <span>{review.waste_rating?.toFixed(1) || "0.0"}</span>
+                                  </div>
+                                  <span>{review.restaurant?.category || "카테고리 없음"}</span>
+                                </div>
+                              </div>
+                              <span className="text-sm text-gray-500">
+                                {review.created_at ? formatDate(review.created_at) : "날짜 없음"}
+                              </span>
+                            </div>
+
+                            <p className="text-gray-700 dark:text-gray-300 mb-3">{review.comment || "댓글 없음"}</p>
+
+                            <div className="flex justify-end">
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => handleEditReview(review.id)}
+                                className="bg-white/50 hover:bg-white/80 border-white/30"
+                                title="리뷰 수정"
+                              >
+                                수정
+                              </Button>
+                            </div>
+
+                            {review.photos && review.photos.length > 0 && (
+                              <div className="flex gap-2 mt-3">
+                                {review.photos.map((photo: any, index: number) => (
+                                  <img
+                                    key={index}
+                                    src={`/ceholder-svg-key-review.png?key=review${photo.id}`}
+                                    alt={`리뷰 사진 ${index + 1}`}
+                                    className="w-16 h-16 object-cover rounded-xl"
+                                  />
+                                ))}
+                              </div>
+                            )}
+                          </motion.div>
+                        ))
+                      ) : (
+                        <motion.div
+                          initial={{ opacity: 0, scale: 0.9 }}
+                          animate={{ opacity: 1, scale: 1 }}
+                          className="text-center text-gray-500 py-12"
+                        >
+                          <Star className="h-16 w-16 mx-auto mb-4 opacity-30" />
+                          <h3 className="text-lg font-medium mb-2">작성한 리뷰가 없습니다</h3>
+                          <p>첫 번째 리뷰를 작성해보세요</p>
+                        </motion.div>
+                      )}
+                    </div>
+                  </CardContent>
+                </Card>
+              </motion.div>
+            </TabsContent>
+
+            {/* Enhanced favorites tab with animations */}
+            <TabsContent value="favorites" className="mt-6">
+              <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }}>
+                <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-xl">
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <Heart className="h-5 w-5 text-red-500" />
+                      즐겨찾기 식당 ({favList.length})
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="space-y-4">
+                      {favList.length > 0 ? (
+                        favList.map((favorite, index) =>
+                          favorite.restaurant ? (
+                            <motion.div
+                              key={`${favorite.restaurant_id}-${favorite.id ?? "row"}`}
+                              initial={{ opacity: 0, y: 20 }}
+                              animate={{ opacity: 1, y: 0 }}
+                              transition={{ delay: 0.1 * index }}
+                              className="relative"
+                            >
+                              <RestaurantCard
+                                restaurant={favorite.restaurant}
+                                onClick={() => handleRestaurantClick(favorite.restaurant!.id)}
+                                showFavorite={false}
+                              />
+                              <div className="absolute right-3 top-3">
+                                <Button
+                                  variant="destructive"
+                                  size="sm"
+                                  className="gap-2 bg-red-500/90 hover:bg-red-600"
+                                  onClick={() => handleRemoveFavorite(favorite.restaurant_id)}
+                                  disabled={removingId === favorite.restaurant_id}
+                                  title="즐겨찾기 삭제"
+                                >
+                                  {removingId === favorite.restaurant_id ? (
+                                    <>
+                                      <Loader2 className="h-4 w-4 animate-spin" />
+                                      삭제 중…
+                                    </>
+                                  ) : (
+                                    <Trash2 className="h-4 w-4" />
+                                  )}
+                                </Button>
+                              </div>
+                            </motion.div>
+                          ) : null,
+                        )
+                      ) : (
+                        <motion.div
+                          initial={{ opacity: 0, scale: 0.9 }}
+                          animate={{ opacity: 1, scale: 1 }}
+                          className="text-center text-gray-500 py-12"
+                        >
+                          <Heart className="h-16 w-16 mx-auto mb-4 opacity-30" />
+                          <h3 className="text-lg font-medium mb-2">즐겨찾기한 식당이 없습니다</h3>
+                          <p>마음에 드는 식당을 즐겨찾기에 추가해보세요</p>
+                        </motion.div>
+                      )}
+                    </div>
+                  </CardContent>
+                </Card>
+              </motion.div>
+            </TabsContent>
+
+            {/* Enhanced badges tab with animations */}
+            <TabsContent value="badges" className="mt-6">
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.3 }}
+                className="space-y-6"
+              >
+                {/* ... existing badges content with enhanced styling ... */}
+                <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-xl">
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <Award className="h-5 w-5 text-orange-500" />
+                      획득한 뱃지 ({earnedBadges.length})
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                      {earnedBadges.length > 0 ? (
+                        earnedBadges.map((acquiredBadge: any, index: number) => (
+                          <motion.div
+                            key={acquiredBadge.id}
+                            initial={{ opacity: 0, scale: 0.9 }}
+                            animate={{ opacity: 1, scale: 1 }}
+                            transition={{ delay: 0.1 * index }}
+                            whileHover={{ scale: 1.05 }}
+                            className="p-4 bg-gradient-to-br from-orange-500/10 to-yellow-500/10 backdrop-blur-sm border border-orange-200/30 rounded-2xl text-center"
+                          >
+                            <div className="text-3xl mb-2">🏆</div>
+                            <h3 className="font-semibold text-gray-900 dark:text-white mb-1">
+                              {acquiredBadge.badge?.name}
+                            </h3>
+                            <p className="text-sm text-gray-600 dark:text-gray-300 mb-2">
+                              {acquiredBadge.badge?.description}
+                            </p>
+                            <Badge variant="secondary" className="bg-orange-100 text-orange-700">
+                              {formatDate(acquiredBadge.acquired_at)}
+                            </Badge>
+                          </motion.div>
+                        ))
+                      ) : (
+                        <motion.div
+                          initial={{ opacity: 0, scale: 0.9 }}
+                          animate={{ opacity: 1, scale: 1 }}
+                          className="col-span-full text-center text-gray-500 py-12"
+                        >
+                          <Award className="h-16 w-16 mx-auto mb-4 opacity-30" />
+                          <h3 className="text-lg font-medium mb-2">획득한 뱃지가 없습니다</h3>
+                          <p>활동을 통해 뱃지를 획득해보세요</p>
+                        </motion.div>
+                      )}
+                    </div>
+                  </CardContent>
+                </Card>
+
+                {/* ... existing in-progress badges with enhanced styling ... */}
+                <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-xl">
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <Users className="h-5 w-5 text-gray-500" />
+                      진행 중인 뱃지 ({mockInProgressBadges.length})
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                      {mockInProgressBadges.map((badge, index) => (
+                        <motion.div
+                          key={badge.id}
+                          initial={{ opacity: 0, scale: 0.9 }}
+                          animate={{ opacity: 1, scale: 1 }}
+                          transition={{ delay: 0.1 * index }}
+                          whileHover={{ scale: 1.05 }}
+                          className="p-4 bg-gray-500/10 backdrop-blur-sm border border-gray-200/30 rounded-2xl text-center"
+                        >
+                          <div className="text-3xl mb-2 opacity-50">{badge.icon}</div>
+                          <h3 className="font-semibold text-gray-900 dark:text-white mb-1">{badge.name}</h3>
+                          <p className="text-sm text-gray-600 dark:text-gray-300 mb-3">{badge.description}</p>
+                          {badge.progress !== undefined && badge.target !== undefined && (
+                            <div className="space-y-2">
+                              <div className="flex justify-between text-sm">
+                                <span>진행률</span>
+                                <span>
+                                  {badge.progress}/{badge.target}
+                                </span>
+                              </div>
+                              <Progress value={(badge.progress / badge.target) * 100} className="h-2" />
+                            </div>
+                          )}
+                        </motion.div>
+                      ))}
+                    </div>
+                  </CardContent>
+                </Card>
+              </motion.div>
+            </TabsContent>
+          </Tabs>
+        </motion.div>
       </div>
     </div>
   )
