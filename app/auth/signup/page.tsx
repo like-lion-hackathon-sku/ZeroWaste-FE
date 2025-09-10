@@ -51,7 +51,7 @@ export default function SignupPage() {
         return
       }
       // 가입 성공 → 로그인 페이지로
-      window.location.href = "login"
+      window.location.href = "/login"
     })
   }
 
@@ -208,7 +208,7 @@ export default function SignupPage() {
 
           <div className="text-center text-sm">
             <span className="text-muted-foreground">이미 계정이 있으신가요? </span>
-            <Link href="login" className="text-primary hover:underline">
+            <Link href="/login" className="text-primary hover:underline">
               로그인
             </Link>
           </div>
