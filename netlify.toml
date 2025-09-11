@@ -1,3 +1,4 @@
+# netlify.toml (최종 권장)
 [build]
   command = "npm run build"
   publish = ".next"
@@ -5,11 +6,10 @@
 [[plugins]]
   package = "@netlify/plugin-nextjs"
 
-
+# ✅ 오직 /_be/* 만 백엔드로 프록시
 [[redirects]]
-  from = "/api/*"
+  from = "/_be/*"
   to = "https://zerowaste-be-9c49.onrender.com/api/:splat"
   status = 200
   force = true
-  # (선택) 백엔드가 Host체크하면 도움됨
   headers = { X-Forwarded-Host = ":host" }
