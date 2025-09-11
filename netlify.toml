@@ -1,3 +1,5 @@
+# netlify.toml (FINAL)
+
 [build]
   command = "npm run build"
   publish = ".next"
@@ -5,11 +7,26 @@
 [[plugins]]
   package = "@netlify/plugin-nextjs"
 
-
+# ──────────────────────────────────────────────────────────
+# 1) 분석 엔드포인트만 Next 서버리스 함수로 라우팅 (최우선)
+#    → App Route: /api/reviews/[id]/analyze 가 배포에서도 실행됨
+#    (중요: 기존에 있었던 "/api/* → BE" 리다이렉트는 제거)
+# ──────────────────────────────────────────────────────────
 [[redirects]]
-  from = "/api/*"
+  from = "/api/reviews/:id/analyze"
+  to = "/.netlify/functions/next"
+  status = 200
+  force = true
+
+# ──────────────────────────────────────────────────────────
+# 2) 실제 백엔드 프록시는 /_be/* 에만 적용
+#    FE는 NEXT_PUBLIC_API_URL=/_be 로 호출 (현행 유지)
+# ──────────────────────────────────────────────────────────
+[[redirects]]
+  from = "/_be/*"
   to = "https://zerowaste-be-9c49.onrender.com/api/:splat"
   status = 200
   force = true
-  # (선택) 백엔드가 Host체크하면 도움됨
   headers = { X-Forwarded-Host = ":host" }
+
+# (선택) 기타 정적/리소스 헤더 필요하면 아래에 [[headers]] 로 추가
