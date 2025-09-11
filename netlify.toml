@@ -1,15 +1,7 @@
+# netlify.toml
 [build]
   command = "npm run build"
   publish = ".next"
 
 [[plugins]]
   package = "@netlify/plugin-nextjs"
-
-
-[[redirects]]
-  from = "/api/*"
-  to = "https://zerowaste-be-9c49.onrender.com/api/:splat"
-  status = 200
-  force = true
-  # (선택) 백엔드가 Host체크하면 도움됨
-  headers = { X-Forwarded-Host = ":host" }

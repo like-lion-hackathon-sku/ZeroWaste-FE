@@ -1,7 +1,6 @@
 "use client"
 
 import type React from "react"
-
 import { useEffect, useRef, useState } from "react"
 import { useRouter, useParams } from "next/navigation"
 import { motion } from "framer-motion"
@@ -75,22 +74,69 @@ export default function ReviewEditPage() {
   const [wasteScore5, setWasteScore5] = useState(0) // ⭐ 0~5
   const wasteScore100 = Math.round(wasteScore5 * 20)
 
-  /* -------- 초기 데이터 -------- */
+  /* -------- 초기 데이터: GET /_be/reviews/me → id로 찾기 + /_be/restaurants/{id}/detail -------- */
   useEffect(() => {
-    if (!reviewId) return
+    if (!Number.isFinite(reviewId)) return
     ;(async () => {
       try {
         setLoading(true)
-        const res = await fetch(`/api/reviews/${reviewId}`, { cache: "no-store" })
-        const json = await res.json()
-        if (json?.success && json?.data) {
-          const r: Review = json.data
-          setReview(r)
-          setComment(r.comment ?? "")
-          setWasteScore5(Number(r.waste_rating ?? 0))
-        } else {
+
+        const res = await fetch("/_be/reviews/me", {
+          method: "GET",
+          cache: "no-store",
+          credentials: "include",
+        })
+        const list = await res.json() // 배열
+
+        if (!Array.isArray(list)) {
+          console.warn("Unexpected /reviews/me response:", list)
           setReview(null)
+          return
         }
+
+        const item =
+          list.find(
+            (r: any) => Number(r?.id) === reviewId || Number(r?.reviewId) === reviewId,
+          ) || null
+
+        if (!item) {
+          setReview(null)
+          return
+        }
+
+        // 식당 상세 조회해서 이름/카테고리 보강
+        const restaurantId = Number(item.restaurantId)
+        let restaurant: RestaurantInfo | undefined = undefined
+        if (Number.isFinite(restaurantId)) {
+          try {
+            const rDetail = await fetch(`/_be/restaurants/${restaurantId}/detail`, {
+              credentials: "include",
+              cache: "no-store",
+            })
+            const detailJson = await rDetail.json().catch(() => null)
+            const d = detailJson?.success ?? detailJson // (SUCCESS 래퍼 or 바로 객체 둘 다 대비)
+            if (d && (d.name || d.category)) {
+              restaurant = { id: restaurantId, name: d.name ?? `식당 #${restaurantId}`, category: d.category ?? null }
+            } else {
+              restaurant = { id: restaurantId, name: `식당 #${restaurantId}` }
+            }
+          } catch {
+            restaurant = { id: restaurantId, name: `식당 #${restaurantId}` }
+          }
+        }
+
+        // 화면용 매핑
+        const mapped: Review = {
+          id: Number(item.id ?? item.reviewId),
+          restaurant,
+          waste_rating: Number(item.score ?? 0),
+          comment: String(item.contents ?? ""),
+          created_at: item.created_at ?? null,
+        }
+
+        setReview(mapped)
+        setComment(mapped.comment ?? "")
+        setWasteScore5(Number(mapped.waste_rating ?? 0))
       } catch (e) {
         console.error(e)
         setReview(null)
@@ -121,12 +167,23 @@ export default function ReviewEditPage() {
     })
   }
 
+  /* -------- 공통: 현재 업로드 목록에서 AI 점수 평균 계산 -------- */
+  const recalcAverage = (imgs: UploadedImage[]) => {
+    const scores = imgs
+      .map((it) => it.ai?.score)
+      .filter((s): s is number => typeof s === "number")
+    const avg =
+      scores.length > 0
+        ? Math.round((scores.reduce((a, b) => a + b, 0) / scores.length) * 10) / 10
+        : 0
+    setWasteScore5(avg || 0)
+  }
+
   /* -------- 삭제(점수 재계산) -------- */
   const removeImage = (id: string) => {
     setUploadedImages((prev) => {
       const next = prev.filter((it) => it.id !== id)
-      const remainScores = next.map((it) => it.ai?.score).filter((s): s is number => typeof s === "number")
-      setWasteScore5(remainScores.length ? Math.max(...remainScores) : 0)
+      recalcAverage(next)
       return next
     })
   }
@@ -147,7 +204,7 @@ export default function ReviewEditPage() {
 
       const res = await fetch(`/api/reviews/${reviewId}/analyze`, {
         method: "POST",
-        body: fd, // Content-Type 자동 설정
+        body: fd,
       })
       if (!res.ok) {
         const t = await res.text()
@@ -160,12 +217,13 @@ export default function ReviewEditPage() {
       const summary = String(json.data.summary ?? "")
       const analyzed_at = String(json.data.analyzed_at ?? new Date().toISOString())
 
-      setUploadedImages((prev) =>
-        prev.map((img) => (img.id === imageId ? { ...img, ai: { score: safeScore, summary, analyzed_at } } : img)),
-      )
-
-      // 종합 점수: 최고점 유지
-      setWasteScore5((prev) => Math.max(prev, safeScore))
+      setUploadedImages((prev) => {
+        const next = prev.map((img) =>
+          img.id === imageId ? { ...img, ai: { score: safeScore, summary, analyzed_at } } : img,
+        )
+        recalcAverage(next) // ★ 평균으로 즉시 갱신
+        return next
+      })
     } catch (e: any) {
       console.error(e)
       alert(e?.message || "AI 분석에 실패했어요. 다시 시도해주세요.")
@@ -174,22 +232,36 @@ export default function ReviewEditPage() {
     }
   }
 
-  /* -------- 저장/삭제 -------- */
+  /* -------- 저장: PUT /_be/reviews/{id}  { contents, score } -------- */
   const onSave = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!reviewId) return
     setSaving(true)
     try {
-      const res = await fetch(`/api/reviews/${reviewId}`, {
-        method: "PATCH",
+      const res = await fetch(`/_be/reviews/${reviewId}`, {
+        method: "PUT",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          comment: comment?.trim() ?? "",
-          waste_rating: wasteScore5,
+          contents: comment?.trim() ?? "",
+          // BE가 소수 허용(예: 1.7) → 한 자리로 보냄
+          score: Number(wasteScore5.toFixed(1)),
         }),
       })
-      const json = await res.json()
-      if (!json?.success) throw new Error(json?.error || "리뷰 수정 실패")
+
+      // 본문이 없을 수도 있으니 안전 파싱
+      let json: any = null
+      try {
+        json = await res.json()
+      } catch {
+        // ignore
+      }
+
+      if (!res.ok) {
+        const msg = json?.error || `리뷰 수정 실패 (${res.status})`
+        throw new Error(msg)
+      }
+
       alert("리뷰가 수정되었습니다.")
       router.replace("/profile")
       router.refresh()
@@ -201,13 +273,28 @@ export default function ReviewEditPage() {
     }
   }
 
+  /* -------- 삭제: DELETE /_be/reviews/{id} -------- */
   const onDelete = async () => {
     if (!reviewId || !confirm("이 리뷰를 삭제할까요?")) return
     setDeleting(true)
     try {
-      const res = await fetch(`/api/reviews/${reviewId}`, { method: "DELETE" })
-      const json = await res.json()
-      if (!json?.success) throw new Error(json?.error || "리뷰 삭제 실패")
+      const res = await fetch(`/_be/reviews/${reviewId}`, {
+        method: "DELETE",
+        credentials: "include",
+      })
+
+      let json: any = null
+      try {
+        json = await res.json()
+      } catch {
+        // ignore
+      }
+
+      if (!res.ok) {
+        const msg = json?.error || `리뷰 삭제 실패 (${res.status})`
+        throw new Error(msg)
+      }
+
       alert("리뷰가 삭제되었습니다.")
       router.replace("/profile")
       router.refresh()
@@ -252,7 +339,8 @@ export default function ReviewEditPage() {
     )
   }
 
-  const canSubmit = uploadedImages.length >= 1 && comment.trim().length > 0 && wasteScore5 > 0
+  // 저장 가능 조건: 코멘트 있고 별점 > 0
+  const canSubmit = comment.trim().length > 0 && wasteScore5 > 0
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-green-50 via-sky-50 to-emerald-50 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900">
@@ -285,6 +373,7 @@ export default function ReviewEditPage() {
           transition={{ duration: 0.6 }}
           className="space-y-6"
         >
+          {/* 상단 식당 카드 */}
           <motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.1 }}>
             <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-xl rounded-2xl">
               <CardContent className="p-6">
@@ -310,6 +399,7 @@ export default function ReviewEditPage() {
             </Card>
           </motion.div>
 
+          {/* 업로드 & AI 분석 */}
           <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.2 }}>
             <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-xl rounded-2xl">
               <CardHeader>
@@ -421,6 +511,7 @@ export default function ReviewEditPage() {
             </Card>
           </motion.div>
 
+          {/* AI 종합 점수 */}
           {wasteScore5 > 0 && (
             <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }}>
               <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-xl rounded-2xl">
@@ -441,9 +532,7 @@ export default function ReviewEditPage() {
                           {Array.from({ length: 5 }).map((_, i) => (
                             <Star
                               key={i}
-                              className={`h-6 w-6 ${
-                                i < Math.round(wasteScore5) ? "text-yellow-400 fill-yellow-400" : "text-gray-300"
-                              }`}
+                              className={`h-6 w-6 ${i < Math.round(wasteScore5) ? "text-yellow-400 fill-yellow-400" : "text-gray-300"}`}
                             />
                           ))}
                         </div>
@@ -459,6 +548,7 @@ export default function ReviewEditPage() {
             </motion.div>
           )}
 
+          {/* 코멘트 & 액션 */}
           <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4 }}>
             <form onSubmit={onSave}>
               <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-xl rounded-2xl">
@@ -519,7 +609,7 @@ export default function ReviewEditPage() {
                       className="flex items-center gap-2 text-sm text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 p-3 rounded-xl"
                     >
                       <AlertCircle className="h-4 w-4" />
-                      <span>사진 업로드, AI 분석, 코멘트를 완료하면 저장할 수 있어요.</span>
+                      <span>코멘트와 별점을 입력하면 저장할 수 있어요.</span>
                     </motion.div>
                   )}
                 </CardContent>

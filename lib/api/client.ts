@@ -134,25 +134,23 @@ class ApiClient {
   }
 
   /**
-   * ✅ 프로필 수정: PUT /api/auth/profile
-   *  - multipart(FormData) 지원
+   * ✅ 프로필 수정: POST /api/auth/profile (multipart)
+   *    - BE가 defaultImage를 JSON.parse로 처리하므로 문자열 "true"/"false" 필요
    */
- async updateProfile(data: {
-  name?: string;
-  nickname?: string;
-  profileImage?: File | null;
-  defaultImage?: boolean; // ← 추가
-}) {
-  const fd = new FormData()
-  if (data.name) fd.append("name", data.name)
-  if (data.nickname) fd.append("nickname", data.nickname)
-  // 🔴 항상 넣어주세요: BE가 JSON.parse로 파싱합니다
-  fd.append("defaultImage", String(!!data.defaultImage))
-  if (data.profileImage instanceof File) fd.append("profileImage", data.profileImage)
+  async updateProfile(data: {
+    name?: string
+    nickname?: string
+    profileImage?: File | null
+    defaultImage?: boolean
+  }) {
+    const fd = new FormData()
+    if (data.name) fd.append("name", data.name)
+    if (data.nickname) fd.append("nickname", data.nickname)
+    fd.append("defaultImage", String(!!data.defaultImage))
+    if (data.profileImage instanceof File) fd.append("profileImage", data.profileImage)
 
-  // 절대 Content-Type 수동 설정 금지 (FormData가 자동으로 multipart 설정)
-  return this.request("/auth/profile", { method: "POST", body: fd })
-}
+    return this.request("/auth/profile", { method: "POST", body: fd })
+  }
 
   // ───────────────── Restaurants
   async getRestaurants(params?: { search?: string }) {
@@ -186,6 +184,8 @@ class ApiClient {
   }
 
   async getRestaurantReviews(id: number) {
+    // BE 명세상 목록은 /reviews/restaurants/{id}/reviews 로 제공될 수 있음.
+    // 현재 FE는 /restaurants/{id}/reviews 엔드포인트 유지(라우터 프록시에서 매핑 가능).
     return this.request(`/restaurants/${id}/reviews`)
   }
 
@@ -229,15 +229,32 @@ class ApiClient {
   }
 
   // ───────────────── Reviews
-  async createReview(data: { restaurant_id: number; rating?: number; comment?: string; waste_rating?: number }) {
-    return this.request("/reviews", { method: "POST", body: JSON.stringify(data) })
+  /** ✅ 레스토랑 리뷰 생성 (명세 준수)
+   *    POST /reviews/restaurants/{restaurantId}/reviews
+   *    body: { contents: string, score: number }
+   */
+  async createReviewForRestaurant(
+    restaurantId: number,
+    payload: { contents: string; score: number }
+  ) {
+    return this.request(`/reviews/restaurants/${restaurantId}/reviews`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    })
   }
-  async updateReview(id: number, data: { rating?: number; comment?: string; waste_rating?: number }) {
+
+  /** ✅ 리뷰 수정 (명세 추정: contents/score) */
+  async updateReview(
+    id: number,
+    data: { contents?: string; score?: number }
+  ) {
     return this.request(`/reviews/${id}`, { method: "PUT", body: JSON.stringify(data) })
   }
+
   async deleteReview(id: number) {
     return this.request(`/reviews/${id}`, { method: "DELETE" })
   }
+
   async getUserReviews() {
     return this.request("/reviews/me")
   }
