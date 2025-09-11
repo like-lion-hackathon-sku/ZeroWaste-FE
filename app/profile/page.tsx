@@ -1,10 +1,9 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { motion } from "framer-motion"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Progress } from "@/components/ui/progress"
@@ -28,14 +27,23 @@ type RestaurantLite = {
 
 type FavoriteItem = {
   id?: number // favorite row id
-  restaurant_id: number // 실제 식당 id
-  restaurant?: RestaurantLite // 카드에서 사용하는 데이터
-  // ↓ 평평한 응답 대비용(옵션)
+  restaurant_id: number
+  restaurant?: RestaurantLite
+  // 평평한 응답 대비 키
   name?: string
   category?: string | null
   restaurantId?: number
   address?: string | null
   telephone?: string | null
+}
+
+/* ✅ 리뷰 화면 모델 (정규화 결과) */
+type ReviewVM = {
+  id: number | string
+  restaurant?: { id: number; name: string; category?: string | null }
+  waste_rating: number
+  comment: string
+  created_at?: string | null
 }
 
 /* ────────────────────────────────────────────────────────────
@@ -57,6 +65,9 @@ export default function ProfilePage() {
   // 즐겨찾기 삭제용 로컬 상태(낙관적 업데이트)
   const [favList, setFavList] = useState<FavoriteItem[]>([])
   const [removingId, setRemovingId] = useState<number | null>(null)
+
+  // ✅ 정규화된 리뷰 리스트 상태
+  const [reviewList, setReviewList] = useState<ReviewVM[]>([])
 
   /* ──────────────────────────────────────────────────────────
      응답 정규화: 중첩형/평평한 두 포맷 모두 지원 + address/telephone 포함
@@ -104,7 +115,7 @@ export default function ProfilePage() {
       description: "누적 리뷰 50개",
       category: "activity",
       earned: false,
-      progress: reviews?.length || 0,
+      progress: reviewList.length || 0,
       target: 50,
     },
     {
@@ -152,6 +163,77 @@ export default function ProfilePage() {
   const handleEditReview = (reviewId: number | string) => {
     router.push(`/review/edit/${reviewId}`)
   }
+
+  /* ✅ /reviews/me 응답 정규화 + 식당명 보강 */
+  useEffect(() => {
+    // 1) 배열 꺼내기 (훅이 items/success.items 형태일 가능성 고려)
+    const raw: any[] = Array.isArray(reviews)
+      ? reviews
+      : (reviews?.items ?? reviews?.success?.items ?? [])
+
+    // 2) 1차 매핑 (스웨거 키 → 화면 모델)
+    const base: ReviewVM[] = raw.map((r: any) => ({
+      id: r.id ?? r.reviewId,
+      restaurant: r.restaurant
+        ? { id: r.restaurant.id, name: r.restaurant.name, category: r.restaurant.category ?? null }
+        : (r.restaurantId ? { id: r.restaurantId, name: "식당 정보 없음" } : undefined),
+      waste_rating: Number(r.score ?? r.waste_rating ?? 0),
+      comment: String(r.contents ?? r.comment ?? ""),
+      created_at: r.createdAt ?? r.created_at ?? null,
+    }))
+
+    setReviewList(base)
+
+    // 3) 식당명/카테고리 비어있으면 상세 조회로 보강 (간단 캐시)
+    const needIds = Array.from(
+      new Set(
+        base
+          .filter(v => v.restaurant && (!v.restaurant.name || v.restaurant.name === "식당 정보 없음"))
+          .map(v => v.restaurant!.id)
+          .filter((id): id is number => Number.isFinite(id))
+      )
+    )
+    if (needIds.length === 0) return
+
+    const cache = new Map<number, { name: string; category?: string | null }>()
+    ;(async () => {
+      const patched = await Promise.all(
+        base.map(async (v) => {
+          if (!v.restaurant) return v
+          const rid = v.restaurant.id
+          if (v.restaurant.name && v.restaurant.name !== "식당 정보 없음") return v
+
+          if (cache.has(rid)) {
+            const c = cache.get(rid)!
+            return { ...v, restaurant: { id: rid, name: c.name, category: c.category ?? null } }
+          }
+
+          try {
+            const resp = await apiClient.getRestaurantDetail(rid)
+            if (resp.success) {
+              const d: any = resp.data
+              const name = d?.name ?? "식당 정보 없음"
+              const category = d?.category ?? null
+              cache.set(rid, { name, category })
+              return { ...v, restaurant: { id: rid, name, category } }
+            }
+          } catch {
+            /* ignore */
+          }
+          return v
+        })
+      )
+      setReviewList(patched)
+    })()
+  }, [reviews])
+
+  /* ✅ 평균 별점 계산 (리뷰 없으면 0) */
+  const totalReviews = reviewList.length
+  const avgRating = useMemo(() => {
+    if (totalReviews === 0) return 0
+    const sum = reviewList.reduce((acc, r) => acc + (Number(r.waste_rating) || 0), 0)
+    return Math.max(0, Math.min(5, Math.round((sum / totalReviews) * 10) / 10))
+  }, [totalReviews, reviewList])
 
   if (isLoading) {
     return (
@@ -265,28 +347,44 @@ export default function ProfilePage() {
                 transition={{ delay: 0.7 }}
                 className="grid grid-cols-2 md:grid-cols-4 gap-4"
               >
+                {/* 총 리뷰 */}
                 <motion.div
                   whileHover={{ scale: 1.05 }}
                   className="text-center p-4 bg-gradient-to-br from-green-500/10 to-emerald-500/10 backdrop-blur-sm rounded-2xl border border-green-200/30"
                 >
-                  <div className="text-2xl font-bold text-green-600 mb-1">{reviews?.length || 0}</div>
+                  <div className="text-2xl font-bold text-green-600 mb-1">{totalReviews}</div>
                   <div className="text-sm text-gray-600 dark:text-gray-300">총 리뷰</div>
                 </motion.div>
+
+                {/* 잔반 별점 (평균) — 리뷰 없으면 안내문 */}
                 <motion.div
                   whileHover={{ scale: 1.05 }}
                   className="text-center p-4 bg-gradient-to-br from-sky-500/10 to-blue-500/10 backdrop-blur-sm rounded-2xl border border-sky-200/30"
                 >
-                  <div className="flex items-center justify-center gap-1 mb-1">
-                    {Array.from({ length: 5 }).map((_, i) => (
-                      <Star
-                        key={i}
-                        className={`h-4 w-4 ${i < Math.round(4.6) ? "fill-current text-green-500" : "text-gray-300"}`}
-                      />
-                    ))}
-                  </div>
-                  <div className="text-xs text-green-600 font-medium mb-1">4.6</div>
-                  <div className="text-sm text-gray-600 dark:text-gray-300">잔반 별점</div>
+                  {totalReviews > 0 ? (
+                    <>
+                      <div className="flex items-center justify-center gap-1 mb-1">
+                        {Array.from({ length: 5 }).map((_, i) => (
+                          <Star
+                            key={i}
+                            className={`h-4 w-4 ${
+                              i < Math.round(avgRating) ? "fill-current text-green-500" : "text-gray-300"
+                            }`}
+                          />
+                        ))}
+                      </div>
+                      <div className="text-xs text-green-600 font-medium mb-1">{avgRating.toFixed(1)}</div>
+                      <div className="text-sm text-gray-600 dark:text-gray-300">잔반 별점</div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="text-sm text-gray-600 dark:text-gray-300 mb-1">리뷰 없음</div>
+                      <div className="text-xs text-gray-500">리뷰를 작성해보세요</div>
+                    </>
+                  )}
                 </motion.div>
+
+                {/* 즐겨찾기 수 */}
                 <motion.div
                   whileHover={{ scale: 1.05 }}
                   className="text-center p-4 bg-gradient-to-br from-red-500/10 to-pink-500/10 backdrop-blur-sm rounded-2xl border border-red-200/30"
@@ -294,6 +392,8 @@ export default function ProfilePage() {
                   <div className="text-2xl font-bold text-red-500 mb-1">{favList.length}</div>
                   <div className="text-sm text-gray-600 dark:text-gray-300">즐겨찾기</div>
                 </motion.div>
+
+                {/* 획득 뱃지 수 */}
                 <motion.div
                   whileHover={{ scale: 1.05 }}
                   className="text-center p-4 bg-gradient-to-br from-orange-500/10 to-yellow-500/10 backdrop-blur-sm rounded-2xl border border-orange-200/30"
@@ -329,19 +429,20 @@ export default function ProfilePage() {
               </TabsTrigger>
             </TabsList>
 
+            {/* 리뷰 탭 */}
             <TabsContent value="reviews" className="mt-6">
               <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }}>
                 <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-xl">
                   <CardHeader>
                     <CardTitle className="flex items-center gap-2">
                       <Star className="h-5 w-5 text-green-500" />
-                      작성한 리뷰 ({reviews?.length || 0})
+                      작성한 리뷰 ({reviewList.length})
                     </CardTitle>
                   </CardHeader>
                   <CardContent>
                     <div className="space-y-6">
-                      {reviews && reviews.length > 0 ? (
-                        reviews.map((review: any, index: number) => (
+                      {reviewList.length > 0 ? (
+                        reviewList.map((review: ReviewVM, index: number) => (
                           <motion.div
                             key={review.id}
                             initial={{ opacity: 0, y: 20 }}
@@ -349,7 +450,6 @@ export default function ProfilePage() {
                             transition={{ delay: 0.1 * index }}
                             className="backdrop-blur-sm bg-white/50 dark:bg-gray-800/50 border border-white/20 rounded-2xl p-4 hover:shadow-lg transition-all duration-300"
                           >
-                            {/* ... existing review content ... */}
                             <div className="flex items-start justify-between mb-3">
                               <div>
                                 <h3 className="font-semibold text-gray-900 dark:text-white mb-1">
@@ -367,7 +467,7 @@ export default function ProfilePage() {
                                         }`}
                                       />
                                     ))}
-                                    <span>{review.waste_rating?.toFixed(1) || "0.0"}</span>
+                                    <span>{review.waste_rating.toFixed(1)}</span>
                                   </div>
                                   <span>{review.restaurant?.category || "카테고리 없음"}</span>
                                 </div>
@@ -390,19 +490,6 @@ export default function ProfilePage() {
                                 수정
                               </Button>
                             </div>
-
-                            {review.photos && review.photos.length > 0 && (
-                              <div className="flex gap-2 mt-3">
-                                {review.photos.map((photo: any, index: number) => (
-                                  <img
-                                    key={index}
-                                    src={`/ceholder-svg-key-review.png?key=review${photo.id}`}
-                                    alt={`리뷰 사진 ${index + 1}`}
-                                    className="w-16 h-16 object-cover rounded-xl"
-                                  />
-                                ))}
-                              </div>
-                            )}
                           </motion.div>
                         ))
                       ) : (
@@ -422,7 +509,7 @@ export default function ProfilePage() {
               </motion.div>
             </TabsContent>
 
-            {/* Enhanced favorites tab with animations */}
+            {/* 즐겨찾기 탭 */}
             <TabsContent value="favorites" className="mt-6">
               <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }}>
                 <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-xl">
@@ -488,7 +575,7 @@ export default function ProfilePage() {
               </motion.div>
             </TabsContent>
 
-            {/* Enhanced badges tab with animations */}
+            {/* 뱃지 탭 */}
             <TabsContent value="badges" className="mt-6">
               <motion.div
                 initial={{ opacity: 0, y: 20 }}
@@ -496,7 +583,6 @@ export default function ProfilePage() {
                 transition={{ delay: 0.3 }}
                 className="space-y-6"
               >
-                {/* ... existing badges content with enhanced styling ... */}
                 <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-xl">
                   <CardHeader>
                     <CardTitle className="flex items-center gap-2">
@@ -504,46 +590,9 @@ export default function ProfilePage() {
                       획득한 뱃지 ({earnedBadges.length})
                     </CardTitle>
                   </CardHeader>
-                  <CardContent>
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                      {earnedBadges.length > 0 ? (
-                        earnedBadges.map((acquiredBadge: any, index: number) => (
-                          <motion.div
-                            key={acquiredBadge.id}
-                            initial={{ opacity: 0, scale: 0.9 }}
-                            animate={{ opacity: 1, scale: 1 }}
-                            transition={{ delay: 0.1 * index }}
-                            whileHover={{ scale: 1.05 }}
-                            className="p-4 bg-gradient-to-br from-orange-500/10 to-yellow-500/10 backdrop-blur-sm border border-orange-200/30 rounded-2xl text-center"
-                          >
-                            <div className="text-3xl mb-2">🏆</div>
-                            <h3 className="font-semibold text-gray-900 dark:text-white mb-1">
-                              {acquiredBadge.badge?.name}
-                            </h3>
-                            <p className="text-sm text-gray-600 dark:text-gray-300 mb-2">
-                              {acquiredBadge.badge?.description}
-                            </p>
-                            <Badge variant="secondary" className="bg-orange-100 text-orange-700">
-                              {formatDate(acquiredBadge.acquired_at)}
-                            </Badge>
-                          </motion.div>
-                        ))
-                      ) : (
-                        <motion.div
-                          initial={{ opacity: 0, scale: 0.9 }}
-                          animate={{ opacity: 1, scale: 1 }}
-                          className="col-span-full text-center text-gray-500 py-12"
-                        >
-                          <Award className="h-16 w-16 mx-auto mb-4 opacity-30" />
-                          <h3 className="text-lg font-medium mb-2">획득한 뱃지가 없습니다</h3>
-                          <p>활동을 통해 뱃지를 획득해보세요</p>
-                        </motion.div>
-                      )}
-                    </div>
-                  </CardContent>
+                  <CardContent>{/* 필요 시 상세 UI 추가 */}</CardContent>
                 </Card>
 
-                {/* ... existing in-progress badges with enhanced styling ... */}
                 <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-xl">
                   <CardHeader>
                     <CardTitle className="flex items-center gap-2">
