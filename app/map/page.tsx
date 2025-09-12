@@ -1,3 +1,4 @@
+// app/map/page.tsx
 "use client"
 
 import { useEffect, useMemo, useRef, useState } from "react"
@@ -13,6 +14,7 @@ import { Leaf, LogOut, Star, Heart, MapPin, Loader2, LocateFixed, User, Search }
 import { useRestaurants } from "@/lib/hooks/use-api-with-fallback"
 import { apiClient } from "@/lib/api/client"
 import { calculateWasteStarRating } from "@/lib/utils/database-helpers"
+import { CATEGORY_IMAGE } from "@/lib/category-images"
 
 declare global {
   interface Window {
@@ -20,6 +22,52 @@ declare global {
   }
 }
 
+/* ───────────────── 카테고리 → 기본 이미지 매핑 유틸 ───────────────── */
+const normalizeImage = (v: any): string | null => {
+  if (typeof v !== "string") return null
+  const s = v.trim()
+  if (!s) return null
+  if (s.startsWith("http://") || s.startsWith("https://") || s.startsWith("/")) return s
+  return null
+}
+
+const CATEGORY_SYNONYM: Record<string, string[]> = {
+  한식: ["한식", "백반", "분식", "국밥", "족발", "보쌈", "삼겹", "비빔밥", "갈비", "냉면", "곰탕", "칼국수"],
+  중식: ["중식", "짬뽕", "짜장", "탕수육", "중화요리"],
+  일식: ["일식", "스시", "초밥", "라멘", "라면", "돈카츠", "돈까스", "우동", "덮밥"],
+  양식: ["양식", "파스타", "스테이크", "피자", "리조또", "브런치", "이탈리안", "western"],
+  카페: ["카페", "coffee", "coffeeshop", "tearoom"],
+  패스트푸드: ["패스트푸드", "버거", "치킨", "피자", "샌드위치", "패스트", "fastfood"],
+  기타: ["기타", "pub", "bar", "술집", "호프", "포차"],
+}
+
+function getCategoryKey(
+  raw?: string | null,
+  name?: string | null,
+): keyof typeof CATEGORY_IMAGE {
+  const text = `${raw ?? ""} ${name ?? ""}`
+    .toLowerCase()
+    .replace(/[>]/g, " ")
+    .replace(/,/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+
+  const order: (keyof typeof CATEGORY_IMAGE)[] = ["한식", "중식", "일식", "양식", "카페", "패스트푸드", "기타"]
+  for (const key of order) {
+    const words = CATEGORY_SYNONYM[key]
+    if (words.some((w) => text.includes(w))) return key
+  }
+  return "기타"
+}
+function getImageForRestaurant(category?: string | null, name?: string | null) {
+  const key = getCategoryKey(category, name)
+  return CATEGORY_IMAGE[key] || CATEGORY_IMAGE["기타"]
+}
+const pickImage = (rawImg?: string | null, category?: string | null, name?: string | null) => {
+  return normalizeImage(rawImg) ?? getImageForRestaurant(category, name)
+}
+
+/* ───────────────── 타입/상수 ───────────────── */
 type RestaurantItem = {
   id?: number
   restaurantId?: number
@@ -36,12 +84,13 @@ type RestaurantItem = {
   waste_score?: number | null
   score?: number | null
   ecoScore?: number | null
-  mapx?: number | null
-  mapy?: number | null
+  mapx?: number | null // lng
+  mapy?: number | null // lat
 }
 
 const SIDEBAR_WIDTH_PX = 400
 
+/* ───────────────── 메인 컴포넌트 ───────────────── */
 export default function MapWithListPage() {
   const router = useRouter()
 
@@ -258,7 +307,7 @@ export default function MapWithListPage() {
           id,
           restaurantId: r.restaurantId,
           name: r.name,
-          image: r.image ?? null,
+          image: pickImage(r.image, r.category, r.name), // ★ 서버 이미지가 없거나 비정상이면 기본 이미지
           category: r.category ?? null,
           badge: r.badge ?? null,
           address: r.address ?? null,
@@ -297,6 +346,7 @@ export default function MapWithListPage() {
         return {
           ...r,
           id,
+          image: pickImage(r.image, r.category, r.name), // ★ 초기 목록에도 동일 규칙 적용
           wasteScore: waste,
           mapx: lng,
           mapy: lat,
@@ -509,7 +559,7 @@ export default function MapWithListPage() {
                 variant="ghost"
                 size="sm"
                 onClick={() => router.push("/profile")}
-                className="h-10 px-4 rounded-xl bg-white/50 dark:bg-slate-800/50 hover:bg-white/80 dark:hover:bg-slate-700/80 shadow-lg"
+                className="h-10 px-4 rounded-xl bg-white/50 dark:bg-slate-800/50 hover:bg:white/80 dark:hover:bg-slate-700/80 shadow-lg"
                 title="프로필"
               >
                 <User className="h-4 w-4 mr-2" />
@@ -522,7 +572,7 @@ export default function MapWithListPage() {
               variant="ghost"
               size="sm"
               onClick={handleLogout}
-              className="h-10 px-4 rounded-xl bg-white/50 dark:bg-slate-800/50 hover:bg-red-50 dark:hover:bg-red-900/20 shadow-lg"
+              className="h-10 px-4 rounded-xl bg:white/50 dark:bg-slate-800/50 hover:bg-red-50 dark:hover:bg-red-900/20 shadow-lg"
             >
               <LogOut className="h-4 w-4 mr-2" />
               <span className="hidden md:inline">로그아웃</span>
@@ -581,6 +631,8 @@ export default function MapWithListPage() {
                         <img
                           src={r.image || "/placeholder.svg"}
                           alt={r.name}
+                          loading="lazy"
+                          sizes="80px"
                           className="w-20 h-20 object-cover transition-transform duration-300 group-hover:scale-110"
                         />
                       </div>
@@ -734,11 +786,7 @@ export default function MapWithListPage() {
           ) : topRestaurants.length ? (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
               {topRestaurants.map((restaurant, index) => (
-                <motion.div
-                  key={`top-${restaurant.name}-${index}`}
-                  initial={{ opacity: 0, y: 12 }}
-                  animate={{ opacity: 1, y: 0 }}
-                >
+                <motion.div key={`top-${restaurant.name}-${index}`} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
                   <Card
                     className="cursor-pointer bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm hover:bg-white/90 dark:hover:bg-slate-800/90 border-white/20 dark:border-slate-700/50 shadow-lg transition-all duration-200 rounded-2xl group"
                     onClick={() => restaurant.id && goDetail(restaurant.id, restaurant.favorited)}
@@ -758,6 +806,8 @@ export default function MapWithListPage() {
                           <img
                             src={restaurant.image || "/placeholder.svg"}
                             alt={restaurant.name}
+                            loading="lazy"
+                            sizes="56px"
                             className="w-14 h-14 object-cover transition-transform duration-300 group-hover:scale-110"
                           />
                         </div>
@@ -766,10 +816,7 @@ export default function MapWithListPage() {
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2 mb-1.5 min-w-0">
                             {/* 이름: 두 줄, 단어깨짐 방지, 툴팁 */}
-                            <h4
-                              className="flex-1 min-w-0 font-semibold text-foreground text-[15px] leading-snug break-keep line-clamp-2"
-                              title={restaurant.name}
-                            >
+                            <h4 className="flex-1 min-w-0 font-semibold text-foreground text-[15px] leading-snug break-keep line-clamp-2" title={restaurant.name}>
                               {restaurant.name}
                             </h4>
 
@@ -800,9 +847,7 @@ export default function MapWithListPage() {
                                 {calculateWasteStarRating(restaurant.wasteScore ?? 80)}
                               </span>
                             </div>
-                            {restaurant.distance && (
-                              <span className="text-xs opacity-75">{restaurant.distance}</span>
-                            )}
+                            {restaurant.distance && <span className="text-xs opacity-75">{restaurant.distance}</span>}
                           </div>
                         </div>
                       </div>
