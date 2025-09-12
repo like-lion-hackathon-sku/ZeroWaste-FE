@@ -1,3 +1,6 @@
+// app/review/write/page.tsx (or 해당 경로)
+// 최종본
+
 "use client"
 
 import type React from "react"
@@ -26,12 +29,13 @@ type RestaurantInfo = { id: number; name: string; category?: string | null }
 
 interface UploadedImage {
   id: string
-  file: File
-  preview: string
+  fileName: string
+  url: string        // 미리보기용(프록시 URL)
+  preview: string    // = url
   type: "before" | "after"
   aiAnalysis?: {
-    score: number // 0~5 (별점)
-    summary: string // 한줄 요약
+    score: number // 0~5
+    summary: string
   }
 }
 
@@ -50,10 +54,9 @@ export default function WriteReviewPage() {
   const [isAnalyzing, setIsAnalyzing] = useState(false)
   const [reviewData, setReviewData] = useState({ comment: "", score: 0 }) // 평균 별점(0~5)
 
-  // 제출 중/오류 상태
   const [submitting, setSubmitting] = useState(false)
-  const [conflict409, setConflict409] = useState<string | null>(null) // 409 배너 메시지
-  const [submitError, setSubmitError] = useState<string | null>(null) // 기타 오류
+  const [conflict409, setConflict409] = useState<string | null>(null)
+  const [submitError, setSubmitError] = useState<string | null>(null)
 
   /* ---------- 식당 상세 불러오기 ---------- */
   useEffect(() => {
@@ -83,63 +86,72 @@ export default function WriteReviewPage() {
         if (!ignore) setLoadingRestaurant(false)
       }
     })()
-    return () => {
-      ignore = true
-    }
+    return () => { ignore = true }
   }, [restaurantId])
 
-  /* ---------- 업로드 ---------- */
-  const handleImageUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+  /* ---------- 업로드 (POST /images/review/upload) ---------- */
+  const handleImageUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files
     if (!files) return
 
-    Array.from(files).forEach((file) => {
-      if (!file.type.startsWith("image/")) return
-      const reader = new FileReader()
-      reader.onload = (e) => {
+    for (const file of Array.from(files)) {
+      try {
+        if (!file.type.startsWith("image/")) continue
+
+        const up = await apiClient.uploadImage("review", file)
+        if (!up.success) throw new Error(up.error || "이미지 업로드 실패")
+
+        const { fileName } = up.data!
+        // ✅ 항상 프록시 URL로 고정해 FE 404 방지
+        const previewUrl = apiClient.getImageUrl("review", fileName)
+
         const newImage: UploadedImage = {
           id: Date.now().toString() + Math.random().toString(36).slice(2, 11),
-          file,
-          preview: (e.target?.result as string) || "",
-          type: uploadedImages.length % 2 === 0 ? "before" : "after",
+          fileName,
+          url: previewUrl,
+          preview: previewUrl,
+          type: (uploadedImages.length % 2 === 0 ? "before" : "after") as const,
         }
         setUploadedImages((prev) => [...prev, newImage])
+      } catch (e: any) {
+        console.error(e)
+        alert(e?.message || "이미지 업로드 중 오류가 발생했어요.")
       }
-      reader.readAsDataURL(file)
-    })
+    }
+
+    // 같은 파일 다시 선택 가능하도록 리셋
+    try { event.target.value = "" } catch {}
   }
 
-  /* ---------- AI 분석 호출 (실 API: /api/reviews/0/analyze) ---------- */
+  /* ---------- AI 분석 (POST /images/review/{fileName}/analyze) ---------- */
   const analyzeImage = async (imageId: string) => {
     const target = uploadedImages.find((img) => img.id === imageId)
-    if (!target?.file) return alert("이미지 파일을 찾을 수 없어요.")
+    if (!target?.fileName) return alert("업로드된 이미지 정보를 찾을 수 없어요.")
 
     try {
       setIsAnalyzing(true)
 
-      const fd = new FormData()
-      fd.append("file", target.file, target.file.name)
+      const res = await apiClient.analyzeImage("review", target.fileName)
+      if (!res.success) throw new Error(res.error || "AI 분석 실패")
 
-      const res = await fetch(`/api/reviews/0/analyze`, { method: "POST", body: fd })
-      if (!res.ok) {
-        const text = await res.text()
-        throw new Error(`API ${res.status}: ${text.slice(0, 200)}`)
-      }
-      const json = await res.json()
+      // oneOf 대응 안전 파싱
+      const payload: any = res.data
+      const scoreNum = Number(payload?.score ?? payload?.data?.score ?? 0)
+      const summaryStr = String(payload?.summary ?? payload?.data?.summary ?? "")
 
-      const score = Math.max(0, Math.min(5, Number(json.data?.score ?? 0)))
-      const summary = String(json.data?.summary ?? "")
+      const score = Math.max(0, Math.min(5, Number.isFinite(scoreNum) ? scoreNum : 0))
+      const summary = summaryStr
 
       const next = uploadedImages.map((img) =>
         img.id === imageId ? { ...img, aiAnalysis: { score, summary } } : img
       )
       setUploadedImages(next)
 
+      // 평균 재계산
       const analyzed = next.filter((x) => x.aiAnalysis?.score != null)
-      const avg =
-        analyzed.length > 0
-          ? analyzed.reduce((acc, cur) => acc + (cur.aiAnalysis?.score ?? 0), 0) / analyzed.length
-          : 0
+      const avg = analyzed.length
+        ? analyzed.reduce((acc, cur) => acc + (cur.aiAnalysis?.score ?? 0), 0) / analyzed.length
+        : 0
       setReviewData((prev) => ({ ...prev, score: Math.round(avg * 10) / 10 }))
     } catch (e: any) {
       console.error(e)
@@ -154,14 +166,13 @@ export default function WriteReviewPage() {
     setUploadedImages(next)
 
     const analyzed = next.filter((x) => x.aiAnalysis?.score != null)
-    const avg =
-      analyzed.length > 0
-        ? analyzed.reduce((acc, cur) => acc + (cur.aiAnalysis?.score ?? 0), 0) / analyzed.length
-        : 0
+    const avg = analyzed.length
+      ? analyzed.reduce((acc, cur) => acc + (cur.aiAnalysis?.score ?? 0), 0) / analyzed.length
+      : 0
     setReviewData((prev) => ({ ...prev, score: Math.round(avg * 10) / 10 }))
   }
 
-  /* ---------- 제출 (실 BE 연동) ---------- */
+  /* ---------- 리뷰 제출 ---------- */
   const handleSubmitReview = async () => {
     if (!Number.isFinite(restaurantId)) return alert("잘못된 식당 ID 입니다.")
     if (submitting) return
@@ -171,7 +182,6 @@ export default function WriteReviewPage() {
     try {
       setSubmitting(true)
 
-      // ⭐ 스웨거 명세 준수: POST /reviews/restaurants/{id}/reviews  { contents, score }
       const resp = await apiClient.createReviewForRestaurant(restaurantId, {
         contents: reviewData.comment.trim(),
         score: Number(reviewData.score),
@@ -180,28 +190,20 @@ export default function WriteReviewPage() {
       if (!resp.success) {
         const err = String(resp.error || "")
 
-        // 401: 로그인 필요
         if (err.includes("401")) {
           alert("로그인이 필요해요. 로그인 페이지로 이동합니다.")
           router.push("/login")
           return
         }
-
-        // 409: 이미 작성한 리뷰가 존재
         if (err.includes("409") || err.includes("이미 작성한 리뷰가 존재")) {
           setConflict409("이미 작성한 리뷰가 존재합니다. 기존 리뷰를 수정하거나 삭제 후 다시 시도해주세요.")
-          // 배너가 보이도록 상단으로 스크롤
-          try {
-            window.scrollTo({ top: 0, behavior: "smooth" })
-          } catch {}
+          try { window.scrollTo({ top: 0, behavior: "smooth" }) } catch {}
           return
         }
 
-        // 기타 오류
         throw new Error(err || "리뷰 생성에 실패했어요.")
       }
 
-      // 성공 시 이동
       router.push(`/review/success?restaurantId=${restaurantId}`)
     } catch (e: any) {
       console.error(e)
@@ -219,7 +221,7 @@ export default function WriteReviewPage() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-green-50 via-sky-50 to-emerald-50 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900">
-      {/* ── 상단 에러 배너 (409 전용) ───────────────────────── */}
+      {/* ── 409 배너 ───────────────────────── */}
       {conflict409 && (
         <div className="sticky top-0 z-20">
           <div className="mx-auto max-w-3xl p-3">
@@ -228,7 +230,6 @@ export default function WriteReviewPage() {
               <div className="text-sm text-yellow-800 dark:text-yellow-100">
                 <p className="font-semibold">이미 작성한 리뷰가 존재함</p>
                 <p className="mt-0.5">{conflict409}</p>
-                {/* 필요 시 기존 리뷰로 이동 경로가 있다면 여기에 버튼 추가 */}
               </div>
             </div>
           </div>
@@ -436,7 +437,6 @@ export default function WriteReviewPage() {
                 <p className="text-sm text-gray-600 dark:text-gray-300">식사 경험을 자세히 알려주세요</p>
               </CardHeader>
               <CardContent className="space-y-4">
-                {/* 제출 오류(기타) 경고 */}
                 {submitError && (
                   <div className="flex items-start gap-2 rounded-xl border border-red-300/60 bg-red-50/70 dark:bg-red-900/30 px-3 py-2">
                     <AlertCircle className="h-4 w-4 mt-0.5 text-red-600 dark:text-red-300" />

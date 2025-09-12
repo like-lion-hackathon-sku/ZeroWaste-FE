@@ -1,4 +1,3 @@
-// app/map/page.tsx
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -105,9 +104,7 @@ const clamp05 = (v: any): number => {
 
 /** 서버 원시 점수(ecoScore 등) → 화면 표시용 0~5 점수 */
 const toDisplay5 = (raw: any): number => {
-  // 상세 페이지와 동일하게 헬퍼 사용
   const val = Number(raw) || 0;
-  // calculateWasteStarRating가 반환하는 값을 다시 0~5로 안전하게 클램프
   return clamp05(calculateWasteStarRating(val));
 };
 
@@ -296,7 +293,6 @@ export default function MapWithListPage() {
 
   // 상세/리뷰 평균으로 리스트 점수 보강 → displayScore(0~5)로 저장
   const enrichWithDbScores = async (items: RestaurantItem[]): Promise<RestaurantItem[]> => {
-    // nearby 응답의 id/restaurantId/restaurant_id 등을 모두 커버
     const toId = (it: any) =>
       Number(
         it.restaurantId ??
@@ -334,7 +330,7 @@ export default function MapWithListPage() {
       }
     });
 
-    // 2차: 없는 것만 리뷰 평균(이미 0~5 스케일)으로 보강
+    // 2차: 없는 것만 리뷰 평균으로 보강
     const missing = targets.filter(({ id }) => !idToDisplay5.has(id));
     if (missing.length) {
       const reviewResults = await Promise.allSettled(
@@ -419,11 +415,9 @@ export default function MapWithListPage() {
         const isFavByServer = !!r.favorited;
         const isFavByMe = idNum != null && favoriteIds.has(Number(idNum));
 
-        // 원시 점수와 표시 점수 분리
         const rawScore =
           r.wasteScore ?? r.waste_score ?? r.score ?? r.ecoScore ?? null;
 
-        // 화면 표시용 0~5
         const displayScore =
           rawScore != null ? toDisplay5(rawScore) : null;
 
@@ -432,15 +426,15 @@ export default function MapWithListPage() {
           restaurantId: idNum,
           name: r.name,
           image: pickImage(r.image, r.category, r.name),
-          category: r.category ?? null,
+          category: r.category ?? null, // ← 여기의 문자열을 상세로 넘길 거예요
           badge: r.badge ?? null,
           address: r.address ?? null,
           telephone: r.telephone ?? null,
           description: r.address ?? r.description ?? null,
           distance: r.distance ?? null,
           favorited: isFavByServer || isFavByMe,
-          wasteScore: Number(rawScore) || null, // 원본 보관
-          displayScore, // 표시 점수(0~5)
+          wasteScore: Number(rawScore) || null,
+          displayScore,
           mapx: fixCoord(r.lng ?? r.mapx),
           mapy: fixCoord(r.lat ?? r.mapy),
         };
@@ -449,7 +443,6 @@ export default function MapWithListPage() {
       let filtered = filterInBounds(mapped);
       if (filtered.length === 0) filtered = mapped;
 
-      // ★ 상세/리뷰로 표시 점수 보강
       const enriched = await enrichWithDbScores(filtered);
 
       setMapRestaurants(enriched);
@@ -481,7 +474,6 @@ export default function MapWithListPage() {
         const lat = fixCoord(r.lat ?? r.mapy);
         const fav = r.favorited || (idNum != null && favoriteIds.has(Number(idNum)));
 
-        // 표시 점수 우선순위: displayScore(보강값) → rawScore 변환
         const displayScore =
           r.displayScore != null
             ? clamp05(r.displayScore)
@@ -506,13 +498,15 @@ export default function MapWithListPage() {
   const topRestaurants = useMemo(() => restaurants.slice(0, 5), [restaurants]);
 
   /* ────────────── 내비/지도 유틸 ────────────── */
-  const goDetail = (restaurantId?: number, favorited?: boolean) => {
+  // ★ cat 함께 전달하도록 수정
+  const goDetail = (restaurantId?: number, favorited?: boolean, catRaw?: string | null) => {
     if (!restaurantId) {
       alert("식당 상세를 보려면 먼저 즐겨찾기 추가(멱등 확보) 후 가능합니다.");
       return;
     }
     const fav = favorited ? "1" : "0";
-    router.push(`/restaurant/${restaurantId}?fav=${fav}`);
+    const cat = catRaw ? `&cat=${encodeURIComponent(catRaw)}` : "";
+    router.push(`/restaurant/${restaurantId}?fav=${fav}${cat}`);
   };
 
   const flyTo = (lat: number, lng: number) => {
@@ -608,7 +602,7 @@ export default function MapWithListPage() {
           title: r.name,
         });
         window.naver.maps.Event.addListener(marker, "click", () =>
-          r.id ? goDetail(r.id, r.favorited) : undefined
+          r.id ? goDetail(r.id, r.favorited, r.category ?? null) : undefined // ★ cat 전달
         );
         markersRef.current.push(marker);
       }
@@ -673,12 +667,12 @@ export default function MapWithListPage() {
         </motion.div>
 
         {/* 검색바 */}
-        <div className="hidden sm:block absolute top-1/2 -translate-y-1/2 left-[380px] right-48 z-0 pointer-events-none">
-          <motion.div
-            className="flex items-center gap-3 pointer-events-auto"
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-          >
+<div className="hidden sm:block absolute top-1/2 -translate-y-1/2 left-[400px] right-48 z-0 pointer-events-none">
+  <motion.div
+    className="flex items-center gap-3 pointer-events-auto"
+    initial={{ opacity: 0, scale: 0.95 }}
+    animate={{ opacity: 1, scale: 1 }}
+  >
             <div className="relative flex-1 max-w-[420px]">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
               <input
@@ -774,7 +768,7 @@ export default function MapWithListPage() {
                 >
                   <Card
                     className="relative p-5 cursor-pointer bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm hover:bg-white/90 dark:hover:bg-slate-800/90 border-white/20 dark:border-slate-700/50 shadow-lg transition-all duration-200 rounded-2xl group"
-                    onClick={() => r.id && goDetail(r.id, r.favorited)}
+                    onClick={() => r.id && goDetail(r.id, r.favorited, r.category ?? null)} // ★ cat 전달
                   >
                     <div className="flex items-start gap-4">
                       {/* 썸네일 */}
@@ -949,7 +943,8 @@ export default function MapWithListPage() {
                     <Card
                       className="cursor-pointer bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm hover:bg-white/90 dark:hover:bg-slate-800/90 border-white/20 dark:border-slate-700/50 shadow-lg transition-all duration-200 rounded-2xl group"
                       onClick={() =>
-                        restaurant.id && goDetail(restaurant.id, restaurant.favorited)
+                        restaurant.id &&
+                        goDetail(restaurant.id, restaurant.favorited, restaurant.category ?? null) // ★ cat 전달
                       }
                     >
                       <CardContent className="p-4">
@@ -991,7 +986,6 @@ export default function MapWithListPage() {
                               </Badge>
                             </div>
 
-                            {/* 평점/거리 */}
                             <div className="flex items-center gap-3 text-sm text-muted-foreground">
                               <div className="flex items-center gap-1">
                                 {[...Array(5)].map((_, i) => (

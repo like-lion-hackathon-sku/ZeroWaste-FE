@@ -1,4 +1,3 @@
-// app/restaurant/[id]/page.tsx
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
@@ -30,11 +29,9 @@ import {
 
 import { apiClient } from "@/lib/api/client"
 import { calculateWasteStarRating } from "@/lib/utils/database-helpers"
-
-// 목업(있으면 merge용)
 import { mockRestaurants } from "@/lib/mock/restaurant-presets"
 
-/* ───────────────── 별점(부분 채움) 컴포넌트 ───────────────── */
+/* ───────────────── 별점(부분 채움) ───────────────── */
 function StarRating({
   value,
   outOf = 5,
@@ -52,12 +49,10 @@ function StarRating({
   return (
     <div className="flex items-center" aria-label={`${v} / ${outOf}`}>
       {Array.from({ length: outOf }).map((_, i) => {
-        const fill = Math.min(Math.max(v - i, 0), 1) // 0~1
+        const fill = Math.min(Math.max(v - i, 0), 1)
         return (
           <div key={i} className="relative" style={{ width: size, height: size }} aria-hidden>
-            {/* 빈 별 */}
             <Star width={size} height={size} className={emptyClass} />
-            {/* 채워진 별 (fill%만큼) */}
             <div className="absolute inset-0 overflow-hidden" style={{ width: `${fill * 100}%` }}>
               <Star width={size} height={size} className={`${colorClass} fill-current`} />
             </div>
@@ -85,6 +80,7 @@ type UIRestaurant = {
   badge?: string | null
   wasteScore?: number | null
   totalReviews?: number | null
+  /** 지도와 동일한 형식: 예) 카페,디저트>베이커리 */
   category?: string | null
   distance?: string | null
   address?: string | null
@@ -98,7 +94,71 @@ type UIRestaurant = {
   infoSections?: { title: string; body: string }[]
 }
 
-/* ───────────────── BE Review → UI 정규화 ───────────────── */
+/* ───────────────── 카테고리 라벨 정규화 ───────────────── */
+function firstNonEmpty(...vals: any[]) {
+  for (const v of vals) {
+    if (Array.isArray(v) && v.length) return v
+    if (typeof v === "string" && v.trim()) return v.trim()
+  }
+  return null
+}
+
+/** 다양한 원본 형태 → `대분류,중분류>소분류>세부` 같은 지도 표기 */
+function toCategoryLabel(raw: any): string | null {
+  const h = raw?.header ?? {}
+  const t = raw?.tabs ?? {}
+  const ext = raw?.external ?? {}
+
+  const arr =
+    Array.isArray(raw?.categories) ? raw.categories :
+    Array.isArray(ext?.categories) ? ext.categories :
+    Array.isArray(h?.categories) ? h.categories :
+    Array.isArray(t?.info?.categories) ? t.info.categories : null
+
+  const path =
+    Array.isArray(raw?.categoryPath) ? raw.categoryPath :
+    Array.isArray(ext?.categoryPath) ? ext.categoryPath : null
+
+  const tiered = [
+    ext?.categoryLarge ?? ext?.largeCategory ?? ext?.majorCategory,
+    ext?.categoryMedium ?? ext?.middleCategory ?? ext?.midCategory,
+    ext?.categorySmall ?? ext?.smallCategory ?? ext?.minorCategory,
+    ext?.categoryDetail ?? ext?.detailCategory,
+  ].filter(Boolean)
+
+  const flat = firstNonEmpty(
+    raw?.category,
+    h?.category,
+    t?.info?.category,
+    ext?.category,
+    path,
+    arr,
+    tiered
+  )
+
+  if (!flat) return null
+
+  let label = ""
+  if (Array.isArray(flat)) {
+    const head = flat.slice(0, 2).filter(Boolean).join(",")
+    const tail = flat.slice(2).filter(Boolean).join(">")
+    label = [head, tail].filter(Boolean).join(">")
+  } else {
+    label = String(flat)
+  }
+
+  label = label
+    .replace(/\s*,\s*/g, ",")
+    .replace(/\s*>\s*/g, ">")
+    .replace(/,{2,}/g, ",")
+    .replace(/>+/g, ">")
+    .trim()
+
+  if (!label || /^etc$/i.test(label)) return null
+  return label
+}
+
+/* ───────────────── Review 정규화 ───────────────── */
 const normalizeReview = (r: any): UIReview => {
   const u = r.user
   const name =
@@ -115,7 +175,6 @@ const normalizeReview = (r: any): UIReview => {
 
   const ratingRaw =
     r.score ?? r.waste_rating ?? r.rating ?? r.stars ?? r.star ?? r.wasteScore ?? 0
-  const rating = Number(ratingRaw) || 0
 
   const comment = r.contents ?? r.comment ?? r.content ?? r.text ?? ""
   const date = r.createdAt ?? r.created_at ?? r.date ?? r.created ?? ""
@@ -129,7 +188,7 @@ const normalizeReview = (r: any): UIReview => {
   return {
     id: Number(r.id ?? r.review_id ?? 0),
     userName: (name || "익명").trim(),
-    wasteRating: rating,
+    wasteRating: Number(ratingRaw) || 0,
     date,
     comment,
     images,
@@ -138,6 +197,7 @@ const normalizeReview = (r: any): UIReview => {
 
 /* ───────────────── Restaurant 정규화 ───────────────── */
 function normalizeRestaurant(raw: any): UIRestaurant {
+  // v2 형태(header/tabs)
   if (raw?.header && raw?.tabs) {
     const h = raw.header ?? {}
     const t = raw.tabs ?? {}
@@ -164,7 +224,7 @@ function normalizeRestaurant(raw: any): UIRestaurant {
       badge: h.badge ?? null,
       wasteScore: typeof h.ecoScore === "number" ? h.ecoScore : null,
       totalReviews: typeof h.reviewCount === "number" ? h.reviewCount : 0,
-      category: h.category ?? null,
+      category: toCategoryLabel(raw) ?? h.category ?? null, // ★ 지도 포맷
       distance: null,
       address: t.info?.address ?? h.address ?? null,
       telephone: t.info?.telephone ?? h.telephone ?? null,
@@ -177,6 +237,7 @@ function normalizeRestaurant(raw: any): UIRestaurant {
     }
   }
 
+  // 일반 형태
   const ext = raw?.external ?? {}
   const eco = raw?.stats?.ecoScore
   const photos: string[] = Array.isArray(ext.photos) ? (ext.photos as any[]).map((p) => p?.url).filter(Boolean) : []
@@ -200,7 +261,7 @@ function normalizeRestaurant(raw: any): UIRestaurant {
         : typeof raw?.totalReviews === "number"
           ? raw.totalReviews
           : 0,
-    category: ext.category ?? raw?.category ?? null,
+    category: toCategoryLabel(raw) ?? ext.category ?? raw?.category ?? null, // ★ 지도 포맷
     distance: raw?.distance ?? null,
     address: ext.address ?? raw?.address ?? null,
     telephone: ext.telephone ?? raw?.telephone ?? null,
@@ -225,6 +286,7 @@ export default function RestaurantDetailPage() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const routeFav = searchParams.get("fav") === "1"
+  const routeCat = searchParams.get("cat") || null // ★ 쿼리 카테고리
 
   const restaurantId = Number.parseInt((params as any).id as string)
 
@@ -233,17 +295,45 @@ export default function RestaurantDetailPage() {
   const [error, setError] = useState<string | null>(null)
   const [raw, setRaw] = useState<any | null>(null)
 
-  // 리뷰 상태
+  // 리뷰
   const [reviews, setReviews] = useState<UIReview[]>([])
   const [reviewsLoading, setReviewsLoading] = useState(false)
   const [reviewsError, setReviewsError] = useState<string | null>(null)
+  const [reviewsFetched, setReviewsFetched] = useState(false)
 
-  // 상세 호출
+  async function loadReviewsOnce(id: number) {
+    if (!id || reviewsFetched) return
+    setReviewsLoading(true)
+    setReviewsError(null)
+    try {
+      const res = await apiClient.getRestaurantReviews(id)
+      if (!res.success) {
+        setReviews([])
+        setReviewsError(res.error || "리뷰를 불러올 수 없습니다.")
+      } else {
+        const list = Array.isArray((res.data as any)?.items)
+          ? (res.data as any).items
+          : Array.isArray(res.data)
+            ? (res.data as any)
+            : []
+        setReviews(list.map((r: any) => normalizeReview(r)))
+      }
+    } catch (e: any) {
+      setReviews([])
+      setReviewsError(e?.message || "네트워크 오류가 발생했어요.")
+    } finally {
+      setReviewsLoading(false)
+      setReviewsFetched(true)
+    }
+  }
+
+  // 상세 + 선로딩
   useEffect(() => {
     let mounted = true
     ;(async () => {
       setLoading(true)
       setError(null)
+      setReviewsFetched(false)
       try {
         const res = await apiClient.getRestaurantDetail(restaurantId)
         if (!mounted) return
@@ -252,6 +342,7 @@ export default function RestaurantDetailPage() {
           setRaw(null)
         } else {
           setRaw(res.data)
+          loadReviewsOnce(restaurantId) // ★ 선로딩
         }
       } catch (e: any) {
         if (!mounted) return
@@ -264,39 +355,13 @@ export default function RestaurantDetailPage() {
     return () => { mounted = false }
   }, [restaurantId])
 
-  // 리뷰 탭 진입 시 리뷰 호출
+  // 리뷰 탭 진입 시(미로드면 1회)
   useEffect(() => {
-    if (activeTab !== "reviews" || !restaurantId) return
-    let mounted = true
-    ;(async () => {
-      setReviewsLoading(true)
-      setReviewsError(null)
-      try {
-        const res = await apiClient.getRestaurantReviews(restaurantId)
-        if (!mounted) return
-        if (!res.success) {
-          setReviews([])
-          setReviewsError(res.error || "리뷰를 불러올 수 없습니다.")
-          return
-        }
-        const list = Array.isArray((res.data as any)?.items)
-          ? (res.data as any).items
-          : Array.isArray(res.data)
-            ? (res.data as any)
-            : []
-        setReviews(list.map((r: any) => normalizeReview(r)))
-      } catch (e: any) {
-        if (!mounted) return
-        setReviews([])
-        setReviewsError(e?.message || "네트워크 오류가 발생했어요.")
-      } finally {
-        if (mounted) setReviewsLoading(false)
-      }
-    })()
-    return () => { mounted = false }
-  }, [activeTab, restaurantId])
+    if (activeTab !== "reviews" || !restaurantId || reviewsFetched) return
+    loadReviewsOnce(restaurantId)
+  }, [activeTab, restaurantId, reviewsFetched])
 
-  // BE → UI + 목업 merge
+  // UI merge
   const restaurant = useMemo<UIRestaurant | null>(() => {
     if (!raw) return null
     const base = normalizeRestaurant(raw)
@@ -314,7 +379,7 @@ export default function RestaurantDetailPage() {
     }
   }, [raw])
 
-  // 하트 상태
+  // 즐겨찾기
   const isFav = ((restaurant?.favorited ?? false) || routeFav) as boolean
 
   const toggleFavorite = async () => {
@@ -328,7 +393,7 @@ export default function RestaurantDetailPage() {
       else copy.isFavorite = nextFav
       return copy
     })
-    router.replace(`/restaurant/${restaurantId}?fav=${nextFav ? 1 : 0}`, { scroll: false })
+    router.replace(`/restaurant/${restaurantId}?fav=${nextFav ? 1 : 0}${routeCat ? `&cat=${encodeURIComponent(routeCat)}` : ""}`, { scroll: false })
     try {
       if (nextFav) {
         const rs = await apiClient.addFavorite(restaurant.id)
@@ -345,7 +410,7 @@ export default function RestaurantDetailPage() {
         else copy.isFavorite = prev
         return copy
       })
-      router.replace(`/restaurant/${restaurantId}?fav=${prev ? 1 : 0}`, { scroll: false })
+      router.replace(`/restaurant/${restaurantId}?fav=${prev ? 1 : 0}${routeCat ? `&cat=${encodeURIComponent(routeCat)}` : ""}`, { scroll: false })
       alert(err?.message || "즐겨찾기 처리가 실패했어요.")
     }
   }
@@ -411,7 +476,12 @@ export default function RestaurantDetailPage() {
     )
   }
 
-  const star = calculateWasteStarRating(restaurant.wasteScore ?? 0)
+  // 표시할 별점
+  const starFromEco = calculateWasteStarRating(restaurant.wasteScore ?? 0)
+  const displayStar = (reviewsAvg ?? starFromEco)
+
+  // ★ 표시할 카테고리: 쿼리 우선 → BE 값 → ETC
+  const displayCategory = routeCat || restaurant.category || "ETC"
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-green-50/30 to-sky-50/30 dark:from-slate-950 dark:via-green-950/20 dark:to-sky-950/20">
@@ -492,13 +562,13 @@ export default function RestaurantDetailPage() {
 
           <motion.div className="flex items-center gap-6 text-white/90" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.6 }}>
             <div className="flex items-center gap-2 bg-white/20 backdrop-blur-sm rounded-2xl px-4 py-2">
-              <StarRating value={reviewsAvg ?? star} size={18} colorClass="text-green-400" emptyClass="text-white/60" />
-              <span className="font-bold text-lg ml-2">{(reviewsAvg ?? star).toFixed(1)}</span>
+              <StarRating value={displayStar} size={18} colorClass="text-green-400" emptyClass="text-white/60" />
+              <span className="font-bold text-lg ml-2">{displayStar.toFixed(1)}</span>
               <span className="text-sm opacity-75">({reviews.length || restaurant.totalReviews || 0})</span>
             </div>
-            {restaurant.category && (
-              <div className="bg-white/20 backdrop-blur-sm rounded-2xl px-4 py-2">
-                <span className="text-sm font-medium">{restaurant.category}</span>
+            {displayCategory && (
+              <div className="bg-white/20 backdrop-blur-sm rounded-2xl px-4 py-2" title={displayCategory}>
+                <span className="text-sm font-medium">{displayCategory}</span>
               </div>
             )}
             {restaurant.distance && (
@@ -605,11 +675,11 @@ export default function RestaurantDetailPage() {
                     <CardContent className="p-6">
                       <motion.div className="text-center p-8 bg-gradient-to-br from-green-100 to-emerald-100 dark:from-green-900/30 dark:to-emerald-900/30 rounded-2xl" whileHover={{ scale: 1.02 }}>
                         <motion.div className="text-4xl font-bold text-green-600 mb-2" initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ delay: 0.5, type: "spring" }}>
-                          {calculateWasteStarRating(restaurant.wasteScore ?? 0)}
+                          {displayStar}
                         </motion.div>
                         <div className="text-lg text-green-700 dark:text-green-300 font-medium">잔반 별점</div>
                         <div className="flex justify-center mt-4">
-                          <StarRating value={calculateWasteStarRating(restaurant.wasteScore ?? 0)} size={24} />
+                          <StarRating value={displayStar} size={24} />
                         </div>
                       </motion.div>
                     </CardContent>
@@ -732,7 +802,7 @@ export default function RestaurantDetailPage() {
                         </div>
                         <div className="p-6 bg-gradient-to-br from-green-50 to-emerald-50 dark:from-green-900/20 dark:to-emerald-900/20 rounded-2xl">
                           <div className="text-3xl font-bold text-green-600 mb-2">
-                            {reviewsAvg ?? calculateWasteStarRating(restaurant.wasteScore ?? 0)}
+                            {displayStar}
                           </div>
                           <div className="text-sm text-muted-foreground font-medium">평균 잔반 별점</div>
                         </div>
