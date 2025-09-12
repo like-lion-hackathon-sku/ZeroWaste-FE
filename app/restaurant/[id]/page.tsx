@@ -1,13 +1,16 @@
+// app/restaurant/[id]/page.tsx
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
 import { useParams, useRouter, useSearchParams } from "next/navigation"
 import { motion, AnimatePresence } from "framer-motion"
+
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+
 import {
   ArrowLeft,
   Star,
@@ -24,12 +27,48 @@ import {
   Award,
   Sparkles,
 } from "lucide-react"
+
 import { apiClient } from "@/lib/api/client"
 import { calculateWasteStarRating } from "@/lib/utils/database-helpers"
 
-// ✅ 목업
+// 목업(있으면 merge용)
 import { mockRestaurants } from "@/lib/mock/restaurant-presets"
 
+/* ───────────────── 별점(부분 채움) 컴포넌트 ───────────────── */
+function StarRating({
+  value,
+  outOf = 5,
+  size = 20,
+  colorClass = "text-green-500",
+  emptyClass = "text-gray-300",
+}: {
+  value: number
+  outOf?: number
+  size?: number
+  colorClass?: string
+  emptyClass?: string
+}) {
+  const v = Math.max(0, Math.min(Number(value) || 0, outOf))
+  return (
+    <div className="flex items-center" aria-label={`${v} / ${outOf}`}>
+      {Array.from({ length: outOf }).map((_, i) => {
+        const fill = Math.min(Math.max(v - i, 0), 1) // 0~1
+        return (
+          <div key={i} className="relative" style={{ width: size, height: size }} aria-hidden>
+            {/* 빈 별 */}
+            <Star width={size} height={size} className={emptyClass} />
+            {/* 채워진 별 (fill%만큼) */}
+            <div className="absolute inset-0 overflow-hidden" style={{ width: `${fill * 100}%` }}>
+              <Star width={size} height={size} className={`${colorClass} fill-current`} />
+            </div>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+/* ───────────────── Types ───────────────── */
 type UIReview = {
   id?: number
   userName?: string
@@ -59,9 +98,46 @@ type UIRestaurant = {
   infoSections?: { title: string; body: string }[]
 }
 
-/** 여러 백엔드 필드명을 흡수해서 UI 형태로 정규화 */
+/* ───────────────── BE Review → UI 정규화 ───────────────── */
+const normalizeReview = (r: any): UIReview => {
+  const u = r.user
+  const name =
+    typeof u === "string"
+      ? u
+      : (u?.name ??
+         u?.username ??
+         u?.nickname ??
+         r.nickname ??
+         r.userName ??
+         r.authorName ??
+         r.author ??
+         "익명")
+
+  const ratingRaw =
+    r.score ?? r.waste_rating ?? r.rating ?? r.stars ?? r.star ?? r.wasteScore ?? 0
+  const rating = Number(ratingRaw) || 0
+
+  const comment = r.contents ?? r.comment ?? r.content ?? r.text ?? ""
+  const date = r.createdAt ?? r.created_at ?? r.date ?? r.created ?? ""
+  const images =
+    Array.isArray(r.images)
+      ? r.images.map((x: any) => (typeof x === "string" ? x : x?.url)).filter(Boolean)
+      : Array.isArray(r.photos)
+        ? r.photos.map((x: any) => (typeof x === "string" ? x : x?.url)).filter(Boolean)
+        : []
+
+  return {
+    id: Number(r.id ?? r.review_id ?? 0),
+    userName: (name || "익명").trim(),
+    wasteRating: rating,
+    date,
+    comment,
+    images,
+  }
+}
+
+/* ───────────────── Restaurant 정규화 ───────────────── */
 function normalizeRestaurant(raw: any): UIRestaurant {
-  // 1) 신규 포맷(header/tabs)
   if (raw?.header && raw?.tabs) {
     const h = raw.header ?? {}
     const t = raw.tabs ?? {}
@@ -101,11 +177,9 @@ function normalizeRestaurant(raw: any): UIRestaurant {
     }
   }
 
-  // 2) 구 포맷(external)
   const ext = raw?.external ?? {}
   const eco = raw?.stats?.ecoScore
   const photos: string[] = Array.isArray(ext.photos) ? (ext.photos as any[]).map((p) => p?.url).filter(Boolean) : []
-
   const fav =
     !!raw?.isFavorite ||
     !!raw?.is_favorite ||
@@ -145,6 +219,7 @@ function normalizeRestaurant(raw: any): UIRestaurant {
   }
 }
 
+/* ───────────────── Page ───────────────── */
 export default function RestaurantDetailPage() {
   const params = useParams()
   const router = useRouter()
@@ -158,6 +233,12 @@ export default function RestaurantDetailPage() {
   const [error, setError] = useState<string | null>(null)
   const [raw, setRaw] = useState<any | null>(null)
 
+  // 리뷰 상태
+  const [reviews, setReviews] = useState<UIReview[]>([])
+  const [reviewsLoading, setReviewsLoading] = useState(false)
+  const [reviewsError, setReviewsError] = useState<string | null>(null)
+
+  // 상세 호출
   useEffect(() => {
     let mounted = true
     ;(async () => {
@@ -180,21 +261,49 @@ export default function RestaurantDetailPage() {
         if (mounted) setLoading(false)
       }
     })()
-    return () => {
-      mounted = false
-    }
+    return () => { mounted = false }
   }, [restaurantId])
 
-  /** BE → UI 변환 + 목업 병합 */
+  // 리뷰 탭 진입 시 리뷰 호출
+  useEffect(() => {
+    if (activeTab !== "reviews" || !restaurantId) return
+    let mounted = true
+    ;(async () => {
+      setReviewsLoading(true)
+      setReviewsError(null)
+      try {
+        const res = await apiClient.getRestaurantReviews(restaurantId)
+        if (!mounted) return
+        if (!res.success) {
+          setReviews([])
+          setReviewsError(res.error || "리뷰를 불러올 수 없습니다.")
+          return
+        }
+        const list = Array.isArray((res.data as any)?.items)
+          ? (res.data as any).items
+          : Array.isArray(res.data)
+            ? (res.data as any)
+            : []
+        setReviews(list.map((r: any) => normalizeReview(r)))
+      } catch (e: any) {
+        if (!mounted) return
+        setReviews([])
+        setReviewsError(e?.message || "네트워크 오류가 발생했어요.")
+      } finally {
+        if (mounted) setReviewsLoading(false)
+      }
+    })()
+    return () => { mounted = false }
+  }, [activeTab, restaurantId])
+
+  // BE → UI + 목업 merge
   const restaurant = useMemo<UIRestaurant | null>(() => {
     if (!raw) return null
     const base = normalizeRestaurant(raw)
-
     const mock = mockRestaurants[base.id]
     if (!mock) return base
 
     const mergedDescription = [base.description, mock.facilities].filter(Boolean).join("\n\n")
-
     const mergedMenu = Array.isArray(mock.menu) && mock.menu.length > 0 ? mock.menu : base.menu
 
     return {
@@ -205,16 +314,13 @@ export default function RestaurantDetailPage() {
     }
   }, [raw])
 
-  /** UI 표시용 하트 상태: 응답값 OR 쿼리파람 */
+  // 하트 상태
   const isFav = ((restaurant?.favorited ?? false) || routeFav) as boolean
 
-  /** 즐겨찾기 토글(낙관적 업데이트 + 실패 시 롤백) */
   const toggleFavorite = async () => {
     if (!restaurant?.id) return
     const prev = isFav
     const nextFav = !prev
-
-    // 1) 낙관적 반영 (raw 내부 포맷 고려)
     setRaw((r: any) => {
       if (!r) return r
       const copy = JSON.parse(JSON.stringify(r))
@@ -222,12 +328,7 @@ export default function RestaurantDetailPage() {
       else copy.isFavorite = nextFav
       return copy
     })
-
-    // URL 쿼리도 동기화(새로고침 시 보존)
-    router.replace(`/restaurant/${restaurantId}?fav=${nextFav ? 1 : 0}`, {
-      scroll: false,
-    })
-
+    router.replace(`/restaurant/${restaurantId}?fav=${nextFav ? 1 : 0}`, { scroll: false })
     try {
       if (nextFav) {
         const rs = await apiClient.addFavorite(restaurant.id)
@@ -237,7 +338,6 @@ export default function RestaurantDetailPage() {
         if (!rs?.success) throw new Error(rs?.error || "즐겨찾기 해제 실패")
       }
     } catch (err: any) {
-      // 2) 실패 시 롤백
       setRaw((r: any) => {
         if (!r) return r
         const copy = JSON.parse(JSON.stringify(r))
@@ -245,9 +345,7 @@ export default function RestaurantDetailPage() {
         else copy.isFavorite = prev
         return copy
       })
-      router.replace(`/restaurant/${restaurantId}?fav=${prev ? 1 : 0}`, {
-        scroll: false,
-      })
+      router.replace(`/restaurant/${restaurantId}?fav=${prev ? 1 : 0}`, { scroll: false })
       alert(err?.message || "즐겨찾기 처리가 실패했어요.")
     }
   }
@@ -255,13 +353,11 @@ export default function RestaurantDetailPage() {
   const handleShare = () => {
     if (!restaurant) return
     if (navigator.share) {
-      navigator
-        .share({
-          title: restaurant.name,
-          text: "에코 친화 식당 정보 공유",
-          url: typeof window !== "undefined" ? window.location.href : "",
-        })
-        .catch(() => {})
+      navigator.share({
+        title: restaurant.name,
+        text: "에코 친화 식당 정보 공유",
+        url: typeof window !== "undefined" ? window.location.href : "",
+      }).catch(() => {})
     } else {
       alert("이 브라우저는 공유 기능을 지원하지 않아요.")
     }
@@ -270,6 +366,13 @@ export default function RestaurantDetailPage() {
   const handleWriteReview = () => {
     router.push(`/review/write?restaurantId=${restaurantId}`)
   }
+
+  // 리뷰 평균(있으면 사용)
+  const reviewsAvg = useMemo(() => {
+    if (!reviews.length) return null
+    const sum = reviews.reduce((acc, r) => acc + (Number(r.wasteRating) || 0), 0)
+    return Math.round((sum / reviews.length) * 10) / 10
+  }, [reviews])
 
   if (loading) {
     return (
@@ -291,11 +394,7 @@ export default function RestaurantDetailPage() {
   if (error || !restaurant) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-50 via-red-50/30 to-orange-50/30 dark:from-slate-950 dark:via-red-950/20 dark:to-orange-950/20 flex items-center justify-center">
-        <motion.div
-          className="text-center max-w-md mx-auto p-8"
-          initial={{ opacity: 0, scale: 0.9 }}
-          animate={{ opacity: 1, scale: 1 }}
-        >
+        <motion.div className="text-center max-w-md mx-auto p-8" initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }}>
           <div className="w-20 h-20 mx-auto rounded-3xl bg-gradient-to-br from-red-500 to-orange-600 flex items-center justify-center shadow-2xl mb-6">
             <Sparkles className="h-10 w-10 text-white" />
           </div>
@@ -316,6 +415,7 @@ export default function RestaurantDetailPage() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-green-50/30 to-sky-50/30 dark:from-slate-950 dark:via-green-950/20 dark:to-sky-950/20">
+      {/* 헤더 */}
       <motion.header
         className="bg-white/80 dark:bg-slate-900/80 backdrop-blur-xl border-b border-white/20 dark:border-slate-800/50 p-4 sticky top-0 z-20 shadow-lg"
         initial={{ opacity: 0, y: -20 }}
@@ -354,42 +454,27 @@ export default function RestaurantDetailPage() {
                 aria-pressed={isFav}
                 className="h-10 w-10 rounded-2xl bg-white/50 dark:bg-slate-800/50 backdrop-blur-sm hover:bg-red-50 dark:hover:bg-red-900/30 shadow-lg transition-all duration-200"
               >
-                <Heart
-                  className={`h-4 w-4 transition-all duration-200 ${isFav ? "fill-red-500 text-red-500 scale-110" : "text-gray-400"}`}
-                />
+                <Heart className={`h-4 w-4 transition-all duration-200 ${isFav ? "fill-red-500 text-red-500 scale-110" : "text-gray-400"}`} />
               </Button>
             </motion.div>
           </div>
         </div>
       </motion.header>
 
+      {/* 히어로 */}
       <motion.div
         className="relative h-80 bg-muted overflow-hidden"
         initial={{ opacity: 0, scale: 1.1 }}
         animate={{ opacity: 1, scale: 1 }}
         transition={{ duration: 0.8 }}
       >
-        <img
-          src={restaurant.image || "/placeholder.svg"}
-          alt={restaurant.name}
-          className="w-full h-full object-cover"
-        />
+        <img src={restaurant.image || "/placeholder.svg"} alt={restaurant.name} className="w-full h-full object-cover" />
         <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-black/20 to-transparent" />
         <div className="absolute inset-0 bg-gradient-to-r from-green-900/20 to-emerald-900/20" />
-
-        <motion.div
-          className="absolute bottom-6 left-6 right-6"
-          initial={{ opacity: 0, y: 30 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.3 }}
-        >
+        <motion.div className="absolute bottom-6 left-6 right-6" initial={{ opacity: 0, y: 30 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }}>
           <div className="flex items-center gap-3 mb-4">
             {restaurant.badge && (
-              <motion.div
-                initial={{ opacity: 0, scale: 0.8 }}
-                animate={{ opacity: 1, scale: 1 }}
-                transition={{ delay: 0.5 }}
-              >
+              <motion.div initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: 0.5 }}>
                 <Badge
                   variant={restaurant.badge === "착한 식당" ? "default" : "secondary"}
                   className="bg-green-500/90 text-white border-green-400 shadow-lg backdrop-blur-sm px-3 py-1 text-sm"
@@ -401,25 +486,15 @@ export default function RestaurantDetailPage() {
             )}
           </div>
 
-          <motion.h1
-            className="text-3xl md:text-4xl font-bold text-white mb-3 drop-shadow-lg"
-            initial={{ opacity: 0, x: -20 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ delay: 0.4 }}
-          >
+          <motion.h1 className="text-3xl md:text-4xl font-bold text-white mb-3 drop-shadow-lg" initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.4 }}>
             {restaurant.name}
           </motion.h1>
 
-          <motion.div
-            className="flex items-center gap-6 text-white/90"
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.6 }}
-          >
+          <motion.div className="flex items-center gap-6 text-white/90" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.6 }}>
             <div className="flex items-center gap-2 bg-white/20 backdrop-blur-sm rounded-2xl px-4 py-2">
-              <Star className="h-5 w-5 fill-current text-green-400" />
-              <span className="font-bold text-lg">{star}</span>
-              <span className="text-sm opacity-75">({restaurant.totalReviews || 0})</span>
+              <StarRating value={reviewsAvg ?? star} size={18} colorClass="text-green-400" emptyClass="text-white/60" />
+              <span className="font-bold text-lg ml-2">{(reviewsAvg ?? star).toFixed(1)}</span>
+              <span className="text-sm opacity-75">({reviews.length || restaurant.totalReviews || 0})</span>
             </div>
             {restaurant.category && (
               <div className="bg-white/20 backdrop-blur-sm rounded-2xl px-4 py-2">
@@ -435,50 +510,29 @@ export default function RestaurantDetailPage() {
         </motion.div>
       </motion.div>
 
+      {/* 본문 */}
       <div className="container mx-auto p-6 max-w-6xl">
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}>
           <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
             <TabsList className="grid w-full grid-cols-4 bg-white/60 dark:bg-slate-800/60 backdrop-blur-xl border border-white/20 dark:border-slate-700/50 rounded-2xl p-1 shadow-lg">
-              <TabsTrigger
-                value="info"
-                className="rounded-xl data-[state=active]:bg-white dark:data-[state=active]:bg-slate-700 data-[state=active]:shadow-lg transition-all duration-200"
-              >
-                <MapPin className="h-4 w-4 mr-2" />
-                정보
+              <TabsTrigger value="info" className="rounded-xl data-[state=active]:bg-white dark:data-[state=active]:bg-slate-700 data-[state=active]:shadow-lg transition-all duration-200">
+                <MapPin className="h-4 w-4 mr-2" /> 정보
               </TabsTrigger>
-              <TabsTrigger
-                value="menu"
-                className="rounded-xl data-[state=active]:bg-white dark:data-[state=active]:bg-slate-700 data-[state=active]:shadow-lg transition-all duration-200"
-              >
-                <Sparkles className="h-4 w-4 mr-2" />
-                메뉴
+              <TabsTrigger value="menu" className="rounded-xl data-[state=active]:bg-white dark:data-[state=active]:bg-slate-700 data-[state=active]:shadow-lg transition-all duration-200">
+                <Sparkles className="h-4 w-4 mr-2" /> 메뉴
               </TabsTrigger>
-              <TabsTrigger
-                value="gallery"
-                className="rounded-xl data-[state=active]:bg-white dark:data-[state=active]:bg-slate-700 data-[state=active]:shadow-lg transition-all duration-200"
-              >
-                <Camera className="h-4 w-4 mr-2" />
-                갤러리
+              <TabsTrigger value="gallery" className="rounded-xl data-[state=active]:bg-white dark:data-[state=active]:bg-slate-700 data-[state=active]:shadow-lg transition-all duration-200">
+                <Camera className="h-4 w-4 mr-2" /> 갤러리
               </TabsTrigger>
-              <TabsTrigger
-                value="reviews"
-                className="rounded-xl data-[state=active]:bg-white dark:data-[state=active]:bg-slate-700 data-[state=active]:shadow-lg transition-all duration-200"
-              >
-                <Users className="h-4 w-4 mr-2" />
-                리뷰
+              <TabsTrigger value="reviews" className="rounded-xl data-[state=active]:bg-white dark:data-[state=active]:bg-slate-700 data-[state=active]:shadow-lg transition-all duration-200">
+                <Users className="h-4 w-4 mr-2" /> 리뷰
               </TabsTrigger>
             </TabsList>
 
             <AnimatePresence mode="wait">
-              {/* Info Tab */}
+              {/* Info */}
               <TabsContent value="info" className="mt-8">
-                <motion.div
-                  className="space-y-6"
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -20 }}
-                  transition={{ duration: 0.3 }}
-                >
+                <motion.div className="space-y-6" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} transition={{ duration: 0.3 }}>
                   <Card className="bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm border-white/20 dark:border-slate-700/50 shadow-xl rounded-3xl overflow-hidden">
                     <CardHeader className="bg-gradient-to-r from-green-500/10 to-emerald-500/10 border-b border-white/20 dark:border-slate-700/50">
                       <CardTitle className="flex items-center gap-3 text-xl">
@@ -490,28 +544,19 @@ export default function RestaurantDetailPage() {
                     </CardHeader>
                     <CardContent className="p-6 space-y-6">
                       {restaurant.address && (
-                        <motion.div
-                          className="flex items-center gap-4 p-4 bg-slate-50 dark:bg-slate-800/50 rounded-2xl"
-                          whileHover={{ scale: 1.01 }}
-                        >
+                        <motion.div className="flex items-center gap-4 p-4 bg-slate-50 dark:bg-slate-800/50 rounded-2xl" whileHover={{ scale: 1.01 }}>
                           <MapPin className="h-5 w-5 text-green-600" />
                           <span className="text-foreground font-medium">{restaurant.address}</span>
                         </motion.div>
                       )}
                       {restaurant.telephone && (
-                        <motion.div
-                          className="flex items-center gap-4 p-4 bg-slate-50 dark:bg-slate-800/50 rounded-2xl"
-                          whileHover={{ scale: 1.01 }}
-                        >
+                        <motion.div className="flex items-center gap-4 p-4 bg-slate-50 dark:bg-slate-800/50 rounded-2xl" whileHover={{ scale: 1.01 }}>
                           <Phone className="h-5 w-5 text-blue-600" />
                           <span className="text-foreground font-medium">{restaurant.telephone}</span>
                         </motion.div>
                       )}
                       {restaurant.hours && (
-                        <motion.div
-                          className="flex items-center gap-4 p-4 bg-slate-50 dark:bg-slate-800/50 rounded-2xl"
-                          whileHover={{ scale: 1.01 }}
-                        >
+                        <motion.div className="flex items-center gap-4 p-4 bg-slate-50 dark:bg-slate-800/50 rounded-2xl" whileHover={{ scale: 1.01 }}>
                           <Clock className="h-5 w-5 text-orange-600" />
                           <span className="text-foreground font-medium">{restaurant.hours}</span>
                         </motion.div>
@@ -558,36 +603,13 @@ export default function RestaurantDetailPage() {
                       </CardTitle>
                     </CardHeader>
                     <CardContent className="p-6">
-                      <motion.div
-                        className="text-center p-8 bg-gradient-to-br from-green-100 to-emerald-100 dark:from-green-900/30 dark:to-emerald-900/30 rounded-2xl"
-                        whileHover={{ scale: 1.02 }}
-                      >
-                        <motion.div
-                          className="text-4xl font-bold text-green-600 mb-2"
-                          initial={{ scale: 0 }}
-                          animate={{ scale: 1 }}
-                          transition={{ delay: 0.5, type: "spring" }}
-                        >
+                      <motion.div className="text-center p-8 bg-gradient-to-br from-green-100 to-emerald-100 dark:from-green-900/30 dark:to-emerald-900/30 rounded-2xl" whileHover={{ scale: 1.02 }}>
+                        <motion.div className="text-4xl font-bold text-green-600 mb-2" initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ delay: 0.5, type: "spring" }}>
                           {calculateWasteStarRating(restaurant.wasteScore ?? 0)}
                         </motion.div>
                         <div className="text-lg text-green-700 dark:text-green-300 font-medium">잔반 별점</div>
                         <div className="flex justify-center mt-4">
-                          {[...Array(5)].map((_, i) => (
-                            <motion.div
-                              key={i}
-                              initial={{ opacity: 0, scale: 0 }}
-                              animate={{ opacity: 1, scale: 1 }}
-                              transition={{ delay: 0.7 + i * 0.1 }}
-                            >
-                              <Star
-                                className={`h-6 w-6 mx-1 ${
-                                  i < Math.round(calculateWasteStarRating(restaurant.wasteScore ?? 0))
-                                    ? "fill-current text-green-500"
-                                    : "text-gray-300"
-                                }`}
-                              />
-                            </motion.div>
-                          ))}
+                          <StarRating value={calculateWasteStarRating(restaurant.wasteScore ?? 0)} size={24} />
                         </div>
                       </motion.div>
                     </CardContent>
@@ -595,14 +617,9 @@ export default function RestaurantDetailPage() {
                 </motion.div>
               </TabsContent>
 
-              {/* Menu Tab */}
+              {/* Menu */}
               <TabsContent value="menu" className="mt-8">
-                <motion.div
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -20 }}
-                  transition={{ duration: 0.3 }}
-                >
+                <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} transition={{ duration: 0.3 }}>
                   <Card className="bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm border-white/20 dark:border-slate-700/50 shadow-xl rounded-3xl overflow-hidden">
                     <CardHeader className="bg-gradient-to-r from-orange-500/10 to-yellow-500/10 border-b border-white/20 dark:border-slate-700/50">
                       <CardTitle className="flex items-center gap-3 text-xl">
@@ -638,11 +655,7 @@ export default function RestaurantDetailPage() {
                             </motion.div>
                           ))
                         ) : (
-                          <motion.div
-                            className="text-center text-muted-foreground py-16 bg-slate-50 dark:bg-slate-800/50 rounded-2xl"
-                            initial={{ opacity: 0 }}
-                            animate={{ opacity: 1 }}
-                          >
+                          <motion.div className="text-center text-muted-foreground py-16 bg-slate-50 dark:bg-slate-800/50 rounded-2xl" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
                             <Sparkles className="h-16 w-16 mx-auto mb-4 opacity-30" />
                             <p className="text-lg">메뉴 정보가 없습니다</p>
                           </motion.div>
@@ -653,14 +666,9 @@ export default function RestaurantDetailPage() {
                 </motion.div>
               </TabsContent>
 
-              {/* Gallery Tab */}
+              {/* Gallery */}
               <TabsContent value="gallery" className="mt-8">
-                <motion.div
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -20 }}
-                  transition={{ duration: 0.3 }}
-                >
+                <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} transition={{ duration: 0.3 }}>
                   <Card className="bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm border-white/20 dark:border-slate-700/50 shadow-xl rounded-3xl overflow-hidden">
                     <CardHeader className="bg-gradient-to-r from-purple-500/10 to-pink-500/10 border-b border-white/20 dark:border-slate-700/50">
                       <CardTitle className="flex items-center gap-3 text-xl">
@@ -690,11 +698,7 @@ export default function RestaurantDetailPage() {
                             </motion.div>
                           ))
                         ) : (
-                          <motion.div
-                            className="col-span-full text-center text-muted-foreground py-16 bg-slate-50 dark:bg-slate-800/50 rounded-2xl"
-                            initial={{ opacity: 0 }}
-                            animate={{ opacity: 1 }}
-                          >
+                          <motion.div className="col-span-full text-center text-muted-foreground py-16 bg-slate-50 dark:bg-slate-800/50 rounded-2xl" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
                             <Camera className="h-16 w-16 mx-auto mb-4 opacity-30" />
                             <p className="text-lg">사진이 없습니다</p>
                           </motion.div>
@@ -705,15 +709,10 @@ export default function RestaurantDetailPage() {
                 </motion.div>
               </TabsContent>
 
-              {/* Reviews Tab */}
+              {/* Reviews */}
               <TabsContent value="reviews" className="mt-8">
-                <motion.div
-                  className="space-y-6"
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -20 }}
-                  transition={{ duration: 0.3 }}
-                >
+                <motion.div className="space-y-6" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} transition={{ duration: 0.3 }}>
+                  {/* 요약 */}
                   <Card className="bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm border-white/20 dark:border-slate-700/50 shadow-xl rounded-3xl overflow-hidden">
                     <CardHeader className="bg-gradient-to-r from-blue-500/10 to-cyan-500/10 border-b border-white/20 dark:border-slate-700/50">
                       <CardTitle className="flex items-center gap-3 text-xl">
@@ -725,35 +724,76 @@ export default function RestaurantDetailPage() {
                     </CardHeader>
                     <CardContent className="p-6">
                       <div className="grid grid-cols-2 gap-6 text-center">
-                        <motion.div
-                          className="p-6 bg-gradient-to-br from-blue-50 to-cyan-50 dark:from-blue-900/20 dark:to-cyan-900/20 rounded-2xl"
-                          whileHover={{ scale: 1.02 }}
-                        >
-                          <motion.div
-                            className="text-3xl font-bold text-blue-600 mb-2"
-                            initial={{ scale: 0 }}
-                            animate={{ scale: 1 }}
-                            transition={{ delay: 0.3, type: "spring" }}
-                          >
-                            {restaurant.totalReviews || 0}
-                          </motion.div>
+                        <div className="p-6 bg-gradient-to-br from-blue-50 to-cyan-50 dark:from-blue-900/20 dark:to-cyan-900/20 rounded-2xl">
+                          <div className="text-3xl font-bold text-blue-600 mb-2">
+                            {reviews.length || restaurant.totalReviews || 0}
+                          </div>
                           <div className="text-sm text-muted-foreground font-medium">총 리뷰</div>
-                        </motion.div>
-                        <motion.div
-                          className="p-6 bg-gradient-to-br from-green-50 to-emerald-50 dark:from-green-900/20 dark:to-emerald-900/20 rounded-2xl"
-                          whileHover={{ scale: 1.02 }}
-                        >
-                          <motion.div
-                            className="text-3xl font-bold text-green-600 mb-2"
-                            initial={{ scale: 0 }}
-                            animate={{ scale: 1 }}
-                            transition={{ delay: 0.5, type: "spring" }}
-                          >
-                            {calculateWasteStarRating(restaurant.wasteScore ?? 0)}
-                          </motion.div>
+                        </div>
+                        <div className="p-6 bg-gradient-to-br from-green-50 to-emerald-50 dark:from-green-900/20 dark:to-emerald-900/20 rounded-2xl">
+                          <div className="text-3xl font-bold text-green-600 mb-2">
+                            {reviewsAvg ?? calculateWasteStarRating(restaurant.wasteScore ?? 0)}
+                          </div>
                           <div className="text-sm text-muted-foreground font-medium">평균 잔반 별점</div>
-                        </motion.div>
+                        </div>
                       </div>
+                    </CardContent>
+                  </Card>
+
+                  {/* 목록 */}
+                  <Card className="bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm border-white/20 dark:border-slate-700/50 shadow-xl rounded-3xl overflow-hidden">
+                    <CardHeader className="bg-gradient-to-r from-slate-500/10 to-slate-700/10 border-b border-white/20 dark:border-slate-700/50">
+                      <CardTitle className="text-lg">방문자 리뷰</CardTitle>
+                    </CardHeader>
+                    <CardContent className="p-0">
+                      {reviewsLoading ? (
+                        <div className="flex items-center justify-center py-16 text-muted-foreground">
+                          <Loader2 className="h-6 w-6 animate-spin mr-2" /> 불러오는 중…
+                        </div>
+                      ) : reviewsError ? (
+                        <div className="text-center text-red-500 py-12 bg-red-50 dark:bg-red-900/20">
+                          {reviewsError}
+                        </div>
+                      ) : reviews.length === 0 ? (
+                        <div className="text-center text-muted-foreground py-16 bg-slate-50 dark:bg-slate-800/50">
+                          아직 등록된 리뷰가 없어요.
+                        </div>
+                      ) : (
+                        <ul className="divide-y divide-white/20 dark:divide-slate-700/50">
+                          {reviews.map((rv) => (
+                            <li key={rv.id} className="p-6">
+                              <div className="flex items-start gap-4">
+                                <div className="h-10 w-10 rounded-full bg-slate-200 dark:bg-slate-700 flex items-center justify-center shrink-0">
+                                  <span className="text-sm font-semibold">{(rv.userName ?? "익명").slice(0, 1)}</span>
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center justify-between">
+                                    <div className="font-semibold">{rv.userName ?? "익명"}</div>
+                                    <div className="text-xs text-muted-foreground">{rv.date?.slice(0, 10)}</div>
+                                  </div>
+                                  <div className="mt-1">
+                                    <StarRating value={Number(rv.wasteRating) || 0} size={16} />
+                                  </div>
+                                  {rv.comment && (
+                                    <p className="mt-2 text-sm text-foreground whitespace-pre-wrap leading-relaxed">
+                                      {rv.comment}
+                                    </p>
+                                  )}
+                                  {rv.images && rv.images.length > 0 && (
+                                    <div className="mt-3 grid grid-cols-3 gap-2">
+                                      {rv.images.slice(0, 6).map((img, idx) => (
+                                        <div key={idx} className="aspect-square rounded-lg overflow-hidden bg-muted">
+                                          <img src={img} alt={`review-${rv.id}-${idx}`} className="w-full h-full object-cover" loading="lazy" />
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
                     </CardContent>
                   </Card>
                 </motion.div>
@@ -761,6 +801,7 @@ export default function RestaurantDetailPage() {
             </AnimatePresence>
           </Tabs>
 
+          {/* 리뷰 작성 버튼 */}
           <motion.div
             className="fixed bottom-8 right-8 z-10"
             initial={{ opacity: 0, scale: 0.8, y: 20 }}
