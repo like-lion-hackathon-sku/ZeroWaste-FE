@@ -1,14 +1,14 @@
-"use client"
+"use client";
 
-import { useEffect, useMemo, useState } from "react"
-import { useParams, useRouter, useSearchParams } from "next/navigation"
-import { motion, AnimatePresence } from "framer-motion"
+import { useEffect, useMemo, useState } from "react";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
+import { motion, AnimatePresence } from "framer-motion";
 
-import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Badge } from "@/components/ui/badge"
-import { Separator } from "@/components/ui/separator"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Separator } from "@/components/ui/separator";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import {
   ArrowLeft,
@@ -25,11 +25,11 @@ import {
   Loader2,
   Award,
   Sparkles,
-} from "lucide-react"
+} from "lucide-react";
 
-import { apiClient } from "@/lib/api/client"
-import { calculateWasteStarRating } from "@/lib/utils/database-helpers"
-import { mockRestaurants } from "@/lib/mock/restaurant-presets"
+import { apiClient } from "@/lib/api/client";
+import { calculateWasteStarRating } from "@/lib/utils/database-helpers";
+import { mockRestaurants } from "@/lib/mock/restaurant-presets";
 
 /* ───────────────── 별점(부분 채움) ───────────────── */
 function StarRating({
@@ -39,17 +39,17 @@ function StarRating({
   colorClass = "text-green-500",
   emptyClass = "text-gray-300",
 }: {
-  value: number
-  outOf?: number
-  size?: number
-  colorClass?: string
-  emptyClass?: string
+  value: number;
+  outOf?: number;
+  size?: number;
+  colorClass?: string;
+  emptyClass?: string;
 }) {
-  const v = Math.max(0, Math.min(Number(value) || 0, outOf))
+  const v = Math.max(0, Math.min(Number(value) || 0, outOf));
   return (
     <div className="flex items-center" aria-label={`${v} / ${outOf}`}>
       {Array.from({ length: outOf }).map((_, i) => {
-        const fill = Math.min(Math.max(v - i, 0), 1)
+        const fill = Math.min(Math.max(v - i, 0), 1);
         return (
           <div key={i} className="relative" style={{ width: size, height: size }} aria-hidden>
             <Star width={size} height={size} className={emptyClass} />
@@ -57,74 +57,74 @@ function StarRating({
               <Star width={size} height={size} className={`${colorClass} fill-current`} />
             </div>
           </div>
-        )
+        );
       })}
     </div>
-  )
+  );
 }
 
 /* ───────────────── Types ───────────────── */
 type UIReview = {
-  id?: number
-  userName?: string
-  wasteRating?: number
-  date?: string
-  comment?: string
-  images?: string[]
-}
-type UIMenuItem = { name?: string; price?: string; description?: string }
+  id?: number;
+  userName?: string;
+  wasteRating?: number;
+  date?: string;
+  comment?: string;
+  images?: string[];
+};
+type UIMenuItem = { name?: string; price?: string; description?: string };
 type UIRestaurant = {
-  id: number
-  name: string
-  image?: string | null
-  badge?: string | null
-  wasteScore?: number | null
-  totalReviews?: number | null
+  id: number;
+  name: string;
+  image?: string | null;
+  badge?: string | null;
+  wasteScore?: number | null;
+  totalReviews?: number | null;
   /** 지도와 동일한 형식: 예) 카페,디저트>베이커리 */
-  category?: string | null
-  distance?: string | null
-  address?: string | null
-  telephone?: string | null
-  hours?: string | null
-  description?: string | null
-  favorited?: boolean
-  menu?: UIMenuItem[]
-  gallery?: string[]
-  reviews?: UIReview[]
-  infoSections?: { title: string; body: string }[]
-}
+  category?: string | null;
+  distance?: string | null;
+  address?: string | null;
+  telephone?: string | null;
+  hours?: string | null;
+  description?: string | null;
+  favorited?: boolean;
+  menu?: UIMenuItem[];
+  gallery?: string[];
+  reviews?: UIReview[];
+  infoSections?: { title: string; body: string }[];
+};
 
 /* ───────────────── 카테고리 라벨 정규화 ───────────────── */
 function firstNonEmpty(...vals: any[]) {
   for (const v of vals) {
-    if (Array.isArray(v) && v.length) return v
-    if (typeof v === "string" && v.trim()) return v.trim()
+    if (Array.isArray(v) && v.length) return v;
+    if (typeof v === "string" && v.trim()) return v.trim();
   }
-  return null
+  return null;
 }
 
 /** 다양한 원본 형태 → `대분류,중분류>소분류>세부` 같은 지도 표기 */
 function toCategoryLabel(raw: any): string | null {
-  const h = raw?.header ?? {}
-  const t = raw?.tabs ?? {}
-  const ext = raw?.external ?? {}
+  const h = raw?.header ?? {};
+  const t = raw?.tabs ?? {};
+  const ext = raw?.external ?? {};
 
   const arr =
     Array.isArray(raw?.categories) ? raw.categories :
     Array.isArray(ext?.categories) ? ext.categories :
     Array.isArray(h?.categories) ? h.categories :
-    Array.isArray(t?.info?.categories) ? t.info.categories : null
+    Array.isArray(t?.info?.categories) ? t.info.categories : null;
 
   const path =
     Array.isArray(raw?.categoryPath) ? raw.categoryPath :
-    Array.isArray(ext?.categoryPath) ? ext.categoryPath : null
+    Array.isArray(ext?.categoryPath) ? ext.categoryPath : null;
 
   const tiered = [
     ext?.categoryLarge ?? ext?.largeCategory ?? ext?.majorCategory,
     ext?.categoryMedium ?? ext?.middleCategory ?? ext?.midCategory,
     ext?.categorySmall ?? ext?.smallCategory ?? ext?.minorCategory,
     ext?.categoryDetail ?? ext?.detailCategory,
-  ].filter(Boolean)
+  ].filter(Boolean);
 
   const flat = firstNonEmpty(
     raw?.category,
@@ -134,17 +134,17 @@ function toCategoryLabel(raw: any): string | null {
     path,
     arr,
     tiered
-  )
+  );
 
-  if (!flat) return null
+  if (!flat) return null;
 
-  let label = ""
+  let label = "";
   if (Array.isArray(flat)) {
-    const head = flat.slice(0, 2).filter(Boolean).join(",")
-    const tail = flat.slice(2).filter(Boolean).join(">")
-    label = [head, tail].filter(Boolean).join(">")
+    const head = flat.slice(0, 2).filter(Boolean).join(",");
+    const tail = flat.slice(2).filter(Boolean).join(">");
+    label = [head, tail].filter(Boolean).join(">");
   } else {
-    label = String(flat)
+    label = String(flat);
   }
 
   label = label
@@ -152,15 +152,15 @@ function toCategoryLabel(raw: any): string | null {
     .replace(/\s*>\s*/g, ">")
     .replace(/,{2,}/g, ",")
     .replace(/>+/g, ">")
-    .trim()
+    .trim();
 
-  if (!label || /^etc$/i.test(label)) return null
-  return label
+  if (!label || /^etc$/i.test(label)) return null;
+  return label;
 }
 
 /* ───────────────── Review 정규화 ───────────────── */
 const normalizeReview = (r: any): UIReview => {
-  const u = r.user
+  const u = r.user;
   const name =
     typeof u === "string"
       ? u
@@ -171,19 +171,19 @@ const normalizeReview = (r: any): UIReview => {
          r.userName ??
          r.authorName ??
          r.author ??
-         "익명")
+         "익명");
 
   const ratingRaw =
-    r.score ?? r.waste_rating ?? r.rating ?? r.stars ?? r.star ?? r.wasteScore ?? 0
+    r.score ?? r.waste_rating ?? r.rating ?? r.stars ?? r.star ?? r.wasteScore ?? 0;
 
-  const comment = r.contents ?? r.comment ?? r.content ?? r.text ?? ""
-  const date = r.createdAt ?? r.created_at ?? r.date ?? r.created ?? ""
+  const comment = r.contents ?? r.comment ?? r.content ?? r.text ?? "";
+  const date = r.createdAt ?? r.created_at ?? r.date ?? r.created ?? "";
   const images =
     Array.isArray(r.images)
       ? r.images.map((x: any) => (typeof x === "string" ? x : x?.url)).filter(Boolean)
       : Array.isArray(r.photos)
         ? r.photos.map((x: any) => (typeof x === "string" ? x : x?.url)).filter(Boolean)
-        : []
+        : [];
 
   return {
     id: Number(r.id ?? r.review_id ?? 0),
@@ -192,15 +192,15 @@ const normalizeReview = (r: any): UIReview => {
     date,
     comment,
     images,
-  }
-}
+  };
+};
 
 /* ───────────────── Restaurant 정규화 ───────────────── */
 function normalizeRestaurant(raw: any): UIRestaurant {
   // v2 형태(header/tabs)
   if (raw?.header && raw?.tabs) {
-    const h = raw.header ?? {}
-    const t = raw.tabs ?? {}
+    const h = raw.header ?? {};
+    const t = raw.tabs ?? {};
 
     const menuItems: UIMenuItem[] = Array.isArray(t.menu?.items)
       ? t.menu.items.map((m: any) => ({
@@ -208,14 +208,14 @@ function normalizeRestaurant(raw: any): UIRestaurant {
           price: m?.price ?? "",
           description: m?.description ?? "",
         }))
-      : []
+      : [];
 
     const gallery: string[] = Array.isArray(t.gallery?.photos)
       ? t.gallery.photos.map((p: any) => (typeof p === "string" ? p : p?.url)).filter(Boolean)
-      : []
+      : [];
 
     const fav =
-      !!h.isFavorite || !!h.is_favorite || !!h.favorited || !!raw?.isFavorite || !!raw?.is_favorite || !!raw?.favorited
+      !!h.isFavorite || !!h.is_favorite || !!h.favorited || !!raw?.isFavorite || !!raw?.is_favorite || !!raw?.favorited;
 
     return {
       id: Number(h.id ?? 0),
@@ -224,7 +224,7 @@ function normalizeRestaurant(raw: any): UIRestaurant {
       badge: h.badge ?? null,
       wasteScore: typeof h.ecoScore === "number" ? h.ecoScore : null,
       totalReviews: typeof h.reviewCount === "number" ? h.reviewCount : 0,
-      category: toCategoryLabel(raw) ?? h.category ?? null, // ★ 지도 포맷
+      category: toCategoryLabel(raw) ?? h.category ?? null, // 지도 포맷
       distance: null,
       address: t.info?.address ?? h.address ?? null,
       telephone: t.info?.telephone ?? h.telephone ?? null,
@@ -234,20 +234,20 @@ function normalizeRestaurant(raw: any): UIRestaurant {
       menu: menuItems,
       gallery,
       reviews: [],
-    }
+    };
   }
 
   // 일반 형태
-  const ext = raw?.external ?? {}
-  const eco = raw?.stats?.ecoScore
-  const photos: string[] = Array.isArray(ext.photos) ? (ext.photos as any[]).map((p) => p?.url).filter(Boolean) : []
+  const ext = raw?.external ?? {};
+  const eco = raw?.stats?.ecoScore;
+  const photos: string[] = Array.isArray(ext.photos) ? (ext.photos as any[]).map((p) => p?.url).filter(Boolean) : [];
   const fav =
     !!raw?.isFavorite ||
     !!raw?.is_favorite ||
     !!raw?.favorited ||
     !!ext?.isFavorite ||
     !!ext?.is_favorite ||
-    !!ext?.favorited
+    !!ext?.favorited;
 
   return {
     id: Number(raw?.id ?? 0),
@@ -261,7 +261,7 @@ function normalizeRestaurant(raw: any): UIRestaurant {
         : typeof raw?.totalReviews === "number"
           ? raw.totalReviews
           : 0,
-    category: toCategoryLabel(raw) ?? ext.category ?? raw?.category ?? null, // ★ 지도 포맷
+    category: toCategoryLabel(raw) ?? ext.category ?? raw?.category ?? null,
     distance: raw?.distance ?? null,
     address: ext.address ?? raw?.address ?? null,
     telephone: ext.telephone ?? raw?.telephone ?? null,
@@ -277,167 +277,175 @@ function normalizeRestaurant(raw: any): UIRestaurant {
       : [],
     gallery: photos,
     reviews: [],
-  }
+  };
 }
 
 /* ───────────────── Page ───────────────── */
 export default function RestaurantDetailPage() {
-  const params = useParams()
-  const router = useRouter()
-  const searchParams = useSearchParams()
-  const routeFav = searchParams.get("fav") === "1"
-  const routeCat = searchParams.get("cat") || null // ★ 쿼리 카테고리
+  const params = useParams();
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const routeFav = searchParams.get("fav") === "1";
+  const routeCat = searchParams.get("cat") || null; // 쿼리 카테고리
 
-  const restaurantId = Number.parseInt((params as any).id as string)
+  const restaurantId = Number.parseInt((params as any).id as string);
 
-  const [activeTab, setActiveTab] = useState("info")
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [raw, setRaw] = useState<any | null>(null)
+  const [activeTab, setActiveTab] = useState("info");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [raw, setRaw] = useState<any | null>(null);
 
   // 리뷰
-  const [reviews, setReviews] = useState<UIReview[]>([])
-  const [reviewsLoading, setReviewsLoading] = useState(false)
-  const [reviewsError, setReviewsError] = useState<string | null>(null)
-  const [reviewsFetched, setReviewsFetched] = useState(false)
+  const [reviews, setReviews] = useState<UIReview[]>([]);
+  const [reviewsLoading, setReviewsLoading] = useState(false);
+  const [reviewsError, setReviewsError] = useState<string | null>(null);
+  const [reviewsFetched, setReviewsFetched] = useState(false);
 
   async function loadReviewsOnce(id: number) {
-    if (!id || reviewsFetched) return
-    setReviewsLoading(true)
-    setReviewsError(null)
+    if (!id || reviewsFetched) return;
+    setReviewsLoading(true);
+    setReviewsError(null);
     try {
-      const res = await apiClient.getRestaurantReviews(id)
+      const res = await apiClient.getRestaurantReviews(id);
       if (!res.success) {
-        setReviews([])
-        setReviewsError(res.error || "리뷰를 불러올 수 없습니다.")
+        setReviews([]);
+        setReviewsError(res.error || "리뷰를 불러올 수 없습니다.");
       } else {
         const list = Array.isArray((res.data as any)?.items)
           ? (res.data as any).items
           : Array.isArray(res.data)
             ? (res.data as any)
-            : []
-        setReviews(list.map((r: any) => normalizeReview(r)))
+            : [];
+        setReviews(list.map((r: any) => normalizeReview(r)));
       }
     } catch (e: any) {
-      setReviews([])
-      setReviewsError(e?.message || "네트워크 오류가 발생했어요.")
+      setReviews([]);
+      setReviewsError(e?.message || "네트워크 오류가 발생했어요.");
     } finally {
-      setReviewsLoading(false)
-      setReviewsFetched(true)
+      setReviewsLoading(false);
+      setReviewsFetched(true);
     }
   }
 
   // 상세 + 선로딩
   useEffect(() => {
-    let mounted = true
-    ;(async () => {
-      setLoading(true)
-      setError(null)
-      setReviewsFetched(false)
+    let mounted = true;
+    (async () => {
+      setLoading(true);
+      setError(null);
+      setReviewsFetched(false);
       try {
-        const res = await apiClient.getRestaurantDetail(restaurantId)
-        if (!mounted) return
+        const res = await apiClient.getRestaurantDetail(restaurantId);
+        if (!mounted) return;
         if (!res.success) {
-          setError(res.error || "식당 정보를 불러올 수 없습니다.")
-          setRaw(null)
+          setError(res.error || "식당 정보를 불러올 수 없습니다.");
+          setRaw(null);
         } else {
-          setRaw(res.data)
-          loadReviewsOnce(restaurantId) // ★ 선로딩
+          setRaw(res.data);
+          loadReviewsOnce(restaurantId); // 선로딩
         }
       } catch (e: any) {
-        if (!mounted) return
-        setError(e?.message || "네트워크 오류가 발생했어요.")
-        setRaw(null)
+        if (!mounted) return;
+        setError(e?.message || "네트워크 오류가 발생했어요.");
+        setRaw(null);
       } finally {
-        if (mounted) setLoading(false)
+        if (mounted) setLoading(false);
       }
-    })()
-    return () => { mounted = false }
-  }, [restaurantId])
+    })();
+    return () => { mounted = false; };
+  }, [restaurantId]);
 
   // 리뷰 탭 진입 시(미로드면 1회)
   useEffect(() => {
-    if (activeTab !== "reviews" || !restaurantId || reviewsFetched) return
-    loadReviewsOnce(restaurantId)
-  }, [activeTab, restaurantId, reviewsFetched])
+    if (activeTab !== "reviews" || !restaurantId || reviewsFetched) return;
+    loadReviewsOnce(restaurantId);
+  }, [activeTab, restaurantId, reviewsFetched]);
 
   // UI merge
   const restaurant = useMemo<UIRestaurant | null>(() => {
-    if (!raw) return null
-    const base = normalizeRestaurant(raw)
-    const mock = mockRestaurants[base.id]
-    if (!mock) return base
+    if (!raw) return null;
+    const base = normalizeRestaurant(raw);
+    const mock = mockRestaurants[base.id];
+    if (!mock) return base;
 
-    const mergedDescription = [base.description, mock.facilities].filter(Boolean).join("\n\n")
-    const mergedMenu = Array.isArray(mock.menu) && mock.menu.length > 0 ? mock.menu : base.menu
+    const mergedDescription = [base.description, mock.facilities].filter(Boolean).join("\n\n");
+    const mergedMenu = Array.isArray(mock.menu) && mock.menu.length > 0 ? mock.menu : base.menu;
 
     return {
       ...base,
       description: mergedDescription,
       menu: mergedMenu,
       infoSections: mock.infoSections,
-    }
-  }, [raw])
+    };
+  }, [raw]);
 
   // 즐겨찾기
-  const isFav = ((restaurant?.favorited ?? false) || routeFav) as boolean
+  const isFav = ((restaurant?.favorited ?? false) || routeFav) as boolean;
 
   const toggleFavorite = async () => {
-    if (!restaurant?.id) return
-    const prev = isFav
-    const nextFav = !prev
+    if (!restaurant?.id) return;
+    const prev = isFav;
+    const nextFav = !prev;
     setRaw((r: any) => {
-      if (!r) return r
-      const copy = JSON.parse(JSON.stringify(r))
-      if (copy?.header) copy.header.isFavorite = nextFav
-      else copy.isFavorite = nextFav
-      return copy
-    })
-    router.replace(`/restaurant/${restaurantId}?fav=${nextFav ? 1 : 0}${routeCat ? `&cat=${encodeURIComponent(routeCat)}` : ""}`, { scroll: false })
+      if (!r) return r;
+      const copy = JSON.parse(JSON.stringify(r));
+      if (copy?.header) copy.header.isFavorite = nextFav;
+      else copy.isFavorite = nextFav;
+      return copy;
+    });
+    router.replace(
+      `/restaurant/${restaurantId}?fav=${nextFav ? 1 : 0}${routeCat ? `&cat=${encodeURIComponent(routeCat)}` : ""}`,
+      { scroll: false }
+    );
     try {
       if (nextFav) {
-        const rs = await apiClient.addFavorite(restaurant.id)
-        if (!rs?.success) throw new Error(rs?.error || "즐겨찾기 추가 실패")
+        const rs = await apiClient.addFavorite(restaurant.id);
+        if (!rs?.success) throw new Error(rs?.error || "즐겨찾기 추가 실패");
       } else {
-        const rs = await apiClient.removeFavorite(restaurant.id)
-        if (!rs?.success) throw new Error(rs?.error || "즐겨찾기 해제 실패")
+        const rs = await apiClient.removeFavorite(restaurant.id);
+        if (!rs?.success) throw new Error(rs?.error || "즐겨찾기 해제 실패");
       }
     } catch (err: any) {
       setRaw((r: any) => {
-        if (!r) return r
-        const copy = JSON.parse(JSON.stringify(r))
-        if (copy?.header) copy.header.isFavorite = prev
-        else copy.isFavorite = prev
-        return copy
-      })
-      router.replace(`/restaurant/${restaurantId}?fav=${prev ? 1 : 0}${routeCat ? `&cat=${encodeURIComponent(routeCat)}` : ""}`, { scroll: false })
-      alert(err?.message || "즐겨찾기 처리가 실패했어요.")
+        if (!r) return r;
+        const copy = JSON.parse(JSON.stringify(r));
+        if (copy?.header) copy.header.isFavorite = prev;
+        else copy.isFavorite = prev;
+        return copy;
+      });
+      router.replace(
+        `/restaurant/${restaurantId}?fav=${prev ? 1 : 0}${routeCat ? `&cat=${encodeURIComponent(routeCat)}` : ""}`,
+        { scroll: false }
+      );
+      alert(err?.message || "즐겨찾기 처리가 실패했어요.");
     }
-  }
+  };
 
   const handleShare = () => {
-    if (!restaurant) return
+    if (!restaurant) return;
     if (navigator.share) {
-      navigator.share({
-        title: restaurant.name,
-        text: "에코 친화 식당 정보 공유",
-        url: typeof window !== "undefined" ? window.location.href : "",
-      }).catch(() => {})
+      navigator
+        .share({
+          title: restaurant.name,
+          text: "에코 친화 식당 정보 공유",
+          url: typeof window !== "undefined" ? window.location.href : "",
+        })
+        .catch(() => {});
     } else {
-      alert("이 브라우저는 공유 기능을 지원하지 않아요.")
+      alert("이 브라우저는 공유 기능을 지원하지 않아요.");
     }
-  }
+  };
 
   const handleWriteReview = () => {
-    router.push(`/review/write?restaurantId=${restaurantId}`)
-  }
+    router.push(`/review/write?restaurantId=${restaurantId}`);
+  };
 
   // 리뷰 평균(있으면 사용)
   const reviewsAvg = useMemo(() => {
-    if (!reviews.length) return null
-    const sum = reviews.reduce((acc, r) => acc + (Number(r.wasteRating) || 0), 0)
-    return Math.round((sum / reviews.length) * 10) / 10
-  }, [reviews])
+    if (!reviews.length) return null;
+    const sum = reviews.reduce((acc, r) => acc + (Number(r.wasteRating) || 0), 0);
+    return Math.round((sum / reviews.length) * 10) / 10;
+  }, [reviews]);
 
   if (loading) {
     return (
@@ -453,7 +461,7 @@ export default function RestaurantDetailPage() {
           <div className="text-sm text-muted-foreground">잠시만 기다려주세요</div>
         </motion.div>
       </div>
-    )
+    );
   }
 
   if (error || !restaurant) {
@@ -473,15 +481,15 @@ export default function RestaurantDetailPage() {
           </Button>
         </motion.div>
       </div>
-    )
+    );
   }
 
   // 표시할 별점
-  const starFromEco = calculateWasteStarRating(restaurant.wasteScore ?? 0)
-  const displayStar = (reviewsAvg ?? starFromEco)
+  const starFromEco = calculateWasteStarRating(restaurant.wasteScore ?? 0);
+  const displayStar = (reviewsAvg ?? starFromEco);
 
-  // ★ 표시할 카테고리: 쿼리 우선 → BE 값 → ETC
-  const displayCategory = routeCat || restaurant.category || "ETC"
+  // 표시할 카테고리: 쿼리 우선 → BE 값 → ETC
+  const displayCategory = routeCat || restaurant.category || "ETC";
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-green-50/30 to-sky-50/30 dark:from-slate-950 dark:via-green-950/20 dark:to-sky-950/20">
@@ -892,5 +900,5 @@ export default function RestaurantDetailPage() {
         </motion.div>
       </div>
     </div>
-  )
+  );
 }
