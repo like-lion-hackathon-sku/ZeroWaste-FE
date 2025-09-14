@@ -94,6 +94,7 @@ type RestaurantItem = {
 };
 
 const SIDEBAR_WIDTH_PX = 400;
+const STORAGE_KEY = "ecoEats.mapState.v1";
 
 /* ───────────────── 공통: 보이는 별점(0~5)으로 정규화 ───────────────── */
 const clamp05 = (v: any): number => {
@@ -167,7 +168,7 @@ export default function MapWithListPage() {
   const markersRef = useRef<any[]>([]);
   const hereMarkerRef = useRef<any>(null);
 
-  // 초기(DB) 목록
+  // 초기(DB) 목록 (초기 자동검색/자동표시는 막고, 사용자가 검색했을 때만 사용)
   const { data: rawRestaurants, loading, error } = useRestaurants();
 
   // 지도 검색 목록 / 로딩 / 지도 결과 우선 플래그
@@ -175,8 +176,11 @@ export default function MapWithListPage() {
   const [loadingMapRestaurants, setLoadingMapRestaurants] = useState(false);
   const [useMapList, setUseMapList] = useState(false);
 
-  // 검색 키워드
-  const [kw, setKw] = useState("카페");
+  // 검색 키워드 — 기본값을 ""로 (카페로 초기화되지 않도록)
+  const [kw, setKw] = useState("");
+
+  // 복원했는지 표시 (중복 동작 방지)
+  const restoredRef = useRef(false);
 
   /* ────────────── 좌표/패치 유틸 ────────────── */
   const fixCoord = (v: any) => {
@@ -353,6 +357,55 @@ export default function MapWithListPage() {
     });
   };
 
+  /* ────────────── 상태 저장/복원 ────────────── */
+  const saveState = (kwStr: string, list: RestaurantItem[]) => {
+    try {
+      const center = mapObjRef.current?.getCenter?.();
+      const zoom = mapObjRef.current?.getZoom?.();
+      const payload = {
+        kw: kwStr,
+        list,
+        useMapList: true,
+        center: center ? { lat: center.y, lng: center.x } : null,
+        zoom: Number.isFinite(zoom) ? zoom : null,
+        ts: Date.now(),
+      };
+      sessionStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+    } catch (e) {
+      console.warn("saveState failed", e);
+    }
+  };
+
+  const tryRestoreState = () => {
+    if (restoredRef.current) return false;
+    try {
+      const raw = sessionStorage.getItem(STORAGE_KEY);
+      if (!raw) return false;
+      const parsed = JSON.parse(raw);
+      if (typeof parsed.kw === "string") setKw(parsed.kw);
+      if (Array.isArray(parsed.list)) {
+        setMapRestaurants(parsed.list);
+        setUseMapList(!!parsed.useMapList);
+      }
+      // 지도는 SDK 준비 후 위치/줌 복원
+      setTimeout(() => {
+        if (!mapObjRef.current) return;
+        if (parsed.center) {
+          const pos = new window.naver.maps.LatLng(parsed.center.lat, parsed.center.lng);
+          mapObjRef.current.setCenter(pos);
+        }
+        if (Number.isFinite(parsed.zoom)) {
+          mapObjRef.current.setZoom(parsed.zoom);
+        }
+      }, 0);
+      restoredRef.current = true;
+      return true;
+    } catch (e) {
+      console.warn("restoreState failed", e);
+      return false;
+    }
+  };
+
   /* ────────────── 즐겨찾기 ────────────── */
   const toggleFavorite = async (idx: number) => {
     if (!isLoggedIn) return;
@@ -365,6 +418,7 @@ export default function MapWithListPage() {
       const next = restaurants.map((x, i) => (i === idx ? { ...x, favorited: v } : x));
       setMapRestaurants(next);
       setUseMapList(true);
+      saveState(kw, next);
       if (Number.isFinite(Number(id))) {
         setFavoriteIds((old) => {
           const s = new Set(old);
@@ -397,9 +451,14 @@ export default function MapWithListPage() {
   /* ────────────── 검색/목록 변환 ────────────── */
   const handleSearchCurrentBounds = async () => {
     if (!mapObjRef.current) return;
+    // 빈 검색어면 실행하지 않기
+    if (!kw.trim()) {
+      alert("검색어를 입력해주세요.");
+      return;
+    }
     try {
       setLoadingMapRestaurants(true);
-      const qs = await buildQueriesFromBounds(kw || "카페");
+      const qs = await buildQueriesFromBounds(kw.trim());
       const raw = await fetchNearbyForQueries(qs);
 
       const mapped: RestaurantItem[] = raw.map((r: any) => {
@@ -426,7 +485,7 @@ export default function MapWithListPage() {
           restaurantId: idNum,
           name: r.name,
           image: pickImage(r.image, r.category, r.name),
-          category: r.category ?? null, // ← 여기의 문자열을 상세로 넘길 거예요
+          category: r.category ?? null,
           badge: r.badge ?? null,
           address: r.address ?? null,
           telephone: r.telephone ?? null,
@@ -447,9 +506,11 @@ export default function MapWithListPage() {
 
       setMapRestaurants(enriched);
       setUseMapList(true);
+      saveState(kw, enriched);
     } catch {
       setMapRestaurants([]);
       setUseMapList(true);
+      saveState(kw, []);
     } finally {
       setLoadingMapRestaurants(false);
     }
@@ -498,12 +559,13 @@ export default function MapWithListPage() {
   const topRestaurants = useMemo(() => restaurants.slice(0, 5), [restaurants]);
 
   /* ────────────── 내비/지도 유틸 ────────────── */
-  // ★ cat 함께 전달하도록 수정
   const goDetail = (restaurantId?: number, favorited?: boolean, catRaw?: string | null) => {
     if (!restaurantId) {
       alert("식당 상세를 보려면 먼저 즐겨찾기 추가(멱등 확보) 후 가능합니다.");
       return;
     }
+    // 상세로 가기 전에 현재 상태를 저장(혹시 검색 없이 목록만 보고 들어간 경우 대비)
+    saveState(kw, mapRestaurants.length ? mapRestaurants : restaurants);
     const fav = favorited ? "1" : "0";
     const cat = catRaw ? `&cat=${encodeURIComponent(catRaw)}` : "";
     router.push(`/restaurant/${restaurantId}?fav=${fav}${cat}`);
@@ -543,11 +605,12 @@ export default function MapWithListPage() {
     });
     mapObjRef.current = map;
 
-    // 처음 마커
-    renderMarkers(map, restaurants);
+    // 상태 복원 시도 (센터/줌 포함)
+    tryRestoreState();
 
-    // 현재 위치
-    if (navigator.geolocation) {
+    // 현재 위치 마커(복원된 상태가 없을 때만 초기에 살짝 맞춰주기)
+    const hasSaved = !!sessionStorage.getItem(STORAGE_KEY);
+    if (!hasSaved && navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
         (pos) => {
           const here = new window.naver.maps.LatLng(pos.coords.latitude, pos.coords.longitude);
@@ -560,6 +623,7 @@ export default function MapWithListPage() {
               size: new window.naver.maps.Size(12, 12),
             },
           });
+          // 첫 진입만 사용자 위치로 약간 줌
           map.setCenter(here);
           map.setZoom(14);
         },
@@ -583,12 +647,8 @@ export default function MapWithListPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [restaurants, naverReady]);
 
-  // 초기 1회 검색
-  useEffect(() => {
-    if (!naverReady || !mapObjRef.current) return;
-    handleSearchCurrentBounds();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [naverReady]);
+  // ❌ 자동검색 제거: 예전엔 naverReady 시점에 handleSearchCurrentBounds()를 호출했지만,
+  //    이제는 사용자 입력(Enter/버튼)로만 검색 수행. 복원 상태가 있으면 그걸 그대로 사용.
 
   function renderMarkers(map: any, list: RestaurantItem[]) {
     markersRef.current.forEach((m) => m.setMap(null));
@@ -602,7 +662,7 @@ export default function MapWithListPage() {
           title: r.name,
         });
         window.naver.maps.Event.addListener(marker, "click", () =>
-          r.id ? goDetail(r.id, r.favorited, r.category ?? null) : undefined // ★ cat 전달
+          r.id ? goDetail(r.id, r.favorited, r.category ?? null) : undefined
         );
         markersRef.current.push(marker);
       }
@@ -632,6 +692,8 @@ export default function MapWithListPage() {
         }
         mapObjRef.current.setCenter(here);
         mapObjRef.current.setZoom(14);
+        // 위치 이동도 저장(사용자가 의도적으로 옮긴 것으로 간주)
+        saveState(kw, mapRestaurants.length ? mapRestaurants : restaurants);
       },
       (err) => {
         alert("현재 위치를 불러올 수 없습니다. 위치 접근 권한을 허용해주세요.");
@@ -666,20 +728,20 @@ export default function MapWithListPage() {
           </span>
         </motion.div>
 
-        {/* 검색바 */}
-<div className="hidden sm:block absolute top-1/2 -translate-y-1/2 left-[400px] right-48 z-0 pointer-events-none">
-  <motion.div
-    className="flex items-center gap-3 pointer-events-auto"
-    initial={{ opacity: 0, scale: 0.95 }}
-    animate={{ opacity: 1, scale: 1 }}
-  >
+        {/* 검색바 — 사이드바 폭에 맞춰 겹침 방지 */}
+        <div className="hidden sm:block absolute top-1/2 -translate-y-1/2 left-[400px] right-48 z-0 pointer-events-none">
+          <motion.div
+            className="flex items-center gap-3 pointer-events-auto"
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+          >
             <div className="relative flex-1 max-w-[420px]">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
               <input
                 value={kw}
                 onChange={(e) => setKw(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && handleSearchCurrentBounds()}
-                placeholder="예: 카페, 분식, 라멘…"
+                placeholder="예: 카페, 분식, 라멘… (검색어가 비어있으면 검색되지 않아요)"
                 className="h-11 w-full pl-10 pr-4 rounded-2xl border-0 bg-white/90 dark:bg-slate-800/90 backdrop-blur-sm text-sm outline-none focus:ring-2 focus:ring-green-500/30 shadow-lg"
               />
             </div>
@@ -768,7 +830,7 @@ export default function MapWithListPage() {
                 >
                   <Card
                     className="relative p-5 cursor-pointer bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm hover:bg-white/90 dark:hover:bg-slate-800/90 border-white/20 dark:border-slate-700/50 shadow-lg transition-all duration-200 rounded-2xl group"
-                    onClick={() => r.id && goDetail(r.id, r.favorited, r.category ?? null)} // ★ cat 전달
+                    onClick={() => r.id && goDetail(r.id, r.favorited, r.category ?? null)}
                   >
                     <div className="flex items-start gap-4">
                       {/* 썸네일 */}
@@ -944,7 +1006,7 @@ export default function MapWithListPage() {
                       className="cursor-pointer bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm hover:bg-white/90 dark:hover:bg-slate-800/90 border-white/20 dark:border-slate-700/50 shadow-lg transition-all duration-200 rounded-2xl group"
                       onClick={() =>
                         restaurant.id &&
-                        goDetail(restaurant.id, restaurant.favorited, restaurant.category ?? null) // ★ cat 전달
+                        goDetail(restaurant.id, restaurant.favorited, restaurant.category ?? null)
                       }
                     >
                       <CardContent className="p-4">
@@ -986,6 +1048,7 @@ export default function MapWithListPage() {
                               </Badge>
                             </div>
 
+                            {/* 평점/거리 */}
                             <div className="flex items-center gap-3 text-sm text-muted-foreground">
                               <div className="flex items-center gap-1">
                                 {[...Array(5)].map((_, i) => (
@@ -1018,7 +1081,7 @@ export default function MapWithListPage() {
             <div className="text-center text-muted-foreground py-12 bg-slate-50 dark:bg-slate-800/50 rounded-2xl">
               <Star className="h-16 w-16 mx-auto mb-4 opacity-30" />
               <h3 className="text-lg font-medium mb-2">식당 정보가 없습니다</h3>
-              <p className="text-sm">잠시 후 다시 시도해주세요</p>
+              <p className="text-sm">검색어를 입력하고 검색 버튼을 눌러보세요</p>
             </div>
           )}
         </div>
