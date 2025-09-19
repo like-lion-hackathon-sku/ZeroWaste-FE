@@ -1,5 +1,10 @@
 // Database types matching ERD Cloud schema
 
+export enum UserRole {
+  USER = "USER",
+  OWNER = "OWNER",
+}
+
 export interface User {
   id: number
   email: string
@@ -9,6 +14,24 @@ export interface User {
   created_at: string
   updated_at: string
   is_completed: boolean
+  role?: UserRole
+}
+
+export interface OwnerProfile {
+  id: number
+  user_id: number
+  restaurant_name: string
+  restaurant_image: string | null
+  business_license: string | null
+  menu_items: MenuItem[]
+  restaurant_info: {
+    description: string
+    directions: string
+    phone: string
+    address: string
+  }
+  created_at: string
+  updated_at: string
 }
 
 export interface Restaurant {
@@ -22,6 +45,7 @@ export interface Restaurant {
   is_sponsored: boolean | null
   created_at: string | null
   updated_at: string | null
+  owner_id?: number | null
 }
 
 export enum RestaurantCategory {
@@ -73,13 +97,6 @@ export interface AcquiredBadge {
   acquired_at: string
 }
 
-export interface RefreshToken {
-  id: number
-  token: string
-  user_id: number
-  updated_at: string | null
-}
-
 // Extended types for API responses
 export interface RestaurantWithDetails extends Restaurant {
   score?: number
@@ -100,6 +117,7 @@ export interface MenuItem {
   name: string
   price: string
   description: string
+  image?: string
 }
 
 export interface ReviewWithUser extends Review {
@@ -162,4 +180,40 @@ export interface UpdateReviewRequest {
   rating?: number
   comment?: string
   waste_rating?: number
+}
+
+export interface CreateOwnerProfileRequest {
+  restaurant_name: string
+  restaurant_image?: File
+  business_license?: File
+  menu_items: {
+    name: string
+    price: string
+    description: string
+    image?: File
+  }[]
+  restaurant_info: {
+    description: string
+    directions: string
+    phone: string
+    address: string
+  }
+}
+
+export interface UpdateOwnerProfileRequest {
+  restaurant_name?: string
+  restaurant_image?: File
+  business_license?: File
+  menu_items?: {
+    name: string
+    price: string
+    description: string
+    image?: File
+  }[]
+  restaurant_info?: {
+    description?: string
+    directions?: string
+    phone?: string
+    address?: string
+  }
 }
