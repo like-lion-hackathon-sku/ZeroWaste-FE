@@ -7,11 +7,31 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Progress } from "@/components/ui/progress"
-import { ArrowLeft, User, Star, Heart, Award, Users, Edit, Loader2, Trash2, MapPin, Phone, Leaf } from "lucide-react"
+import {
+  ArrowLeft,
+  User,
+  Star,
+  Heart,
+  Award,
+  Users,
+  Edit,
+  Loader2,
+  Trash2,
+  MapPin,
+  Phone,
+  Leaf,
+  Store,
+  UserCheck,
+  Plus,
+  Stamp,
+  ChevronLeft,
+  ChevronRight,
+} from "lucide-react"
 import { useRouter } from "next/navigation"
 import { useUserProfile, useUserBadges, useFavorites, useUserReviews } from "@/lib/hooks/use-api-with-fallback"
 import { apiClient } from "@/lib/api/client"
 import { formatDate } from "@/lib/utils/database-helpers"
+import { UserRole } from "@/lib/types/database"
 
 /* ────────────────────────────────────────────────────────────
    타입
@@ -44,12 +64,31 @@ type ReviewVM = {
   created_at?: string | null
 }
 
+type OwnerRestaurant = {
+  id: number
+  name: string
+  category?: string | null
+  address?: string | null
+  telephone?: string | null
+  rating?: number
+  reviewCount?: number
+}
+
+type RestaurantStamp = {
+  restaurantId: number
+  restaurantName: string
+  totalStamps: number // 4점 이상 리뷰 개수
+  maxStamps: number // 최대 5개
+}
+
 /* ────────────────────────────────────────────────────────────
    컴포넌트
 ──────────────────────────────────────────────────────────── */
 export default function ProfilePage() {
   const router = useRouter()
   const [activeTab, setActiveTab] = useState("reviews")
+  const [userRole, setUserRole] = useState<UserRole>(UserRole.USER)
+  const [isOwnerRegistered, setIsOwnerRegistered] = useState(false)
 
   const { data: user, loading: userLoading, error: userError, isUsingFallback: userFallback } = useUserProfile()
   const { data: userBadges, loading: badgesLoading, isUsingFallback: badgesFallback } = useUserBadges()
@@ -66,6 +105,70 @@ export default function ProfilePage() {
 
   // 리뷰 화면 모델
   const [reviewList, setReviewList] = useState<ReviewVM[]>([])
+
+  const [ownerRestaurants, setOwnerRestaurants] = useState<OwnerRestaurant[]>([
+    {
+      id: 1,
+      name: "그린 비스트로",
+      category: "양식",
+      address: "서울시 강남구 테헤란로 123",
+      telephone: "02-1234-5678",
+      rating: 4.7,
+      reviewCount: 24,
+    },
+  ])
+
+  const restaurantStamps = useMemo(() => {
+    const mockStamps: RestaurantStamp[] = [
+      {
+        restaurantId: 1,
+        restaurantName: "그린 비스트로",
+        totalStamps: 6,
+        maxStamps: 5,
+      },
+      {
+        restaurantId: 2,
+        restaurantName: "제로웨이스트 카페",
+        totalStamps: 8,
+        maxStamps: 5,
+      },
+      {
+        restaurantId: 3,
+        restaurantName: "친환경 한식당",
+        totalStamps: 4,
+        maxStamps: 5,
+      },
+      {
+        restaurantId: 4,
+        restaurantName: "에코 레스토랑",
+        totalStamps: 7,
+        maxStamps: 5,
+      },
+      {
+        restaurantId: 5,
+        restaurantName: "지속가능한 식당",
+        totalStamps: 5,
+        maxStamps: 5,
+      },
+      {
+        restaurantId: 6,
+        restaurantName: "자연 친화 카페",
+        totalStamps: 9,
+        maxStamps: 5,
+      },
+    ]
+
+    return mockStamps
+  }, [reviewList])
+
+  const [currentStampPage, setCurrentStampPage] = useState(1)
+  const stampsPerPage = 2 // 페이지당 2개씩 표시하여 페이지네이션을 더 명확하게
+
+  const totalStampPages = Math.ceil(restaurantStamps.length / stampsPerPage)
+  const paginatedStamps = restaurantStamps.slice(
+    (currentStampPage - 1) * stampsPerPage,
+    currentStampPage * stampsPerPage,
+  )
 
   /* ──────────────────────────────────────────────────────────
      응답 정규화: 중첩형/평평한 두 포맷 모두 지원 + address/telephone 포함
@@ -100,8 +203,26 @@ export default function ProfilePage() {
   const earnedBadges = (userBadges || []).filter((badge: any) => badge.badge)
 
   const mockInProgressBadges = [
-    { id: "good_customer_3", name: "착한 손님 Lv.3", icon: "🍃", description: "누적 리뷰 50개", category: "activity", earned: false, progress: reviewList.length || 0, target: 50 },
-    { id: "eco_influencer", name: "에코 인플루언서", icon: "📸", description: "AI 분석 사진 20장 업로드", category: "environment", earned: false, progress: 15, target: 20 },
+    {
+      id: "good_customer_3",
+      name: "착한 손님 Lv.3",
+      icon: "🍃",
+      description: "누적 리뷰 50개",
+      category: "activity",
+      earned: false,
+      progress: reviewList.length || 0,
+      target: 50,
+    },
+    {
+      id: "eco_influencer",
+      name: "에코 인플루언서",
+      icon: "📸",
+      description: "AI 분석 사진 20장 업로드",
+      category: "environment",
+      earned: false,
+      progress: 15,
+      target: 20,
+    },
   ]
 
   const handleRestaurantClick = (restaurantId: number) => router.push(`/restaurant/${restaurantId}`)
@@ -133,7 +254,9 @@ export default function ProfilePage() {
       id: r.id ?? r.reviewId,
       restaurant: r.restaurant
         ? { id: r.restaurant.id, name: r.restaurant.name, category: r.restaurant.category ?? null }
-        : (r.restaurantId ? { id: r.restaurantId, name: "식당 정보 없음" } : undefined),
+        : r.restaurantId
+          ? { id: r.restaurantId, name: "식당 정보 없음" }
+          : undefined,
       waste_rating: Number(r.score ?? r.waste_rating ?? 0),
       comment: String(r.contents ?? r.comment ?? ""),
       created_at: r.createdAt ?? r.created_at ?? null,
@@ -143,10 +266,10 @@ export default function ProfilePage() {
     const needIds = Array.from(
       new Set(
         base
-          .filter(v => v.restaurant && (!v.restaurant.name || v.restaurant.name === "식당 정보 없음"))
-          .map(v => v.restaurant!.id)
-          .filter((id): id is number => Number.isFinite(id))
-      )
+          .filter((v) => v.restaurant && (!v.restaurant.name || v.restaurant.name === "식당 정보 없음"))
+          .map((v) => v.restaurant!.id)
+          .filter((id): id is number => Number.isFinite(id)),
+      ),
     )
     if (needIds.length === 0) return
 
@@ -172,19 +295,51 @@ export default function ProfilePage() {
             }
           } catch {}
           return v
-        })
+        }),
       )
       setReviewList(patched)
     })()
   }, [reviews])
 
   /* ✅ 평균 별점 계산 (리뷰 없으면 0) */
-  const totalReviews = reviewList.length
   const avgRating = useMemo(() => {
+    const totalReviews = reviewList.length
     if (totalReviews === 0) return 0
     const sum = reviewList.reduce((acc, r) => acc + (Number(r.waste_rating) || 0), 0)
     return Math.max(0, Math.min(5, Math.round((sum / totalReviews) * 10) / 10))
-  }, [totalReviews, reviewList])
+  }, [reviewList])
+
+  const handleRoleSwitch = () => {
+    if (userRole === UserRole.USER) {
+      setUserRole(UserRole.OWNER)
+      setActiveTab("restaurant") // Switch to restaurant tab when becoming owner
+    } else {
+      setUserRole(UserRole.USER)
+      setActiveTab("reviews") // Switch back to reviews tab when becoming user
+    }
+  }
+
+  useEffect(() => {
+    // TODO: Check if user has owner profile registered
+    // For now, simulate that user has some restaurants registered
+    setIsOwnerRegistered(ownerRestaurants.length > 0)
+  }, [ownerRestaurants])
+
+  const ownerStats = useMemo(() => {
+    const totalReceivedReviews = ownerRestaurants.reduce((sum, restaurant) => sum + (restaurant.reviewCount || 0), 0)
+    const avgOwnerRating =
+      ownerRestaurants.length > 0
+        ? ownerRestaurants.reduce((sum, restaurant) => sum + (restaurant.rating || 0), 0) / ownerRestaurants.length
+        : 0
+    const totalFavorites = ownerRestaurants.length * 156 // Mock data
+
+    return {
+      totalRestaurants: ownerRestaurants.length,
+      totalReceivedReviews,
+      avgOwnerRating: Math.round(avgOwnerRating * 10) / 10,
+      totalFavorites,
+    }
+  }, [ownerRestaurants])
 
   if (isLoading) {
     return (
@@ -241,9 +396,11 @@ export default function ProfilePage() {
           <h1 className="font-bold text-xl bg-gradient-to-r from-green-600 to-sky-600 bg-clip-text text-transparent">
             프로필
           </h1>
-          <Button variant="ghost" size="sm" onClick={handleEditProfile} className="hover:bg-white/20">
-            <Edit className="h-4 w-4" />
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button variant="ghost" size="sm" onClick={handleEditProfile} className="hover:bg-white/20">
+              <Edit className="h-4 w-4" />
+            </Button>
+          </div>
         </div>
       </motion.header>
 
@@ -290,6 +447,44 @@ export default function ProfilePage() {
                     가입일: {formatDate(user.created_at)}
                   </motion.p>
                 </div>
+                {/* 사장 모드일 때 뱃지를 제일 왼쪽에 추가 */}
+                {userRole === UserRole.OWNER && (
+                  <motion.div
+                    initial={{ opacity: 0, x: -20 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ delay: 0.6 }}
+                  >
+                    <div className="flex flex-col items-center gap-2">
+                      <div className="bg-gradient-to-r from-orange-500 to-red-600 text-white px-3 py-1 rounded-full text-sm font-medium">
+                        사장님
+                      </div>
+                      <div className="text-xs text-gray-500 dark:text-gray-400">인증됨</div>
+                    </div>
+                  </motion.div>
+                )}
+                <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.7 }}>
+                  <Button
+                    onClick={handleRoleSwitch}
+                    variant={userRole === UserRole.OWNER ? "default" : "outline"}
+                    className={`${
+                      userRole === UserRole.OWNER
+                        ? "bg-gradient-to-r from-orange-500 to-red-600 hover:from-orange-600 hover:to-red-700"
+                        : "border-green-500 text-green-600 hover:bg-green-50 dark:hover:bg-green-900/20"
+                    } transition-all duration-300`}
+                  >
+                    {userRole === UserRole.USER ? (
+                      <>
+                        <Store className="h-4 w-4 mr-2" />
+                        사업자 모드 전환
+                      </>
+                    ) : (
+                      <>
+                        <UserCheck className="h-4 w-4 mr-2" />
+                        사용자 모드 전환
+                      </>
+                    )}
+                  </Button>
+                </motion.div>
               </div>
 
               <motion.div
@@ -298,58 +493,97 @@ export default function ProfilePage() {
                 transition={{ delay: 0.7 }}
                 className="grid grid-cols-2 md:grid-cols-4 gap-4"
               >
-                {/* 총 리뷰 */}
-                <motion.div
-                  whileHover={{ scale: 1.05 }}
-                  className="text-center p-4 bg-gradient-to-br from-green-500/10 to-emerald-500/10 backdrop-blur-sm rounded-2xl border border-green-200/30"
-                >
-                  <div className="text-2xl font-bold text-green-600 mb-1">{reviewList.length}</div>
-                  <div className="text-sm text-gray-600 dark:text-gray-300">총 리뷰</div>
-                </motion.div>
+                {userRole === UserRole.USER ? (
+                  <>
+                    {/* 총 리뷰 */}
+                    <motion.div
+                      whileHover={{ scale: 1.05 }}
+                      className="text-center p-4 bg-gradient-to-br from-green-500/10 to-emerald-500/10 backdrop-blur-sm rounded-2xl border border-green-200/30"
+                    >
+                      <div className="text-2xl font-bold text-green-600 mb-1">{reviewList.length}</div>
+                      <div className="text-sm text-gray-600 dark:text-gray-300">총 리뷰</div>
+                    </motion.div>
 
-                {/* 잔반 별점 (평균) */}
-                <motion.div
-                  whileHover={{ scale: 1.05 }}
-                  className="text-center p-4 bg-gradient-to-br from-sky-500/10 to-blue-500/10 backdrop-blur-sm rounded-2xl border border-sky-200/30"
-                >
-                  {reviewList.length > 0 ? (
-                    <>
-                      <div className="flex items-center justify-center gap-1 mb-1">
-                        {Array.from({ length: 5 }).map((_, i) => (
-                          <Star
-                            key={i}
-                            className={`h-4 w-4 ${i < Math.round(avgRating) ? "fill-current text-green-500" : "text-gray-300"}`}
-                          />
-                        ))}
-                      </div>
-                      <div className="text-xs text-green-600 font-medium mb-1">{avgRating.toFixed(1)}</div>
-                      <div className="text-sm text-gray-600 dark:text-gray-300">잔반 별점</div>
-                    </>
-                  ) : (
-                    <>
-                      <div className="text-sm text-gray-600 dark:text-gray-300 mb-1">리뷰 없음</div>
-                      <div className="text-xs text-gray-500">리뷰를 작성해보세요</div>
-                    </>
-                  )}
-                </motion.div>
+                    {/* 잔반 별점 (평균) */}
+                    <motion.div
+                      whileHover={{ scale: 1.05 }}
+                      className="text-center p-4 bg-gradient-to-br from-sky-500/10 to-blue-500/10 backdrop-blur-sm rounded-2xl border border-sky-200/30"
+                    >
+                      {reviewList.length > 0 ? (
+                        <>
+                          <div className="flex items-center justify-center gap-1 mb-1">
+                            {Array.from({ length: 5 }).map((_, i) => (
+                              <Star
+                                key={i}
+                                className={`h-4 w-4 ${i < Math.round(avgRating) ? "fill-current text-green-500" : "text-gray-300"}`}
+                              />
+                            ))}
+                          </div>
+                          <div className="text-xs text-green-600 font-medium mb-1">{avgRating.toFixed(1)}</div>
+                          <div className="text-sm text-gray-600 dark:text-gray-300">잔반 별점</div>
+                        </>
+                      ) : (
+                        <>
+                          <div className="text-sm text-gray-600 dark:text-gray-300 mb-1">리뷰 없음</div>
+                          <div className="text-xs text-gray-500">리뷰를 작성해보세요</div>
+                        </>
+                      )}
+                    </motion.div>
 
-                {/* 즐겨찾기 수 */}
-                <motion.div
-                  whileHover={{ scale: 1.05 }}
-                  className="text-center p-4 bg-gradient-to-br from-red-500/10 to-pink-500/10 backdrop-blur-sm rounded-2xl border border-red-200/30"
-                >
-                  <div className="text-2xl font-bold text-red-500 mb-1">{favList.length}</div>
-                  <div className="text-sm text-gray-600 dark:text-gray-300">즐겨찾기</div>
-                </motion.div>
+                    {/* 즐겨찾기 수 */}
+                    <motion.div
+                      whileHover={{ scale: 1.05 }}
+                      className="text-center p-4 bg-gradient-to-br from-red-500/10 to-pink-500/10 backdrop-blur-sm rounded-2xl border border-red-200/30"
+                    >
+                      <div className="text-2xl font-bold text-red-500 mb-1">{favList.length}</div>
+                      <div className="text-sm text-gray-600 dark:text-gray-300">즐겨찾기</div>
+                    </motion.div>
 
-                {/* 획득 뱃지 수 */}
-                <motion.div
-                  whileHover={{ scale: 1.05 }}
-                  className="text-center p-4 bg-gradient-to-br from-orange-500/10 to-yellow-500/10 backdrop-blur-sm rounded-2xl border border-orange-200/30"
-                >
-                  <div className="text-2xl font-bold text-orange-600 mb-1">{earnedBadges.length}</div>
-                  <div className="text-sm text-gray-600 dark:text-gray-300">획득 뱃지</div>
-                </motion.div>
+                    {/* 획득 뱃지 수 */}
+                    <motion.div
+                      whileHover={{ scale: 1.05 }}
+                      className="text-center p-4 bg-gradient-to-br from-orange-500/10 to-yellow-500/10 backdrop-blur-sm rounded-2xl border border-orange-200/30"
+                    >
+                      <div className="text-2xl font-bold text-orange-600 mb-1">{earnedBadges.length}</div>
+                      <div className="text-sm text-gray-600 dark:text-gray-300">획득 뱃지</div>
+                    </motion.div>
+                  </>
+                ) : (
+                  <>
+                    {/* 사장 모드에서 등록 식당 개수 제거하고 다른 통계만 표시 */}
+                    <motion.div
+                      whileHover={{ scale: 1.05 }}
+                      className="text-center p-4 bg-gradient-to-br from-blue-500/10 to-sky-500/10 backdrop-blur-sm rounded-2xl border border-blue-200/30"
+                    >
+                      <div className="text-2xl font-bold text-blue-600 mb-1">{ownerStats.totalReceivedReviews}</div>
+                      <div className="text-sm text-gray-600 dark:text-gray-300">받은 리뷰</div>
+                    </motion.div>
+
+                    <motion.div
+                      whileHover={{ scale: 1.05 }}
+                      className="text-center p-4 bg-gradient-to-br from-green-500/10 to-emerald-500/10 backdrop-blur-sm rounded-2xl border border-green-200/30"
+                    >
+                      <div className="text-2xl font-bold text-green-600 mb-1">{ownerStats.avgOwnerRating}</div>
+                      <div className="text-sm text-gray-600 dark:text-gray-300">평균 별점</div>
+                    </motion.div>
+
+                    <motion.div
+                      whileHover={{ scale: 1.05 }}
+                      className="text-center p-4 bg-gradient-to-br from-purple-500/10 to-pink-500/10 backdrop-blur-sm rounded-2xl border border-purple-200/30"
+                    >
+                      <div className="text-2xl font-bold text-purple-600 mb-1">{ownerStats.totalFavorites}</div>
+                      <div className="text-sm text-gray-600 dark:text-gray-300">받은 즐겨찾기</div>
+                    </motion.div>
+
+                    <motion.div
+                      whileHover={{ scale: 1.05 }}
+                      className="text-center p-4 bg-gradient-to-br from-gray-500/10 to-slate-500/10 backdrop-blur-sm rounded-2xl border border-gray-200/30"
+                    >
+                      <div className="text-2xl font-bold text-gray-600 mb-1">4.2</div>
+                      <div className="text-sm text-gray-600 dark:text-gray-300">서비스 점수</div>
+                    </motion.div>
+                  </>
+                )}
               </motion.div>
             </CardContent>
           </Card>
@@ -357,251 +591,559 @@ export default function ProfilePage() {
 
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}>
           <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-            <TabsList className="grid w-full grid-cols-3 backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 h-12">
-              <TabsTrigger
-                value="reviews"
-                className="data-[state=active]:bg-green-500/20 data-[state=active]:text-green-700 dark:data-[state=active]:text-green-400"
-              >
-                리뷰
-              </TabsTrigger>
-              <TabsTrigger
-                value="favorites"
-                className="data-[state=active]:bg-red-500/20 data-[state=active]:text-red-700 dark:data-[state=active]:text-red-400"
-              >
-                즐겨찾기
-              </TabsTrigger>
-              <TabsTrigger
-                value="badges"
-                className="data-[state=active]:bg-orange-500/20 data-[state=active]:text-orange-700 dark:data-[state=active]:text-orange-400"
-              >
-                뱃지
-              </TabsTrigger>
+            <TabsList
+              className={`grid w-full ${userRole === UserRole.USER ? "grid-cols-4" : "grid-cols-2"} backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 h-12`}
+            >
+              {userRole === UserRole.USER ? (
+                <>
+                  <TabsTrigger
+                    value="reviews"
+                    className="data-[state=active]:bg-green-500/20 data-[state=active]:text-green-700 dark:data-[state=active]:text-green-400"
+                  >
+                    리뷰
+                  </TabsTrigger>
+                  <TabsTrigger
+                    value="favorites"
+                    className="data-[state=active]:bg-red-500/20 data-[state=active]:text-red-700 dark:data-[state=active]:text-red-400"
+                  >
+                    즐겨찾기
+                  </TabsTrigger>
+                  <TabsTrigger
+                    value="stamps"
+                    className="data-[state=active]:bg-purple-500/20 data-[state=active]:text-purple-700 dark:data-[state=active]:text-purple-400"
+                  >
+                    스탬프
+                  </TabsTrigger>
+                  <TabsTrigger
+                    value="badges"
+                    className="data-[state=active]:bg-orange-500/20 data-[state=active]:text-orange-700 dark:data-[state=active]:text-orange-400"
+                  >
+                    뱃지
+                  </TabsTrigger>
+                </>
+              ) : (
+                <>
+                  <TabsTrigger
+                    value="restaurant"
+                    className="data-[state=active]:bg-orange-500/20 data-[state=active]:text-orange-700 dark:data-[state=active]:text-orange-400"
+                  >
+                    {/* 내 식당 탭에 개수 표시 추가 */}내 식당 ({ownerStats.totalRestaurants})
+                  </TabsTrigger>
+                  <TabsTrigger
+                    value="reviews"
+                    className="data-[state=active]:bg-green-500/20 data-[state=active]:text-green-700 dark:data-[state=active]:text-green-400"
+                  >
+                    받은 리뷰
+                  </TabsTrigger>
+                </>
+              )}
             </TabsList>
 
-            {/* 리뷰 탭 */}
-            <TabsContent value="reviews" className="mt-6">
-              <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }}>
-                <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-xl">
-                  <CardHeader>
-                    <CardTitle className="flex items-center gap-2">
-                      <Star className="h-5 w-5 text-green-500" />
-                      작성한 리뷰 ({reviewList.length})
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="space-y-6">
-                      {reviewList.length > 0 ? (
-                        reviewList.map((review: ReviewVM, index: number) => (
-                          <motion.div
-                            key={review.id}
-                            initial={{ opacity: 0, y: 20 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            transition={{ delay: 0.1 * index }}
-                            className="backdrop-blur-sm bg-white/50 dark:bg-gray-800/50 border border-white/20 rounded-2xl p-4 hover:shadow-lg transition-all duration-300"
-                          >
-                            <div className="flex items-start justify-between mb-3">
-                              <div>
-                                <h3 className="font-semibold text-gray-900 dark:text-white mb-1">
-                                  {review.restaurant?.name || "식당 정보 없음"}
-                                </h3>
-                                <div className="flex items-center gap-4 text-sm text-gray-600 dark:text-gray-300">
-                                  <div className="flex items-center gap-1">
-                                    {Array.from({ length: 5 }).map((_, i) => (
-                                      <Star
-                                        key={i}
-                                        className={`h-3 w-3 ${
-                                          i < Math.round(review.waste_rating || 0)
-                                            ? "fill-current text-green-500"
-                                            : "text-gray-300"
-                                        }`}
-                                      />
-                                    ))}
-                                    <span>{review.waste_rating.toFixed(1)}</span>
+            {/* User tabs */}
+            {userRole === UserRole.USER && (
+              <>
+                {/* 리뷰 탭 */}
+                <TabsContent value="reviews" className="mt-6">
+                  <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.3 }}
+                  >
+                    <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-xl">
+                      <CardHeader>
+                        <CardTitle className="flex items-center gap-2">
+                          <Star className="h-5 w-5 text-green-500" />
+                          작성한 리뷰 ({reviewList.length})
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="space-y-6">
+                          {reviewList.length > 0 ? (
+                            reviewList.map((review: ReviewVM, index: number) => (
+                              <motion.div
+                                key={review.id}
+                                initial={{ opacity: 0, y: 20 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                transition={{ delay: 0.1 * index }}
+                                className="backdrop-blur-sm bg-white/50 dark:bg-gray-800/50 border border-white/20 rounded-2xl p-4 hover:shadow-lg transition-all duration-300"
+                              >
+                                <div className="flex items-start justify-between mb-3">
+                                  <div>
+                                    <h3 className="font-semibold text-gray-900 dark:text-white mb-1">
+                                      {review.restaurant?.name || "식당 정보 없음"}
+                                    </h3>
+                                    <div className="flex items-center gap-4 text-sm text-gray-600 dark:text-gray-300">
+                                      <div className="flex items-center gap-1">
+                                        {Array.from({ length: 5 }).map((_, i) => (
+                                          <Star
+                                            key={i}
+                                            className={`h-3 w-3 ${
+                                              i < Math.round(review.waste_rating || 0)
+                                                ? "fill-current text-green-500"
+                                                : "text-gray-300"
+                                            }`}
+                                          />
+                                        ))}
+                                        <span>{review.waste_rating.toFixed(1)}</span>
+                                      </div>
+                                      <span>{review.restaurant?.category || "카테고리 없음"}</span>
+                                    </div>
                                   </div>
-                                  <span>{review.restaurant?.category || "카테고리 없음"}</span>
-                                </div>
-                              </div>
-                              <span className="text-sm text-gray-500">
-                                {review.created_at ? formatDate(review.created_at) : "날짜 없음"}
-                              </span>
-                            </div>
-
-                            <p className="text-gray-700 dark:text-gray-300 mb-3">{review.comment || "댓글 없음"}</p>
-
-                            <div className="flex justify-end">
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={() => handleEditReview(review.id)}
-                                className="bg-white/50 hover:bg-white/80 border-white/30"
-                                title="리뷰 수정"
-                              >
-                                수정
-                              </Button>
-                            </div>
-                          </motion.div>
-                        ))
-                      ) : (
-                        <motion.div
-                          initial={{ opacity: 0, scale: 0.9 }}
-                          animate={{ opacity: 1, scale: 1 }}
-                          className="text-center text-gray-500 py-12"
-                        >
-                          <Star className="h-16 w-16 mx-auto mb-4 opacity-30" />
-                          <h3 className="text-lg font-medium mb-2">작성한 리뷰가 없습니다</h3>
-                          <p>첫 번째 리뷰를 작성해보세요</p>
-                        </motion.div>
-                      )}
-                    </div>
-                  </CardContent>
-                </Card>
-              </motion.div>
-            </TabsContent>
-
-            {/* 즐겨찾기 탭 — 사진칸 제거 & 리뷰 카드 스타일 */}
-            <TabsContent value="favorites" className="mt-6">
-              <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }}>
-                <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-xl">
-                  <CardHeader>
-                    <CardTitle className="flex items-center gap-2">
-                      <Heart className="h-5 w-5 text-red-500" />
-                      즐겨찾기 식당 ({favList.length})
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="space-y-4">
-                      {favList.length > 0 ? (
-                        favList.map((favorite, index) =>
-                          favorite.restaurant ? (
-                            <motion.div
-                              key={`${favorite.restaurant_id}-${favorite.id ?? "row"}`}
-                              initial={{ opacity: 0, y: 20 }}
-                              animate={{ opacity: 1, y: 0 }}
-                              transition={{ delay: 0.05 * index }}
-                              className="relative backdrop-blur-sm bg-white/50 dark:bg-gray-800/50 border border-white/20 rounded-2xl p-4 hover:shadow-lg transition-all duration-300"
-                            >
-                              {/* 삭제 버튼 */}
-                              <div className="absolute right-3 top-3">
-                                <Button
-                                  variant="destructive"
-                                  size="sm"
-                                  className="gap-2 bg-red-500/90 hover:bg-red-600"
-                                  onClick={() => handleRemoveFavorite(favorite.restaurant_id)}
-                                  disabled={removingId === favorite.restaurant_id}
-                                  title="즐겨찾기 삭제"
-                                >
-                                  {removingId === favorite.restaurant_id ? (
-                                    <>
-                                      <Loader2 className="h-4 w-4 animate-spin" />
-                                      삭제 중…
-                                    </>
-                                  ) : (
-                                    <Trash2 className="h-4 w-4" />
-                                  )}
-                                </Button>
-                              </div>
-
-                              {/* 본문 (이미지 없이 텍스트형) */}
-                              <div
-                                className="cursor-pointer"
-                                onClick={() => handleRestaurantClick(favorite.restaurant!.id)}
-                                role="button"
-                                tabIndex={0}
-                              >
-                                <h3 className="font-semibold text-gray-900 dark:text-white mb-1">
-                                  {favorite.restaurant.name}
-                                </h3>
-
-                                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-gray-600 dark:text-gray-300 mb-2">
-                                  <span className="inline-flex items-center gap-1">
-                                    <Leaf className="h-3.5 w-3.5 text-green-500" />
-                                    잔반
+                                  <span className="text-sm text-gray-500">
+                                    {review.created_at ? formatDate(review.created_at) : "날짜 없음"}
                                   </span>
-                                  <span>{favorite.restaurant.category || "카테고리 없음"}</span>
                                 </div>
 
-                                {favorite.restaurant.address && (
-                                  <div className="flex items-start gap-2 text-sm text-gray-600 dark:text-gray-300">
-                                    <MapPin className="h-4 w-4 mt-0.5 shrink-0 text-gray-400" />
-                                    <span className="leading-5">{favorite.restaurant.address}</span>
-                                  </div>
-                                )}
+                                <p className="text-gray-700 dark:text-gray-300 mb-3">{review.comment || "댓글 없음"}</p>
 
-                                {favorite.restaurant.telephone && (
-                                  <div className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300 mt-1">
-                                    <Phone className="h-4 w-4 text-gray-400" />
-                                    <span>{favorite.restaurant.telephone}</span>
-                                  </div>
-                                )}
-                              </div>
+                                <div className="flex justify-end">
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => handleEditReview(review.id)}
+                                    className="bg-white/50 hover:bg-white/80 border-white/30"
+                                    title="리뷰 수정"
+                                  >
+                                    수정
+                                  </Button>
+                                </div>
+                              </motion.div>
+                            ))
+                          ) : (
+                            <motion.div
+                              initial={{ opacity: 0, scale: 0.9 }}
+                              animate={{ opacity: 1, scale: 1 }}
+                              className="text-center text-gray-500 py-12"
+                            >
+                              <Star className="h-16 w-16 mx-auto mb-4 opacity-30" />
+                              <h3 className="text-lg font-medium mb-2">작성한 리뷰가 없습니다</h3>
+                              <p>첫 번째 리뷰를 작성해보세요</p>
                             </motion.div>
-                          ) : null
-                        )
-                      ) : (
-                        <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} className="text-center text-gray-500 py-12">
-                          <Heart className="h-16 w-16 mx-auto mb-4 opacity-30" />
-                          <h3 className="text-lg font-medium mb-2">즐겨찾기한 식당이 없습니다</h3>
-                          <p>마음에 드는 식당을 즐겨찾기에 추가해보세요</p>
-                        </motion.div>
-                      )}
-                    </div>
-                  </CardContent>
-                </Card>
-              </motion.div>
-            </TabsContent>
-
-            {/* 뱃지 탭 */}
-            <TabsContent value="badges" className="mt-6">
-              <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }} className="space-y-6">
-                <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-xl">
-                  <CardHeader>
-                    <CardTitle className="flex items-center gap-2">
-                      <Award className="h-5 w-5 text-orange-500" />
-                      획득한 뱃지 ({earnedBadges.length})
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent>{/* 필요 시 상세 UI 추가 */}</CardContent>
-                </Card>
-
-                <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-xl">
-                  <CardHeader>
-                    <CardTitle className="flex items-center gap-2">
-                      <Users className="h-5 w-5 text-gray-500" />
-                      진행 중인 뱃지 ({mockInProgressBadges.length})
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                      {mockInProgressBadges.map((badge, index) => (
-                        <motion.div
-                          key={badge.id}
-                          initial={{ opacity: 0, scale: 0.9 }}
-                          animate={{ opacity: 1, scale: 1 }}
-                          transition={{ delay: 0.1 * index }}
-                          whileHover={{ scale: 1.05 }}
-                          className="p-4 bg-gray-500/10 backdrop-blur-sm border border-gray-200/30 rounded-2xl text-center"
-                        >
-                          <div className="text-3xl mb-2 opacity-50">{badge.icon}</div>
-                          <h3 className="font-semibold text-gray-900 dark:text-white mb-1">{badge.name}</h3>
-                          <p className="text-sm text-gray-600 dark:text-gray-300 mb-3">{badge.description}</p>
-                          {badge.progress !== undefined && badge.target !== undefined && (
-                            <div className="space-y-2">
-                              <div className="flex justify-between text-sm">
-                                <span>진행률</span>
-                                <span>
-                                  {badge.progress}/{badge.target}
-                                </span>
-                              </div>
-                              <Progress value={(badge.progress / badge.target) * 100} className="h-2" />
-                            </div>
                           )}
-                        </motion.div>
-                      ))}
-                    </div>
-                  </CardContent>
-                </Card>
-              </motion.div>
-            </TabsContent>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </motion.div>
+                </TabsContent>
+
+                {/* 즐겨찾기 탭 — 사진칸 제거 & 리뷰 카드 스타일 */}
+                <TabsContent value="favorites" className="mt-6">
+                  <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.3 }}
+                  >
+                    <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-xl">
+                      <CardHeader>
+                        <CardTitle className="flex items-center gap-2">
+                          <Heart className="h-5 w-5 text-red-500" />
+                          즐겨찾기 식당 ({favList.length})
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="space-y-4">
+                          {favList.length > 0 ? (
+                            favList.map((favorite, index) =>
+                              favorite.restaurant ? (
+                                <motion.div
+                                  key={`${favorite.restaurant_id}-${favorite.id ?? "row"}`}
+                                  initial={{ opacity: 0, y: 20 }}
+                                  animate={{ opacity: 1, y: 0 }}
+                                  transition={{ delay: 0.05 * index }}
+                                  className="relative backdrop-blur-sm bg-white/50 dark:bg-gray-800/50 border border-white/20 rounded-2xl p-4 hover:shadow-lg transition-all duration-300 cursor-pointer"
+                                  onClick={() => handleRestaurantClick(favorite.restaurant!.id)}
+                                >
+                                  {/* 삭제 버튼 */}
+                                  <div className="absolute right-3 top-3">
+                                    <Button
+                                      variant="destructive"
+                                      size="sm"
+                                      className="gap-2 bg-red-500/90 hover:bg-red-600"
+                                      onClick={() => handleRemoveFavorite(favorite.restaurant_id)}
+                                      disabled={removingId === favorite.restaurant_id}
+                                      title="즐겨찾기 삭제"
+                                    >
+                                      {removingId === favorite.restaurant_id ? (
+                                        <>
+                                          <Loader2 className="h-4 w-4 animate-spin" />
+                                          삭제 중…
+                                        </>
+                                      ) : (
+                                        <Trash2 className="h-4 w-4" />
+                                      )}
+                                    </Button>
+                                  </div>
+
+                                  {/* 본문 (이미지 없이 텍스트형) */}
+                                  <div role="button" tabIndex={0}>
+                                    <h3 className="font-semibold text-gray-900 dark:text-white mb-1">
+                                      {favorite.restaurant.name}
+                                    </h3>
+
+                                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-gray-600 dark:text-gray-300 mb-2">
+                                      <span className="inline-flex items-center gap-1">
+                                        <Leaf className="h-3.5 w-3.5 text-green-500" />
+                                        잔반
+                                      </span>
+                                      <span>{favorite.restaurant.category || "카테고리 없음"}</span>
+                                    </div>
+
+                                    {favorite.restaurant.address && (
+                                      <div className="flex items-start gap-2 text-sm text-gray-600 dark:text-gray-300">
+                                        <MapPin className="h-4 w-4 mt-0.5 shrink-0 text-gray-400" />
+                                        <span className="leading-5">{favorite.restaurant.address}</span>
+                                      </div>
+                                    )}
+
+                                    {favorite.restaurant.telephone && (
+                                      <div className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300 mt-1">
+                                        <Phone className="h-4 w-4 text-gray-400" />
+                                        <span>{favorite.restaurant.telephone}</span>
+                                      </div>
+                                    )}
+                                  </div>
+                                </motion.div>
+                              ) : null,
+                            )
+                          ) : (
+                            <motion.div
+                              initial={{ opacity: 0, scale: 0.9 }}
+                              animate={{ opacity: 1, scale: 1 }}
+                              className="text-center text-gray-500 py-12"
+                            >
+                              <Heart className="h-16 w-16 mx-auto mb-4 opacity-30" />
+                              <h3 className="text-lg font-medium mb-2">즐겨찾기한 식당이 없습니다</h3>
+                              <p>마음에 드는 식당을 즐겨찾기에 추가해보세요</p>
+                            </motion.div>
+                          )}
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </motion.div>
+                </TabsContent>
+
+                <TabsContent value="stamps" className="mt-6">
+                  <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.3 }}
+                  >
+                    <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-xl">
+                      <CardHeader>
+                        <CardTitle className="flex items-center gap-2">
+                          <Stamp className="h-5 w-5 text-purple-500" />내 스탬프 ({restaurantStamps.length})
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="space-y-6">
+                          {restaurantStamps.length > 0 ? (
+                            <>
+                              {paginatedStamps.map((stamp, index) => (
+                                <motion.div
+                                  key={stamp.restaurantId}
+                                  initial={{ opacity: 0, y: 20 }}
+                                  animate={{ opacity: 1, y: 0 }}
+                                  transition={{ delay: 0.1 * index }}
+                                  className="backdrop-blur-sm bg-white/50 dark:bg-gray-800/50 border border-white/20 rounded-2xl p-6 hover:shadow-lg transition-all duration-300"
+                                >
+                                  <div className="flex items-center justify-between mb-4">
+                                    <h3 className="font-semibold text-gray-900 dark:text-white text-lg">
+                                      {stamp.restaurantName}
+                                    </h3>
+                                    <div className="text-sm text-gray-600 dark:text-gray-300">
+                                      {stamp.totalStamps}/{stamp.maxStamps} 스탬프
+                                    </div>
+                                  </div>
+
+                                  <div className="flex items-center justify-center gap-2">
+                                    {Array.from({ length: stamp.maxStamps }).map((_, i) => (
+                                      <motion.div
+                                        key={i}
+                                        initial={{ scale: 0 }}
+                                        animate={{ scale: 1 }}
+                                        transition={{ delay: 0.1 * i }}
+                                        className={`w-12 h-12 rounded-full border-2 flex items-center justify-center transition-all duration-300 ${
+                                          i < stamp.totalStamps
+                                            ? "bg-gradient-to-br from-purple-500 to-pink-500 border-purple-400 text-white shadow-lg"
+                                            : "bg-gray-100 dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-400"
+                                        }`}
+                                      >
+                                        <Stamp className="h-6 w-6" />
+                                      </motion.div>
+                                    ))}
+                                  </div>
+
+                                  <div className="mt-4 text-center">
+                                    <p className="text-sm text-gray-600 dark:text-gray-300">
+                                      4점 이상 리뷰 {stamp.totalStamps}개로 획득한 스탬프
+                                    </p>
+                                    {stamp.totalStamps > stamp.maxStamps && (
+                                      <div className="mt-2 text-xs text-amber-600 dark:text-amber-400 font-medium">
+                                        +{stamp.totalStamps - stamp.maxStamps}개 추가 스탬프 보유
+                                      </div>
+                                    )}
+                                    {stamp.totalStamps >= stamp.maxStamps ? (
+                                      <div className="mt-3 space-y-2">
+                                        <div className="inline-flex items-center gap-1 px-3 py-1 bg-gradient-to-r from-purple-500 to-pink-500 text-white text-xs rounded-full">
+                                          <Award className="h-3 w-3" />
+                                          스탬프 완성!
+                                        </div>
+                                        <div>
+                                          <Button
+                                            onClick={() => {
+                                              // 스탬프 사용 로직 구현
+                                              console.log(`${stamp.restaurantName} 스탬프 사용`)
+                                            }}
+                                            className="bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white px-6 py-2 rounded-full text-sm font-medium shadow-lg hover:shadow-xl transition-all duration-300"
+                                          >
+                                            사용하기
+                                          </Button>
+                                        </div>
+                                      </div>
+                                    ) : (
+                                      <div className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                                        {stamp.maxStamps - stamp.totalStamps}개 더 필요
+                                      </div>
+                                    )}
+                                  </div>
+                                </motion.div>
+                              ))}
+
+                              {totalStampPages > 1 && (
+                                <div className="flex items-center justify-center gap-4 mt-8">
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => setCurrentStampPage((prev) => Math.max(prev - 1, 1))}
+                                    disabled={currentStampPage === 1}
+                                    className="backdrop-blur-sm bg-white/50 dark:bg-gray-800/50 border-white/20 hover:bg-white/70 dark:hover:bg-gray-700/70"
+                                  >
+                                    <ChevronLeft className="h-4 w-4" />
+                                    이전
+                                  </Button>
+
+                                  <div className="flex items-center gap-2">
+                                    {Array.from({ length: totalStampPages }).map((_, i) => (
+                                      <Button
+                                        key={i}
+                                        variant={currentStampPage === i + 1 ? "default" : "outline"}
+                                        size="sm"
+                                        onClick={() => setCurrentStampPage(i + 1)}
+                                        className={`w-8 h-8 p-0 ${
+                                          currentStampPage === i + 1
+                                            ? "bg-gradient-to-r from-purple-500 to-pink-500 text-white"
+                                            : "backdrop-blur-sm bg-white/50 dark:bg-gray-800/50 border-white/20 hover:bg-white/70 dark:hover:bg-gray-700/70"
+                                        }`}
+                                      >
+                                        {i + 1}
+                                      </Button>
+                                    ))}
+                                  </div>
+
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => setCurrentStampPage((prev) => Math.min(prev + 1, totalStampPages))}
+                                    disabled={currentStampPage === totalStampPages}
+                                    className="backdrop-blur-sm bg-white/50 dark:bg-gray-800/50 border-white/20 hover:bg-white/70 dark:hover:bg-gray-700/70"
+                                  >
+                                    다음
+                                    <ChevronRight className="h-4 w-4" />
+                                  </Button>
+                                </div>
+                              )}
+                            </>
+                          ) : (
+                            <motion.div
+                              initial={{ opacity: 0, scale: 0.9 }}
+                              animate={{ opacity: 1, scale: 1 }}
+                              className="text-center text-gray-500 py-12"
+                            >
+                              <Stamp className="h-16 w-16 mx-auto mb-4 opacity-30" />
+                              <h3 className="text-lg font-medium mb-2">스탬프가 없습니다</h3>
+                              <p>4점 이상의 리뷰를 작성하면 스탬프를 받을 수 있어요</p>
+                            </motion.div>
+                          )}
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </motion.div>
+                </TabsContent>
+
+                {/* 뱃지 탭 */}
+                <TabsContent value="badges" className="mt-6">
+                  <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.3 }}
+                    className="space-y-6"
+                  >
+                    <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-xl">
+                      <CardHeader>
+                        <CardTitle className="flex items-center gap-2">
+                          <Award className="h-5 w-5 text-orange-500" />
+                          획득한 뱃지 ({earnedBadges.length})
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent>{/* 필요 시 상세 UI 추가 */}</CardContent>
+                    </Card>
+
+                    <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-xl">
+                      <CardHeader>
+                        <CardTitle className="flex items-center gap-2">
+                          <Users className="h-5 w-5 text-gray-500" />
+                          진행 중인 뱃지 ({mockInProgressBadges.length})
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                          {mockInProgressBadges.map((badge, index) => (
+                            <motion.div
+                              key={badge.id}
+                              initial={{ opacity: 0, scale: 0.9 }}
+                              animate={{ opacity: 1, scale: 1 }}
+                              transition={{ delay: 0.1 * index }}
+                              whileHover={{ scale: 1.05 }}
+                              className="p-4 bg-gray-500/10 backdrop-blur-sm border border-gray-200/30 rounded-2xl text-center"
+                            >
+                              <div className="text-3xl mb-2 opacity-50">{badge.icon}</div>
+                              <h3 className="font-semibold text-gray-900 dark:text-white mb-1">{badge.name}</h3>
+                              <p className="text-sm text-gray-600 dark:text-gray-300 mb-3">{badge.description}</p>
+                              {badge.progress !== undefined && badge.target !== undefined && (
+                                <div className="space-y-2">
+                                  <div className="flex justify-between text-sm">
+                                    <span>진행률</span>
+                                    <span>
+                                      {badge.progress}/{badge.target}
+                                    </span>
+                                  </div>
+                                  <Progress value={(badge.progress / badge.target) * 100} className="h-2" />
+                                </div>
+                              )}
+                            </motion.div>
+                          ))}
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </motion.div>
+                </TabsContent>
+              </>
+            )}
+
+            {/* Owner tabs */}
+            {userRole === UserRole.OWNER && (
+              <>
+                <TabsContent value="restaurant" className="mt-6">
+                  <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.3 }}
+                  >
+                    <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-xl">
+                      <CardHeader>
+                        <div className="flex items-center justify-between">
+                          <CardTitle className="flex items-center gap-2">
+                            {/* 카드 제목에서 개수 제거 (탭에서 이미 표시하므로) */}
+                            <Store className="h-5 w-5 text-orange-500" />내 식당 관리
+                          </CardTitle>
+                          <Button
+                            onClick={() => router.push("/profile/owner-registration")}
+                            className="bg-gradient-to-r from-orange-500 to-red-600 hover:from-orange-600 hover:to-red-700"
+                          >
+                            <Plus className="h-4 w-4 mr-2" />내 식당 추가하기
+                          </Button>
+                        </div>
+                      </CardHeader>
+                      <CardContent>
+                        {ownerRestaurants.length > 0 ? (
+                          <div className="space-y-4">
+                            {ownerRestaurants.map((restaurant, index) => (
+                              <motion.div
+                                key={restaurant.id}
+                                initial={{ opacity: 0, y: 20 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                transition={{ delay: 0.1 * index }}
+                                className="backdrop-blur-sm bg-white/50 dark:bg-gray-800/50 border border-white/20 rounded-2xl p-4 hover:shadow-lg transition-all duration-300 cursor-pointer"
+                                onClick={() => router.push(`/restaurant/${restaurant.id}?isOwnerMode=true`)}
+                              >
+                                <div className="flex items-start justify-between mb-3">
+                                  <div>
+                                    <h3 className="font-semibold text-gray-900 dark:text-white mb-1">
+                                      {restaurant.name}
+                                    </h3>
+                                    <div className="flex items-center gap-4 text-sm text-gray-600 dark:text-gray-300">
+                                      <span>{restaurant.category || "카테고리 없음"}</span>
+                                      {restaurant.rating && (
+                                        <div className="flex items-center gap-1">
+                                          <Star className="h-3 w-3 fill-current text-green-500" />
+                                          <span>{restaurant.rating.toFixed(1)}</span>
+                                        </div>
+                                      )}
+                                      {restaurant.reviewCount && <span>리뷰 {restaurant.reviewCount}개</span>}
+                                    </div>
+                                  </div>
+                                </div>
+
+                                {restaurant.address && (
+                                  <div className="flex items-start gap-2 text-sm text-gray-600 dark:text-gray-300 mb-2">
+                                    <MapPin className="h-4 w-4 mt-0.5 shrink-0 text-gray-400" />
+                                    <span className="leading-5">{restaurant.address}</span>
+                                  </div>
+                                )}
+
+                                {restaurant.telephone && (
+                                  <div className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
+                                    <Phone className="h-4 w-4 text-gray-400" />
+                                    <span>{restaurant.telephone}</span>
+                                  </div>
+                                )}
+                              </motion.div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="text-center text-gray-500 py-12">
+                            <Store className="h-16 w-16 mx-auto mb-4 opacity-30" />
+                            <h3 className="text-lg font-medium mb-2">등록된 식당이 없습니다</h3>
+                            <p className="mb-4">첫 번째 식당을 등록해보세요</p>
+                            <Button
+                              onClick={() => router.push("/profile/owner-registration")}
+                              className="bg-gradient-to-r from-orange-500 to-red-600 hover:from-orange-600 hover:to-red-700"
+                            >
+                              <Plus className="h-4 w-4 mr-2" />
+                              식당 등록하기
+                            </Button>
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+                  </motion.div>
+                </TabsContent>
+
+                <TabsContent value="reviews" className="mt-6">
+                  <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.3 }}
+                  >
+                    <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-xl">
+                      <CardHeader>
+                        <CardTitle className="flex items-center gap-2">
+                          <Star className="h-5 w-5 text-green-500" />
+                          받은 리뷰 관리 ({ownerStats.totalReceivedReviews})
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="text-center text-gray-500 py-12">
+                          <Star className="h-16 w-16 mx-auto mb-4 opacity-30" />
+                          <h3 className="text-lg font-medium mb-2">받은 리뷰 관리 기능</h3>
+                          <p>고객들의 소중한 리뷰를 확인하고 관리할 수 있습니다</p>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </motion.div>
+                </TabsContent>
+              </>
+            )}
           </Tabs>
         </motion.div>
       </div>

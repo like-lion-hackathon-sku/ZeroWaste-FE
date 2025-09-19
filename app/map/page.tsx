@@ -1,45 +1,47 @@
-"use client";
+"use client"
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import Script from "next/script";
-import { useRouter } from "next/navigation";
-import { motion, AnimatePresence } from "framer-motion";
+import { useEffect, useMemo, useRef, useState } from "react"
+import Script from "next/script"
+import { useRouter } from "next/navigation"
+import { motion } from "framer-motion"
 
-import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button"
+import { Card } from "@/components/ui/card"
+import { Badge } from "@/components/ui/badge"
 import {
   Leaf,
   LogOut,
   Star,
-  Heart,
   MapPin,
   Loader2,
   LocateFixed,
   User,
   Search,
-} from "lucide-react";
+  MessageCircle,
+  Navigation,
+  X,
+  Heart,
+} from "lucide-react"
 
-import { useRestaurants } from "@/lib/hooks/use-api-with-fallback";
-import { apiClient } from "@/lib/api/client";
-import { CATEGORY_IMAGE } from "@/lib/category-images";
-import { calculateWasteStarRating } from "@/lib/utils/database-helpers";
+import { useRestaurants } from "@/lib/hooks/use-api-with-fallback"
+import { apiClient } from "@/lib/api/client"
+import { CATEGORY_IMAGE } from "@/lib/category-images"
+import { calculateWasteStarRating } from "@/lib/utils/database-helpers"
 
 declare global {
   interface Window {
-    naver: any;
+    naver: any
   }
 }
 
-/* ───────────────── 카테고리/이미지 유틸 ───────────────── */
+/* ─── 카테고리/이미지 유틸 ─── */
 const normalizeImage = (v: any): string | null => {
-  if (typeof v !== "string") return null;
-  const s = v.trim();
-  if (!s) return null;
-  if (s.startsWith("http://") || s.startsWith("https://") || s.startsWith("/")) return s;
-  return null;
-};
-
+  if (typeof v !== "string") return null
+  const s = v.trim()
+  if (!s) return null
+  if (s.startsWith("http://") || s.startsWith("https://") || s.startsWith("/")) return s
+  return null
+}
 const CATEGORY_SYNONYM: Record<string, string[]> = {
   한식: ["한식", "백반", "분식", "국밥", "족발", "보쌈", "삼겹", "비빔밥", "갈비", "냉면", "곰탕", "칼국수"],
   중식: ["중식", "짬뽕", "짜장", "탕수육", "중화요리"],
@@ -48,228 +50,276 @@ const CATEGORY_SYNONYM: Record<string, string[]> = {
   카페: ["카페", "coffee", "coffeeshop", "tearoom"],
   패스트푸드: ["패스트푸드", "버거", "치킨", "피자", "샌드위치", "패스트", "fastfood"],
   기타: ["기타", "pub", "bar", "술집", "호프", "포차"],
-};
-
-function getCategoryKey(
-  raw?: string | null,
-  name?: string | null
-): keyof typeof CATEGORY_IMAGE {
-  const text = `${raw ?? ""} ${name ?? ""}`
-    .toLowerCase()
-    .replace(/[>,]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  const order: (keyof typeof CATEGORY_IMAGE)[] = ["한식", "중식", "일식", "양식", "카페", "패스트푸드", "기타"];
-  for (const key of order) {
-    if (CATEGORY_SYNONYM[key].some((w) => text.includes(w))) return key;
-  }
-  return "기타";
+}
+function getCategoryKey(raw?: string | null, name?: string | null): keyof typeof CATEGORY_IMAGE {
+  const text = `${raw ?? ""} ${name ?? ""}`.toLowerCase().replace(/[>,]/g, " ").replace(/\s+/g, " ").trim()
+  const order: (keyof typeof CATEGORY_IMAGE)[] = ["한식", "중식", "일식", "양식", "카페", "패스트푸드", "기타"]
+  for (const key of order) if (CATEGORY_SYNONYM[key].some((w) => text.includes(w))) return key
+  return "기타"
 }
 function getImageForRestaurant(category?: string | null, name?: string | null) {
-  const key = getCategoryKey(category, name);
-  return CATEGORY_IMAGE[key] || CATEGORY_IMAGE["기타"];
+  const key = getCategoryKey(category, name)
+  return CATEGORY_IMAGE[key] || CATEGORY_IMAGE["기타"]
 }
 const pickImage = (rawImg?: string | null, category?: string | null, name?: string | null) =>
-  normalizeImage(rawImg) ?? getImageForRestaurant(category, name);
+  normalizeImage(rawImg) ?? getImageForRestaurant(category, name)
 
-/* ───────────────── 타입/상수 ───────────────── */
+/* ─── 타입/상수 ─── */
+type WasteTier = "UNRANK" | "브론즈" | "실버" | "골드" | "플래티넘" | "다이아"
+
 type RestaurantItem = {
-  id?: number;
-  restaurantId?: number;
-  name: string;
-  image?: string | null;
-  category?: string | null;
-  badge?: string | null;
-  description?: string | null;
-  address?: string | null;
-  telephone?: string | null;
-  distance?: string | null;
-  favorited?: boolean;
-  /** 원시 점수 (서버에서 오는 ecoScore/score 등) */
-  wasteScore?: number | null;
-  /** 지도에 표시할 0~5 스케일의 최종 점수 */
-  displayScore?: number | null;
-  mapx?: number | null; // lng
-  mapy?: number | null; // lat
-};
+  id?: number
+  restaurantId?: number
+  name: string
+  image?: string | null
+  category?: string | null
+  badge?: string | null
+  description?: string | null
+  address?: string | null
+  telephone?: string | null
+  distance?: string | null
+  favorited?: boolean
+  // 별/점수
+  wasteScore?: number | null // 원시 (0~100 가정)
+  displayScore?: number | null // 사용자 별(0~5, 노란색)
+  reviewCount?: number | null
+  aiWaste100?: number | null
+  wasteTier?: WasteTier | null
+  // 좌표
+  mapx?: number | null
+  mapy?: number | null
+}
 
-const SIDEBAR_WIDTH_PX = 400;
-const STORAGE_KEY = "ecoEats.mapState.v1";
+const STORAGE_KEY = "ecoEats.mapState.v1"
 
-/* ───────────────── 공통: 보이는 별점(0~5)으로 정규화 ───────────────── */
+/* ─── 별점 정규화 ─── */
 const clamp05 = (v: any): number => {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return 0;
-  return Math.max(0, Math.min(5, Math.round(n * 10) / 10));
-};
+  const n = Number(v)
+  if (!Number.isFinite(n)) return 0
+  return Math.max(0, Math.min(5, Math.round(n * 10) / 10))
+}
+const toDisplay5 = (raw: any): number => clamp05(calculateWasteStarRating(Number(raw) || 0))
 
-/** 서버 원시 점수(ecoScore 등) → 화면 표시용 0~5 점수 */
-const toDisplay5 = (raw: any): number => {
-  const val = Number(raw) || 0;
-  return clamp05(calculateWasteStarRating(val));
-};
+/* ─── 티어 판정 ─── */
+function calcTier(reviewCount?: number | null, ai100?: number | null): WasteTier | null {
+  const rc = Number(reviewCount ?? 0)
+  const s = Number(ai100 ?? Number.NaN)
+  if (rc >= 0 && rc <= 5) return "UNRANK"
+  if (!Number.isFinite(s)) return null
+  if (s < 20) return "브론즈"
+  if (s < 40) return "실버"
+  if (s < 60) return "골드"
+  if (s < 80) return "플래티넘"
+  return "다이아"
+}
 
-/* ───────────────── 페이지 ───────────────── */
+const getTierColor = (tier: WasteTier | null) => {
+  switch (tier) {
+    case "브론즈":
+      return "bg-gradient-to-r from-amber-600 to-amber-700 text-white"
+    case "실버":
+      return "bg-gradient-to-r from-slate-400 to-slate-500 text-white"
+    case "골드":
+      return "bg-gradient-to-r from-yellow-500 to-yellow-600 text-white"
+    case "플래티넘":
+      return "bg-gradient-to-r from-cyan-500 to-cyan-600 text-white"
+    case "다이아":
+      return "bg-gradient-to-r from-purple-600 to-purple-700 text-white"
+    case "UNRANK":
+      return "bg-gradient-to-r from-gray-400 to-gray-500 text-white"
+    default:
+      return "bg-gradient-to-r from-gray-300 to-gray-400 text-gray-600"
+  }
+}
+
+const getTierIcon = (tier: WasteTier | null) => {
+  switch (tier) {
+    case "브론즈":
+      return "🥄"
+    case "실버":
+      return "🥄"
+    case "골드":
+      return "🍴"
+    case "플래티넘":
+      return "🍽️"
+    case "다이아":
+      return "💎"
+    case "UNRANK":
+      return "🥢"
+    default:
+      return "❓"
+  }
+}
+
+const getTierName = (tier: WasteTier | null) => {
+  return tier === "UNRANK" ? "언랭" : tier || "미정"
+}
+
+const renderStars = (rating: number) => {
+  const stars = []
+  const fullStars = Math.floor(rating)
+  const hasHalfStar = rating % 1 >= 0.5
+
+  for (let i = 0; i < 5; i++) {
+    if (i < fullStars) {
+      stars.push(<Star key={i} className="h-4 w-4 fill-yellow-400 text-yellow-400" />)
+    } else if (i === fullStars && hasHalfStar) {
+      stars.push(<Star key={i} className="h-4 w-4 fill-yellow-400/50 text-yellow-400" />)
+    } else {
+      stars.push(<Star key={i} className="h-4 w-4 text-gray-300" />)
+    }
+  }
+  return stars
+}
+
+/* ─── 페이지 ─── */
 export default function MapWithListPage() {
-  const router = useRouter();
+  const router = useRouter()
+  const [naverReady, setNaverReady] = useState(false)
 
-  /** Naver Maps SDK 로드 여부 */
-  const [naverReady, setNaverReady] = useState(false);
-
-  /** 로그인 여부 (localStorage만 확인) */
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  // 로그인 플래그
+  const [isLoggedIn, setIsLoggedIn] = useState(false)
   useEffect(() => {
     const read = () => {
       try {
-        setIsLoggedIn(!!localStorage.getItem("userId"));
+        setIsLoggedIn(!!localStorage.getItem("userId"))
       } catch {
-        setIsLoggedIn(false);
+        setIsLoggedIn(false)
       }
-    };
-    read();
+    }
+    read()
     const onStorage = (e: StorageEvent) => {
-      if (e.key === "userId") read();
-    };
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
-  }, []);
+      if (e.key === "userId") read()
+    }
+    window.addEventListener("storage", onStorage)
+    return () => window.removeEventListener("storage", onStorage)
+  }, [])
 
-  /** 내 즐겨찾기 ID Set */
-  const [favoriteIds, setFavoriteIds] = useState<Set<number>>(new Set());
+  const [favoriteIds, setFavoriteIds] = useState<Set<number>>(new Set())
   useEffect(() => {
     if (!isLoggedIn) {
-      setFavoriteIds(new Set());
-      return;
+      setFavoriteIds(new Set())
+      return
     }
-    (async () => {
+    ;(async () => {
       try {
-        await apiClient.refresh().catch(() => {});
-        const res = await apiClient.getFavorites();
+        await apiClient.refresh().catch(() => {})
+        const res = await apiClient.getFavorites()
         const items =
           (res as any)?.data?.items ??
           (res as any)?.success?.items ??
-          (Array.isArray((res as any)?.items) ? (res as any).items : []);
+          (Array.isArray((res as any)?.items) ? (res as any).items : [])
         const ids = new Set<number>(
           items
             .map((it: any) => it.restaurant_id ?? it.restaurantId ?? it.id)
             .filter((x: any) => Number.isFinite(Number(x)))
-            .map((x: any) => Number(x))
-        );
-        setFavoriteIds(ids);
+            .map((x: any) => Number(x)),
+        )
+        setFavoriteIds(ids)
       } catch (e) {
-        console.warn("load favorites failed:", e);
+        console.warn("load favorites failed:", e)
       }
-    })();
-  }, [isLoggedIn]);
+    })()
+  }, [isLoggedIn])
 
-  // 지도/마커 refs
-  const mapRef = useRef<HTMLDivElement | null>(null);
-  const mapObjRef = useRef<any>(null);
-  const markersRef = useRef<any[]>([]);
-  const hereMarkerRef = useRef<any>(null);
+  // 지도 refs
+  const mapRef = useRef<HTMLDivElement | null>(null)
+  const mapObjRef = useRef<any>(null)
+  const markersRef = useRef<any[]>([])
+  const hereMarkerRef = useRef<any>(null)
 
-  // 초기(DB) 목록 (초기 자동검색/자동표시는 막고, 사용자가 검색했을 때만 사용)
-  const { data: rawRestaurants, loading, error } = useRestaurants();
+  // 데이터
+  const { data: rawRestaurants, loading, error } = useRestaurants()
+  const [mapRestaurants, setMapRestaurants] = useState<RestaurantItem[]>([])
+  const [loadingMapRestaurants, setLoadingMapRestaurants] = useState(false)
+  const [useMapList, setUseMapList] = useState(false)
 
-  // 지도 검색 목록 / 로딩 / 지도 결과 우선 플래그
-  const [mapRestaurants, setMapRestaurants] = useState<RestaurantItem[]>([]);
-  const [loadingMapRestaurants, setLoadingMapRestaurants] = useState(false);
-  const [useMapList, setUseMapList] = useState(false);
+  // 검색어
+  const [kw, setKw] = useState("")
+  const restoredRef = useRef(false)
 
-  // 검색 키워드 — 기본값을 ""로 (카페로 초기화되지 않도록)
-  const [kw, setKw] = useState("");
+  // 필터 상태
+  const [sortKey, setSortKey] = useState<"rating" | "reviews">("rating")
+  const [tierFilter, setTierFilter] = useState<"ALL" | WasteTier>("ALL")
 
-  // 복원했는지 표시 (중복 동작 방지)
-  const restoredRef = useRef(false);
+  const [selectedRestaurant, setSelectedRestaurant] = useState<any>(null)
 
-  /* ────────────── 좌표/패치 유틸 ────────────── */
+  /* ─── 유틸 ─── */
   const fixCoord = (v: any) => {
-    if (v == null) return null;
-    const n = Number(v);
-    if (!Number.isFinite(n)) return null;
-    if (Math.abs(n) <= 180) return n; // deg
-    if (Math.abs(n) > 1e3) return n / 1e7; // E7 → deg
-    return null;
-  };
-
+    if (v == null) return null
+    const n = Number(v)
+    if (!Number.isFinite(n)) return null
+    if (Math.abs(n) <= 180) return n
+    if (Math.abs(n) > 1e3) return n / 1e7
+    return null
+  }
   const fetchJson = async (url: string, init?: RequestInit) => {
     try {
       if (typeof (apiClient as any)?.request === "function") {
-        const pathOnly = url.startsWith("/") ? url : `/${url}`;
-        return (apiClient as any).request(pathOnly, init);
+        const pathOnly = url.startsWith("/") ? url : `/${url}`
+        return (apiClient as any).request(pathOnly, init)
       }
-      const r1 = await fetch(`/_be${url}`, { credentials: "include", ...init });
-      if (r1.ok) return r1.json();
+      const r1 = await fetch(`/_be${url}`, { credentials: "include", ...init })
+      if (r1.ok) return r1.json()
     } catch {}
-    const r2 = await fetch(`/api${url}`, { credentials: "include", ...init });
-    return r2.json();
-  };
-
-  /* ────────────── 행정동 키워드 생성 ────────────── */
-  async function reverseToRegion(lat: number, lng: number) {
-    const svc = window.naver?.maps?.Service;
-    if (!svc) return { gu: "", dong: "" };
-    const coords = new window.naver.maps.LatLng(lat, lng);
-    return new Promise<{ gu: string; dong: string }>((resolve) => {
-      svc.reverseGeocode(
-        { coords, orders: window.naver.maps.Service.OrderType.ADDR },
-        (_s: any, res: any) => {
-          const region = res?.v2?.results?.[0]?.region;
-          resolve({
-            gu: region?.area2?.name || "",
-            dong: region?.area3?.name || "",
-          });
-        }
-      );
-    });
+    const r2 = await fetch(`/api${url}`, { credentials: "include", ...init })
+    return r2.json()
   }
 
+  async function reverseToRegion(lat: number, lng: number) {
+    const svc = window.naver?.maps?.Service
+    if (!svc) return { gu: "", dong: "" }
+    const coords = new window.naver.maps.LatLng(lat, lng)
+    return new Promise<{ gu: string; dong: string }>((resolve) => {
+      svc.reverseGeocode({ coords, orders: window.naver.maps.Service.OrderType.ADDR }, (_s: any, res: any) => {
+        const region = res?.v2?.results?.[0]?.region
+        resolve({ gu: region?.area2?.name || "", dong: region?.area3?.name || "" })
+      })
+    })
+  }
   async function buildQueriesFromBounds(keyword: string) {
-    if (!mapObjRef.current) return [keyword];
-    const b = mapObjRef.current.getBounds();
+    if (!mapObjRef.current) return [keyword]
+    const b = mapObjRef.current.getBounds()
     const c = b.getCenter(),
       sw = b.getSW(),
-      ne = b.getNE();
+      ne = b.getNE()
     const pts = [
       { lat: c.y, lng: c.x },
       { lat: sw.y, lng: sw.x },
       { lat: ne.y, lng: ne.x },
-    ];
-    const regions = await Promise.all(pts.map((p) => reverseToRegion(p.lat, p.lng)));
-    const qs = new Set<string>();
-    const base = (keyword || "카페").trim();
-    qs.add(base);
+    ]
+    const regions = await Promise.all(pts.map((p) => reverseToRegion(p.lat, p.lng)))
+    const qs = new Set<string>()
+    const base = (keyword || "카페").trim()
+    qs.add(base)
     regions.forEach((r) => {
-      if (r.gu) qs.add(`${r.gu} ${base}`);
-      if (r.dong) qs.add(`${r.dong} ${base}`);
-    });
-    return Array.from(qs).slice(0, 6);
+      if (r.gu) qs.add(`${r.gu} ${base}`)
+      if (r.dong) qs.add(`${r.dong} ${base}`)
+    })
+    return Array.from(qs).slice(0, 6)
   }
-
   const callNearby = async (q: string, display = 30, start = 1) => {
-    const search = new URLSearchParams({ q, display: String(display), start: String(start) });
-    return fetchJson(`/restaurants/nearby?${search.toString()}`);
-  };
-
-  async function fetchNearbyForQueries(qs: string[]) {
-    const pages = await Promise.all(qs.map((q) => callNearby(q, 30, 1)));
-    const items = pages.flatMap((res) => {
-      const d = (res as any)?.data ?? res ?? {};
-      return (d as any)?.success?.items ?? (d as any)?.items ?? [];
-    });
-    const uniq = new Map<string, any>();
-    for (const r of items) {
-      const key = `${r.name || ""}__${r.address || ""}`;
-      if (!uniq.has(key)) uniq.set(key, r);
-    }
-    return Array.from(uniq.values());
+    const search = new URLSearchParams({ q, display: String(display), start: String(start) })
+    return fetchJson(`/restaurants/nearby?${search.toString()}`)
   }
-
+  async function fetchNearbyForQueries(qs: string[]) {
+    const pages = await Promise.all(qs.map((q) => callNearby(q, 30, 1)))
+    const items = pages.flatMap((res) => {
+      const d = (res as any)?.data ?? res ?? {}
+      return (d as any)?.success?.items ?? (d as any)?.items ?? []
+    })
+    const uniq = new Map<string, any>()
+    for (const r of items) {
+      const key = `${r.name || ""}__${r.address || ""}`
+      if (!uniq.has(key)) uniq.set(key, r)
+    }
+    return Array.from(uniq.values())
+  }
   function filterInBounds(list: RestaurantItem[]) {
-    const b = mapObjRef.current.getBounds();
+    const b = mapObjRef.current.getBounds()
     const sw = b.getSW(),
-      ne = b.getNE();
-    const pad = 0.1 * Math.max(ne.y - sw.y, ne.x - sw.x);
+      ne = b.getNE()
+    const pad = 0.1 * Math.max(ne.y - sw.y, ne.x - sw.x)
     return list.filter(
       (r) =>
         r.mapy != null &&
@@ -277,91 +327,72 @@ export default function MapWithListPage() {
         r.mapy >= sw.y - pad &&
         r.mapy <= ne.y + pad &&
         r.mapx >= sw.x - pad &&
-        r.mapx <= ne.x + pad
-    );
+        r.mapx <= ne.x + pad,
+    )
+  }
+  const avgFromReviews05 = (reviews: any[]): number | null => {
+    if (!Array.isArray(reviews) || reviews.length === 0) return null
+    const nums: number[] = []
+    for (const r of reviews) {
+      const cand = r?.waste_rating ?? r?.wasteRating ?? r?.wasteScore ?? r?.rating ?? r?.score ?? null
+      const n = Number(cand)
+      if (Number.isFinite(n)) nums.push(n)
+    }
+    if (nums.length === 0) return null
+    return clamp05(nums.reduce((a, b) => a + b, 0) / nums.length)
   }
 
-  /* ────────────── 리뷰 평균(0~5) 계산 ────────────── */
-  const avgFromReviews05 = (reviews: any[]): number | null => {
-    if (!Array.isArray(reviews) || reviews.length === 0) return null;
-    const nums: number[] = [];
-    for (const r of reviews) {
-      const cand = r?.waste_rating ?? r?.wasteRating ?? r?.wasteScore ?? r?.rating ?? r?.score ?? null;
-      const n = Number(cand);
-      if (Number.isFinite(n)) nums.push(n);
-    }
-    if (nums.length === 0) return null;
-    const avg = nums.reduce((a, b) => a + b, 0) / nums.length;
-    return clamp05(avg);
-  };
-
-  // 상세/리뷰 평균으로 리스트 점수 보강 → displayScore(0~5)로 저장
+  // 상세/리뷰 → 점수/리뷰수/티어 보강
   const enrichWithDbScores = async (items: RestaurantItem[]): Promise<RestaurantItem[]> => {
     const toId = (it: any) =>
-      Number(
-        it.restaurantId ??
-          it.restaurant_id ??
-          it.id ??
-          it._id ??
-          it.restId ??
-          it.rest_id ??
-          0
-      ) || 0;
+      Number(it.restaurantId ?? it.restaurant_id ?? it.id ?? it._id ?? it.restId ?? it.rest_id ?? 0) || 0
+    const targets = items.map((it) => ({ id: toId(it), it })).filter((x) => Number.isInteger(x.id) && x.id > 0)
+    if (!targets.length) return items
 
-    const targets = items
-      .map((it) => ({ id: toId(it), it }))
-      .filter((x) => Number.isInteger(x.id) && x.id > 0);
-
-    if (targets.length === 0) return items;
-
-    // 1차: 상세에서 ecoScore 류 추출 → 표시점수(0~5)로 변환
-    const detailResults = await Promise.allSettled(
-      targets.map(({ id }) => fetchJson(`/restaurants/${id}/detail`))
-    );
-    const idToDisplay5 = new Map<number, number>();
-    detailResults.forEach((pr, idx) => {
-      if (pr.status !== "fulfilled") return;
-      const data = (pr.value as any)?.data ?? (pr.value as any)?.success ?? pr.value ?? {};
+    const detailResults = await Promise.allSettled(targets.map(({ id }) => fetchJson(`/restaurants/${id}/detail`)))
+    const idTo = new Map<number, { ai100?: number; display5?: number }>()
+    detailResults.forEach((pr, i) => {
+      if (pr.status !== "fulfilled") return
+      const data = (pr.value as any)?.data ?? (pr.value as any)?.success ?? pr.value ?? {}
       const ecoRaw =
         data?.stats?.ecoScore ??
         data?.ecoScore ??
         data?.averageWasteScore ??
         data?.avgWasteScore ??
         data?.wasteScore ??
-        null;
+        null
       if (ecoRaw != null) {
-        idToDisplay5.set(targets[idx].id, toDisplay5(ecoRaw));
+        const ai100 = Number(ecoRaw) || 0
+        idTo.set(targets[i].id, { ai100, display5: toDisplay5(ai100) })
       }
-    });
+    })
 
-    // 2차: 없는 것만 리뷰 평균으로 보강
-    const missing = targets.filter(({ id }) => !idToDisplay5.has(id));
-    if (missing.length) {
-      const reviewResults = await Promise.allSettled(
-        missing.map(({ id }) => fetchJson(`/restaurants/${id}/reviews`))
-      );
-      reviewResults.forEach((pr, idx) => {
-        if (pr.status !== "fulfilled") return;
-        const payload = (pr.value as any)?.data ?? (pr.value as any)?.success ?? pr.value ?? {};
-        const list = Array.isArray(payload) ? payload : payload?.items ?? [];
-        const avg05 = avgFromReviews05(list);
-        if (avg05 != null) idToDisplay5.set(missing[idx].id, avg05);
-      });
-    }
+    const reviewResults = await Promise.allSettled(targets.map(({ id }) => fetchJson(`/restaurants/${id}/reviews`)))
+    const idToReview = new Map<number, { count: number; avg05: number | null }>()
+    reviewResults.forEach((pr, i) => {
+      if (pr.status !== "fulfilled") return
+      const payload = (pr.value as any)?.data ?? (pr.value as any)?.success ?? pr.value ?? {}
+      const list = Array.isArray(payload) ? payload : (payload?.items ?? [])
+      idToReview.set(targets[i].id, { count: list.length, avg05: avgFromReviews05(list) })
+    })
 
     return items.map((r) => {
-      const id =
-        Number(r.restaurantId ?? (r as any).restaurant_id ?? r.id ?? (r as any)._id ?? 0) || 0;
-      const disp = idToDisplay5.get(id);
-      return disp != null ? { ...r, displayScore: disp } : r;
-    });
-  };
+      const id = Number(r.restaurantId ?? (r as any).restaurant_id ?? r.id ?? (r as any)._id ?? 0) || 0
+      const d = idTo.get(id)
+      const rr = idToReview.get(id)
+      const display5 =
+        r.displayScore != null ? clamp05(r.displayScore) : d?.display5 != null ? clamp05(d.display5) : (rr?.avg05 ?? 0)
+      const ai100 = d?.ai100 ?? r.aiWaste100 ?? null
+      const rcnt = rr?.count ?? r.reviewCount ?? null
+      return { ...r, displayScore: display5, aiWaste100: ai100, reviewCount: rcnt, wasteTier: calcTier(rcnt, ai100) }
+    })
+  }
 
-  /* ────────────── 상태 저장/복원 ────────────── */
+  // 상태 저장/복원
   const saveState = (kwStr: string, list: RestaurantItem[]) => {
     try {
-      const center = mapObjRef.current?.getCenter?.();
-      const zoom = mapObjRef.current?.getZoom?.();
+      const center = mapObjRef.current?.getCenter?.()
+      const zoom = mapObjRef.current?.getZoom?.()
       const payload = {
         kw: kwStr,
         list,
@@ -369,117 +400,98 @@ export default function MapWithListPage() {
         center: center ? { lat: center.y, lng: center.x } : null,
         zoom: Number.isFinite(zoom) ? zoom : null,
         ts: Date.now(),
-      };
-      sessionStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-    } catch (e) {
-      console.warn("saveState failed", e);
-    }
-  };
-
-  const tryRestoreState = () => {
-    if (restoredRef.current) return false;
-    try {
-      const raw = sessionStorage.getItem(STORAGE_KEY);
-      if (!raw) return false;
-      const parsed = JSON.parse(raw);
-      if (typeof parsed.kw === "string") setKw(parsed.kw);
-      if (Array.isArray(parsed.list)) {
-        setMapRestaurants(parsed.list);
-        setUseMapList(!!parsed.useMapList);
       }
-      // 지도는 SDK 준비 후 위치/줌 복원
-      setTimeout(() => {
-        if (!mapObjRef.current) return;
-        if (parsed.center) {
-          const pos = new window.naver.maps.LatLng(parsed.center.lat, parsed.center.lng);
-          mapObjRef.current.setCenter(pos);
-        }
-        if (Number.isFinite(parsed.zoom)) {
-          mapObjRef.current.setZoom(parsed.zoom);
-        }
-      }, 0);
-      restoredRef.current = true;
-      return true;
+      sessionStorage.setItem(STORAGE_KEY, JSON.stringify(payload))
     } catch (e) {
-      console.warn("restoreState failed", e);
-      return false;
+      console.warn("saveState failed", e)
     }
-  };
+  }
+  const tryRestoreState = () => {
+    if (restoredRef.current) return false
+    try {
+      const raw = sessionStorage.getItem(STORAGE_KEY)
+      if (!raw) return false
+      const parsed = JSON.parse(raw)
+      if (typeof parsed.kw === "string") setKw(parsed.kw)
+      if (Array.isArray(parsed.list)) {
+        setMapRestaurants(parsed.list)
+        setUseMapList(!!parsed.useMapList)
+      }
+      setTimeout(() => {
+        if (!mapObjRef.current) return
+        if (parsed.center)
+          mapObjRef.current.setCenter(new window.naver.maps.LatLng(parsed.center.lat, parsed.center.lng))
+        if (Number.isFinite(parsed.zoom)) mapObjRef.current.setZoom(parsed.zoom)
+      }, 0)
+      restoredRef.current = true
+      return true
+    } catch (e) {
+      console.warn("restoreState failed", e)
+      return false
+    }
+  }
 
-  /* ────────────── 즐겨찾기 ────────────── */
+  // 즐겨찾기
   const toggleFavorite = async (idx: number) => {
-    if (!isLoggedIn) return;
-    const r = restaurants[idx];
-    if (!r) return;
-    const id = r.id ?? r.restaurantId;
-    const prev = !!r.favorited;
+    if (!isLoggedIn) return
+    const r = filteredRestaurants[idx]
+    if (!r) return
+    const id = r.id ?? r.restaurantId
+    const prev = !!r.favorited
 
     const applyLocal = (v: boolean) => {
-      const next = restaurants.map((x, i) => (i === idx ? { ...x, favorited: v } : x));
-      setMapRestaurants(next);
-      setUseMapList(true);
-      saveState(kw, next);
+      const base = restaurants
+      const next = base.map((x, i) => (i === idx ? { ...x, favorited: v } : x))
+      setMapRestaurants(next)
+      setUseMapList(true)
+      saveState(kw, next)
       if (Number.isFinite(Number(id))) {
         setFavoriteIds((old) => {
-          const s = new Set(old);
-          const nid = Number(id);
-          if (v) s.add(nid);
-          else s.delete(nid);
-          return s;
-        });
+          const s = new Set(old)
+          const nid = Number(id)
+          if (v) s.add(nid)
+          else s.delete(nid)
+          return s
+        })
       }
-    };
+    }
 
     try {
-      applyLocal(!prev);
+      applyLocal(!prev)
       if (!prev) {
         if (Number.isFinite(Number(id))) {
-          const rs = await apiClient.addFavorite(Number(id));
-          if (!rs?.success) throw new Error(rs?.error || "즐겨찾기 추가 실패");
+          const rs = await apiClient.addFavorite(Number(id))
+          if (!rs?.success) throw new Error(rs?.error || "즐겨찾기 추가 실패")
         }
       } else {
-        if (!Number.isFinite(Number(id))) throw new Error("restaurantId가 없어서 해제할 수 없어요.");
-        const rs = await apiClient.removeFavorite(Number(id));
-        if (!rs?.success) throw new Error(rs?.error || "즐겨찾기 해제 실패");
+        if (!Number.isFinite(Number(id))) throw new Error("restaurantId 없음")
+        const rs = await apiClient.removeFavorite(Number(id))
+        if (!rs?.success) throw new Error(rs?.error || "즐겨찾기 해제 실패")
       }
     } catch (e: any) {
-      applyLocal(prev);
-      alert(e?.message || "즐겨찾기 처리에 실패했습니다.");
+      applyLocal(prev)
+      alert(e?.message || "즐겨찾기 실패")
     }
-  };
+  }
 
-  /* ────────────── 검색/목록 변환 ────────────── */
+  // 검색
   const handleSearchCurrentBounds = async () => {
-    if (!mapObjRef.current) return;
-    // 빈 검색어면 실행하지 않기
+    if (!mapObjRef.current) return
     if (!kw.trim()) {
-      alert("검색어를 입력해주세요.");
-      return;
+      alert("검색어를 입력해주세요.")
+      return
     }
     try {
-      setLoadingMapRestaurants(true);
-      const qs = await buildQueriesFromBounds(kw.trim());
-      const raw = await fetchNearbyForQueries(qs);
-
+      setLoadingMapRestaurants(true)
+      const qs = await buildQueriesFromBounds(kw.trim())
+      const raw = await fetchNearbyForQueries(qs)
       const mapped: RestaurantItem[] = raw.map((r: any) => {
-        const rawId =
-          r.restaurantId ??
-          r.restaurant_id ??
-          r.id ??
-          r._id ??
-          r.restId ??
-          r.rest_id;
-        const idNum = Number(rawId) || undefined;
-
-        const isFavByServer = !!r.favorited;
-        const isFavByMe = idNum != null && favoriteIds.has(Number(idNum));
-
-        const rawScore =
-          r.wasteScore ?? r.waste_score ?? r.score ?? r.ecoScore ?? null;
-
-        const displayScore =
-          rawScore != null ? toDisplay5(rawScore) : null;
-
+        const rawId = r.restaurantId ?? r.restaurant_id ?? r.id ?? r._id ?? r.restId ?? r.rest_id
+        const idNum = Number(rawId) || undefined
+        const isFavByServer = !!r.favorited
+        const isFavByMe = idNum != null && favoriteIds.has(Number(idNum))
+        const rawScore = r.wasteScore ?? r.waste_score ?? r.score ?? r.ecoScore ?? null
+        const displayScore = rawScore != null ? toDisplay5(rawScore) : null
         return {
           id: idNum,
           restaurantId: idNum,
@@ -496,124 +508,102 @@ export default function MapWithListPage() {
           displayScore,
           mapx: fixCoord(r.lng ?? r.mapx),
           mapy: fixCoord(r.lat ?? r.mapy),
-        };
-      });
-
-      let filtered = filterInBounds(mapped);
-      if (filtered.length === 0) filtered = mapped;
-
-      const enriched = await enrichWithDbScores(filtered);
-
-      setMapRestaurants(enriched);
-      setUseMapList(true);
-      saveState(kw, enriched);
-    } catch {
-      setMapRestaurants([]);
-      setUseMapList(true);
-      saveState(kw, []);
-    } finally {
-      setLoadingMapRestaurants(false);
-    }
-  };
-
-  /* ────────────── 파생 상태 ────────────── */
-  const restaurants: RestaurantItem[] = useMemo(() => {
-    const src = useMapList ? mapRestaurants : ((rawRestaurants as any[]) ?? []);
-    if (!Array.isArray(src)) return [];
-    return [...src]
-      .map((r: any) => {
-        const rawId =
-          r.restaurantId ??
-          (r as any).restaurant_id ??
-          r.id ??
-          (r as any)._id ??
-          (r as any).restId ??
-          (r as any).rest_id;
-        const idNum = Number(rawId) || undefined;
-
-        const lng = fixCoord(r.lng ?? r.mapx);
-        const lat = fixCoord(r.lat ?? r.mapy);
-        const fav = r.favorited || (idNum != null && favoriteIds.has(Number(idNum)));
-
-        const displayScore =
-          r.displayScore != null
-            ? clamp05(r.displayScore)
-            : r.wasteScore != null
-            ? toDisplay5(r.wasteScore)
-            : 0;
-
-        return {
-          ...r,
-          id: idNum,
-          image: pickImage(r.image, r.category, r.name),
-          displayScore,
-          mapx: lng,
-          mapy: lat,
-          description: r.address ?? r.description ?? null,
-          favorited: fav,
-        } as RestaurantItem;
+        }
       })
-      .sort((a, b) => (b.displayScore ?? 0) - (a.displayScore ?? 0));
-  }, [rawRestaurants, mapRestaurants, useMapList, favoriteIds]);
+      let filtered = filterInBounds(mapped)
+      if (!filtered.length) filtered = mapped
+      const enriched = await enrichWithDbScores(filtered)
+      setMapRestaurants(enriched)
+      setUseMapList(true)
+      saveState(kw, enriched)
+    } catch {
+      setMapRestaurants([])
+      setUseMapList(true)
+      saveState(kw, [])
+    } finally {
+      setLoadingMapRestaurants(false)
+    }
+  }
 
-  const topRestaurants = useMemo(() => restaurants.slice(0, 5), [restaurants]);
+  // 파생: 서버 or 지도검색 리스트
+  const restaurants: RestaurantItem[] = useMemo(() => {
+    const src = useMapList ? mapRestaurants : ((rawRestaurants as any[]) ?? [])
+    if (!Array.isArray(src)) return []
+    return [...src].map((r: any) => {
+      const rawId = r.restaurantId ?? r.restaurant_id ?? r.id ?? r._id ?? r.restId ?? r.rest_id
+      const idNum = Number(rawId) || undefined
+      const lng = fixCoord(r.lng ?? r.mapx)
+      const lat = fixCoord(r.lat ?? r.mapy)
+      const fav = r.favorited || (idNum != null && favoriteIds.has(Number(idNum)))
+      const displayScore =
+        r.displayScore != null ? clamp05(r.displayScore) : r.wasteScore != null ? toDisplay5(r.wasteScore) : 0
+      return {
+        ...r,
+        id: idNum,
+        image: pickImage(r.image, r.category, r.name),
+        displayScore,
+        mapx: lng,
+        mapy: lat,
+        description: r.address ?? r.description ?? null,
+        favorited: fav,
+      } as RestaurantItem
+    })
+  }, [rawRestaurants, mapRestaurants, useMapList, favoriteIds])
 
-  /* ────────────── 내비/지도 유틸 ────────────── */
+  // ✅ 필터 적용 리스트
+  const filteredRestaurants = useMemo(() => {
+    let list = [...restaurants]
+    if (tierFilter !== "ALL") list = list.filter((r) => (r.wasteTier ?? null) === tierFilter)
+    if (sortKey === "rating") list.sort((a, b) => (b.displayScore ?? 0) - (a.displayScore ?? 0))
+    else list.sort((a, b) => (b.reviewCount ?? 0) - (a.reviewCount ?? 0))
+    return list
+  }, [restaurants, sortKey, tierFilter])
+
   const goDetail = (restaurantId?: number, favorited?: boolean, catRaw?: string | null) => {
     if (!restaurantId) {
-      alert("식당 상세를 보려면 먼저 즐겨찾기 추가(멱등 확보) 후 가능합니다.");
-      return;
+      alert("식당 상세를 보려면 즐겨찾기 추가 후 가능합니다.")
+      return
     }
-    // 상세로 가기 전에 현재 상태를 저장(혹시 검색 없이 목록만 보고 들어간 경우 대비)
-    saveState(kw, mapRestaurants.length ? mapRestaurants : restaurants);
-    const fav = favorited ? "1" : "0";
-    const cat = catRaw ? `&cat=${encodeURIComponent(catRaw)}` : "";
-    router.push(`/restaurant/${restaurantId}?fav=${fav}${cat}`);
-  };
-
+    saveState(kw, mapRestaurants.length ? mapRestaurants : restaurants)
+    router.push(
+      `/restaurant/${restaurantId}?fav=${favorited ? "1" : "0"}${catRaw ? `&cat=${encodeURIComponent(catRaw)}` : ""}`,
+    )
+  }
   const flyTo = (lat: number, lng: number) => {
-    if (!mapObjRef.current) return;
-    const pos = new window.naver.maps.LatLng(lat, lng);
-    mapObjRef.current.setCenter(pos);
-    mapObjRef.current.setZoom(15);
-  };
-
+    if (!mapObjRef.current) return
+    const pos = new window.naver.maps.LatLng(lat, lng)
+    mapObjRef.current.setCenter(pos)
+    mapObjRef.current.setZoom(15)
+  }
   const handleLogout = async () => {
     try {
-      await apiClient.logout().catch(() => {});
+      await apiClient.logout().catch(() => {})
     } finally {
       try {
-        localStorage.removeItem("userId");
+        localStorage.removeItem("userId")
       } catch {}
-      setIsLoggedIn(false);
-      router.push("/login");
+      setIsLoggedIn(false)
+      router.push("/login")
     }
-  };
+  }
 
-  /* ────────────── SDK 로드 & 지도 초기화 ────────────── */
+  /* ─── 지도 초기화 ─── */
   useEffect(() => {
-    if (typeof window !== "undefined" && window.naver?.maps) setNaverReady(true);
-  }, []);
-
+    if (typeof window !== "undefined" && window.naver?.maps) setNaverReady(true)
+  }, [])
   useEffect(() => {
-    if (!naverReady || !mapRef.current || mapObjRef.current) return;
-
-    const defaultCenter = new window.naver.maps.LatLng(37.3595704, 127.105399);
+    if (!naverReady || !mapRef.current || mapObjRef.current) return
     const map = new window.naver.maps.Map(mapRef.current, {
-      center: defaultCenter,
+      center: new window.naver.maps.LatLng(37.3595704, 127.105399),
       zoom: 12,
-    });
-    mapObjRef.current = map;
-
-    // 상태 복원 시도 (센터/줌 포함)
-    tryRestoreState();
-
-    // 현재 위치 마커(복원된 상태가 없을 때만 초기에 살짝 맞춰주기)
-    const hasSaved = !!sessionStorage.getItem(STORAGE_KEY);
+    })
+    mapObjRef.current = map
+    tryRestoreState()
+    const hasSaved = !!sessionStorage.getItem(STORAGE_KEY)
     if (!hasSaved && navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
         (pos) => {
-          const here = new window.naver.maps.LatLng(pos.coords.latitude, pos.coords.longitude);
+          const here = new window.naver.maps.LatLng(pos.coords.latitude, pos.coords.longitude)
           hereMarkerRef.current = new window.naver.maps.Marker({
             position: here,
             map,
@@ -622,64 +612,47 @@ export default function MapWithListPage() {
                 '<div style="background:#3b82f6;width:12px;height:12px;border:2px solid #fff;border-radius:9999px;box-shadow:0 0 8px rgba(0,0,0,.3)"></div>',
               size: new window.naver.maps.Size(12, 12),
             },
-          });
-          // 첫 진입만 사용자 위치로 약간 줌
-          map.setCenter(here);
-          map.setZoom(14);
+          })
+          map.setCenter(here)
+          map.setZoom(14)
         },
-        () => console.warn("초기 위치 접근 실패")
-      );
+        () => console.warn("초기 위치 접근 실패"),
+      )
     }
-
     return () => {
-      markersRef.current.forEach((m) => m.setMap(null));
-      markersRef.current = [];
-      mapObjRef.current = null;
-      hereMarkerRef.current = null;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [naverReady]);
-
-  // 목록 변경 시 마커 갱신
+      markersRef.current.forEach((m) => m.setMap(null))
+      markersRef.current = []
+      mapObjRef.current = null
+      hereMarkerRef.current = null
+    }
+  }, [naverReady])
   useEffect(() => {
-    if (!naverReady || !mapObjRef.current) return;
-    renderMarkers(mapObjRef.current, restaurants);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [restaurants, naverReady]);
-
-  // ❌ 자동검색 제거: 예전엔 naverReady 시점에 handleSearchCurrentBounds()를 호출했지만,
-  //    이제는 사용자 입력(Enter/버튼)로만 검색 수행. 복원 상태가 있으면 그걸 그대로 사용.
-
-  function renderMarkers(map: any, list: RestaurantItem[]) {
-    markersRef.current.forEach((m) => m.setMap(null));
-    markersRef.current = [];
-    list.forEach((r) => {
+    if (!naverReady || !mapObjRef.current) return
+    markersRef.current.forEach((m) => m.setMap(null))
+    markersRef.current = []
+    filteredRestaurants.forEach((r, index) => {
+      // Added index for toggleFavorite
       if (r.mapy != null && r.mapx != null) {
-        const pos = new window.naver.maps.LatLng(r.mapy, r.mapx);
-        const marker = new window.naver.maps.Marker({
-          position: pos,
-          map,
-          title: r.name,
-        });
-        window.naver.maps.Event.addListener(marker, "click", () =>
-          r.id ? goDetail(r.id, r.favorited, r.category ?? null) : undefined
-        );
-        markersRef.current.push(marker);
+        const pos = new window.naver.maps.LatLng(r.mapy, r.mapx)
+        const marker = new window.naver.maps.Marker({ position: pos, map: mapObjRef.current, title: r.name })
+        window.naver.maps.Event.addListener(marker, "click", () => {
+          setSelectedRestaurant({ ...r, index }) // Pass index to selectedRestaurant
+        })
+        markersRef.current.push(marker)
       }
-    });
-  }
+    })
+  }, [filteredRestaurants, naverReady])
 
   const recenterToUser = () => {
     if (!mapObjRef.current || !navigator.geolocation) {
-      alert("현재 위치를 사용할 수 없습니다.");
-      return;
+      alert("현재 위치를 사용할 수 없습니다.")
+      return
     }
     navigator.geolocation.getCurrentPosition(
       (pos) => {
-        const here = new window.naver.maps.LatLng(pos.coords.latitude, pos.coords.longitude);
-        if (hereMarkerRef.current) {
-          hereMarkerRef.current.setPosition(here);
-        } else {
+        const here = new window.naver.maps.LatLng(pos.coords.latitude, pos.coords.longitude)
+        if (hereMarkerRef.current) hereMarkerRef.current.setPosition(here)
+        else {
           hereMarkerRef.current = new window.naver.maps.Marker({
             position: here,
             map: mapObjRef.current,
@@ -688,24 +661,35 @@ export default function MapWithListPage() {
                 '<div style="background:#3b82f6;width:12px;height:12px;border:2px solid #fff;border-radius:9999px;box-shadow:0 0 8px rgba(0,0,0,.3)"></div>',
               size: new window.naver.maps.Size(12, 12),
             },
-          });
+          })
         }
-        mapObjRef.current.setCenter(here);
-        mapObjRef.current.setZoom(14);
-        // 위치 이동도 저장(사용자가 의도적으로 옮긴 것으로 간주)
-        saveState(kw, mapRestaurants.length ? mapRestaurants : restaurants);
+        mapObjRef.current.setCenter(here)
+        mapObjRef.current.setZoom(14)
+        saveState(kw, mapRestaurants.length ? mapRestaurants : restaurants)
       },
       (err) => {
-        alert("현재 위치를 불러올 수 없습니다. 위치 접근 권한을 허용해주세요.");
-        console.warn("위치 접근 실패:", err);
+        alert("현재 위치를 불러올 수 없습니다. 위치 권한을 허용해주세요.")
+        console.warn("위치 접근 실패:", err)
       },
-      { enableHighAccuracy: true, maximumAge: 10000, timeout: 10000 }
-    );
-  };
+      { enableHighAccuracy: true, maximumAge: 10000, timeout: 10000 },
+    )
+  }
+
+  // Helper to get tier badge for display
+  const getTierBadge = (wasteScore: number | null) => {
+    const tier = calcTier(null, wasteScore) // reviewCount is not available here
+    return (
+      tier && (
+        <Badge className={`${getTierColor(tier)} text-xs font-bold px-2 py-1 rounded-full shadow-md`}>
+          {getTierName(tier)}
+        </Badge>
+      )
+    )
+  }
 
   return (
     <div className="h-screen flex flex-col bg-gradient-to-br from-slate-50 via-green-50/30 to-sky-50/30 dark:from-slate-950 dark:via-green-950/20 dark:to-sky-950/20">
-      {/* Naver Maps SDK */}
+      {/* Naver SDK */}
       <Script
         src={`https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=${process.env.NEXT_PUBLIC_NAVER_MAP_CLIENT_ID}&submodules=geocoder`}
         strategy="afterInteractive"
@@ -713,379 +697,607 @@ export default function MapWithListPage() {
         onError={(e) => console.error("Naver Maps script load error", e)}
       />
 
-      {/* 헤더 */}
       <motion.header
         initial={{ opacity: 0, y: -20 }}
         animate={{ opacity: 1, y: 0 }}
-        className="relative bg-white/80 dark:bg-slate-900/80 backdrop-blur-xl border-b border-white/20 dark:border-slate-800/50 p-4 flex items-center justify-between shadow-lg"
+        className="bg-white/90 dark:bg-slate-900/90 backdrop-blur-xl border-b border-white/30 dark:border-slate-800/50 shadow-xl"
       >
-        <motion.div className="flex items-center gap-3" whileHover={{ scale: 1.02 }}>
-          <div className="p-2 rounded-xl bg-gradient-to-br from-green-500 to-emerald-600 shadow-lg">
-            <Leaf className="h-6 w-6 text-white" />
+        <div className="flex items-center gap-4 p-4">
+          {/* Enhanced Logo */}
+          <div className="flex items-center gap-3 shrink-0">
+            <div className="relative p-3 rounded-2xl bg-gradient-to-br from-green-500 via-emerald-500 to-teal-600 shadow-lg">
+              <Leaf className="h-7 w-7 text-white" />
+              <div className="absolute -top-1 -right-1 w-3 h-3 bg-yellow-400 rounded-full animate-pulse" />
+            </div>
+            <div className="hidden sm:block">
+              <h1 className="font-bold text-xl bg-gradient-to-r from-green-600 via-emerald-600 to-teal-600 bg-clip-text text-transparent">
+                ZeroWaste
+              </h1>
+              <p className="text-xs text-muted-foreground">친환경 맛집 찾기</p>
+            </div>
           </div>
-          <span className="font-bold text-xl bg-gradient-to-r from-green-600 to-emerald-600 bg-clip-text text-transparent">
-            EcoEats
-          </span>
-        </motion.div>
 
-        {/* 검색바 — 사이드바 폭에 맞춰 겹침 방지 */}
-        <div className="hidden sm:block absolute top-1/2 -translate-y-1/2 left-[400px] right-48 z-0 pointer-events-none">
-          <motion.div
-            className="flex items-center gap-3 pointer-events-auto"
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-          >
-            <div className="relative flex-1 max-w-[420px]">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          {/* Enhanced Search Bar */}
+          <div className="flex-1 flex items-center gap-3">
+            <div className="relative flex-1 max-w-md">
+              <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-muted-foreground" />
               <input
                 value={kw}
                 onChange={(e) => setKw(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && handleSearchCurrentBounds()}
-                placeholder="예: 카페, 분식, 라멘… (검색어가 비어있으면 검색되지 않아요)"
-                className="h-11 w-full pl-10 pr-4 rounded-2xl border-0 bg-white/90 dark:bg-slate-800/90 backdrop-blur-sm text-sm outline-none focus:ring-2 focus:ring-green-500/30 shadow-lg"
+                placeholder="맛집을 검색해보세요..."
+                className="h-12 w-full pl-12 pr-4 rounded-2xl border-0 bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm text-sm outline-none focus:ring-2 focus:ring-green-500/40 shadow-lg placeholder:text-muted-foreground/60"
               />
+              <div className="absolute right-2 top-1/2 -translate-y-1/2">
+                <Button
+                  size="sm"
+                  onClick={handleSearchCurrentBounds}
+                  className="h-8 px-3 rounded-xl bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 shadow-md"
+                >
+                  <Search className="h-3 w-3" />
+                </Button>
+              </div>
             </div>
-            <Button
-              size="sm"
-              onClick={handleSearchCurrentBounds}
-              className="h-11 px-6 rounded-2xl bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 shadow-lg"
-            >
-              <Search className="h-4 w-4 mr-2" />
-              검색
-            </Button>
-          </motion.div>
-        </div>
 
-        <div className="relative z-20 flex items-center gap-2">
-          {isLoggedIn && (
-            <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => router.push("/profile")}
-                className="h-10 px-4 rounded-xl bg-white/50 dark:bg-slate-800/50 hover:bg-white/80 dark:hover:bg-slate-700/80 shadow-lg"
-                title="프로필"
-              >
-                <User className="h-4 w-4 mr-2" />
-                <span className="hidden md:inline">프로필</span>
-              </Button>
-            </motion.div>
-          )}
-          <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={handleLogout}
-              className="h-10 px-4 rounded-xl bg-white/50 dark:bg-slate-800/50 hover:bg-red-50 dark:hover:bg-red-900/20 shadow-lg"
-            >
-              <LogOut className="h-4 w-4 mr-2" />
-              <span className="hidden md:inline">로그아웃</span>
-            </Button>
-          </motion.div>
+            {/* Enhanced Action Buttons */}
+            <div className="flex items-center gap-2">
+              {isLoggedIn && (
+                <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => router.push("/profile")}
+                    className="h-11 px-4 rounded-2xl bg-white/70 dark:bg-slate-800/70 hover:bg-white dark:hover:bg-slate-700 shadow-lg border border-white/50 dark:border-slate-700/50"
+                  >
+                    <User className="h-4 w-4 mr-2" />
+                    <span className="hidden sm:inline">프로필</span>
+                  </Button>
+                </motion.div>
+              )}
+              <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleLogout}
+                  className="h-11 px-4 rounded-2xl bg-white/70 dark:bg-slate-800/70 hover:bg-red-50 dark:hover:bg-red-900/30 shadow-lg border border-white/50 dark:border-slate-700/50 text-red-600 hover:text-red-700"
+                >
+                  <LogOut className="h-4 w-4 mr-2" />
+                  <span className="hidden sm:inline">로그아웃</span>
+                </Button>
+              </motion.div>
+            </div>
+          </div>
         </div>
       </motion.header>
 
       <div className="flex flex-1 min-h-0">
-        {/* 사이드바 (리스트) */}
         <motion.div
           initial={{ opacity: 0, x: -20 }}
           animate={{ opacity: 1, x: 0 }}
           transition={{ delay: 0.05 }}
-          className="bg-white/60 dark:bg-slate-900/60 backdrop-blur-xl border-r border-white/20 dark:border-slate-800/50 overflow-y-auto p-6 space-y-4 shadow-2xl"
-          style={{ width: SIDEBAR_WIDTH_PX }}
+          className="hidden md:block bg-white/80 dark:bg-slate-900/80 backdrop-blur-xl border-r border-white/20 dark:border-slate-800/30 overflow-y-auto shadow-2xl md:w-[420px]"
         >
-          <div className="flex items-center justify-between mb-2">
-            <h2 className="text-lg font-bold bg-gradient-to-r from-green-600 to-emerald-600 bg-clip-text text-transparent">
-              주변 맛집
-            </h2>
-            <Badge
-              variant="secondary"
-              className="bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300"
-            >
-              {restaurants.length}곳
-            </Badge>
-          </div>
+          <div className="p-6 space-y-6">
+            {/* Enhanced Filter Header */}
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <h2 className="text-xl font-bold bg-gradient-to-r from-green-600 via-emerald-600 to-teal-600 bg-clip-text text-transparent flex items-center gap-2">
+                  <MapPin className="h-5 w-5 text-green-600" />
+                  주변 맛집
+                </h2>
+                <Badge
+                  variant="secondary"
+                  className="bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 px-3 py-1 rounded-full font-semibold shadow-sm"
+                >
+                  {filteredRestaurants.length}곳
+                </Badge>
+              </div>
 
-          {loading ? (
-            <div className="flex items-center justify-center py-12 text-muted-foreground">
-              <div className="text-center">
-                <Loader2 className="h-8 w-8 animate-spin mx-auto mb-4 text-green-500" />
-                <p className="text-sm">식당 정보를 불러오는 중...</p>
+              {/* Enhanced Filter Buttons */}
+              <div className="space-y-4">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
+                    <Button
+                      variant={sortKey === "rating" ? "default" : "outline"}
+                      size="sm"
+                      onClick={() => setSortKey(sortKey === "rating" ? "rating" : "rating")}
+                      className={`h-11 px-4 rounded-2xl font-medium transition-all duration-300 shadow-lg ${
+                        sortKey === "rating"
+                          ? "bg-gradient-to-r from-yellow-500 via-yellow-600 to-orange-500 hover:from-yellow-600 hover:via-yellow-700 hover:to-orange-600 text-white shadow-yellow-200 dark:shadow-yellow-900/50"
+                          : "bg-white/90 dark:bg-slate-800/90 hover:bg-yellow-50 dark:hover:bg-yellow-900/20 border-yellow-200 dark:border-yellow-800 hover:shadow-md"
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="text-lg">⭐</span>
+                        <span>별점순</span>
+                      </div>
+                    </Button>
+                  </motion.div>
+
+                  <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
+                    <Button
+                      variant={sortKey === "reviews" ? "default" : "outline"}
+                      size="sm"
+                      onClick={() => setSortKey(sortKey === "reviews" ? "reviews" : "reviews")}
+                      className={`h-11 px-4 rounded-2xl font-medium transition-all duration-300 shadow-lg ${
+                        sortKey === "reviews"
+                          ? "bg-gradient-to-r from-blue-500 via-blue-600 to-cyan-500 hover:from-blue-600 hover:via-blue-700 hover:to-cyan-600 text-white shadow-blue-200 dark:shadow-blue-900/50"
+                          : "bg-white/90 dark:bg-slate-800/90 hover:bg-blue-50 dark:hover:bg-blue-900/20 border-blue-200 dark:border-blue-800 hover:shadow-md"
+                      }`}
+                    >
+                      <MessageCircle className="h-4 w-4 mr-2" />
+                      리뷰순
+                    </Button>
+                  </motion.div>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <label className="text-sm font-semibold text-muted-foreground">등급 필터</label>
+                    <div className="h-px flex-1 bg-gradient-to-r from-transparent via-border to-transparent" />
+                  </div>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
+                      <Button
+                        variant={tierFilter === "ALL" ? "default" : "outline"}
+                        size="sm"
+                        onClick={() => setTierFilter("ALL")}
+                        className={`h-8 w-full rounded-lg font-medium transition-all duration-300 text-xs ${
+                          tierFilter === "ALL"
+                            ? "bg-gradient-to-r from-purple-500 to-pink-500 text-white shadow-md"
+                            : "bg-white/90 dark:bg-slate-800/90 hover:bg-purple-50 dark:hover:bg-purple-900/20"
+                        }`}
+                      >
+                        <span className="text-sm mr-1">🍽️</span>
+                        전체
+                      </Button>
+                    </motion.div>
+
+                    {(
+                      [
+                        ["UNRANK", "언랭"],
+                        ["브론즈", "브론즈"],
+                        ["실버", "실버"],
+                        ["골드", "골드"],
+                        ["플래티넘", "플래티넘"],
+                        ["다이아", "다이아"],
+                      ] as const
+                    ).map(([tier, name]) => (
+                      <motion.div key={tier} whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
+                        <Button
+                          variant={tierFilter === tier ? "default" : "outline"}
+                          size="sm"
+                          onClick={() => setTierFilter(tier)}
+                          className={`h-8 w-full rounded-lg font-medium transition-all duration-300 text-xs ${
+                            tierFilter === tier
+                              ? getTierColor(tier) + " shadow-md"
+                              : "bg-white/90 dark:bg-slate-800/90 hover:bg-gray-50 dark:hover:bg-gray-900/20"
+                          }`}
+                        >
+                          <span className="text-sm mr-1">{getTierIcon(tier)}</span>
+                          {name}
+                        </Button>
+                      </motion.div>
+                    ))}
+                  </div>
+                </div>
               </div>
             </div>
-          ) : error ? (
-            <div className="text-center text-red-500 py-12 bg-red-50 dark:bg-red-900/20 rounded-2xl">
-              <p className="text-sm">식당 정보를 불러올 수 없습니다.</p>
-            </div>
-          ) : (
-            <AnimatePresence mode="popLayout">
-              {restaurants.map((r, idx) => (
-                <motion.div
-                  key={`list-${r.name}-${idx}`}
-                  initial={{ opacity: 0, y: 14 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -14 }}
-                  transition={{ delay: idx * 0.03 }}
-                  whileHover={{ scale: 1.01, y: -2 }}
-                >
-                  <Card
-                    className="relative p-5 cursor-pointer bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm hover:bg-white/90 dark:hover:bg-slate-800/90 border-white/20 dark:border-slate-700/50 shadow-lg transition-all duration-200 rounded-2xl group"
-                    onClick={() => r.id && goDetail(r.id, r.favorited, r.category ?? null)}
+
+            {/* Restaurant List */}
+            {loading ? (
+              <div className="flex items-center justify-center py-12 text-muted-foreground">
+                <div className="text-center space-y-4">
+                  <div className="relative">
+                    <Loader2 className="h-12 w-12 animate-spin mx-auto text-green-500" />
+                    <div className="absolute inset-0 h-12 w-12 rounded-full bg-green-500/20 animate-pulse mx-auto" />
+                  </div>
+                  <div className="space-y-2">
+                    <p className="text-base font-medium">맛집 정보를 불러오는 중...</p>
+                    <p className="text-sm text-muted-foreground/70">잠시만 기다려주세요</p>
+                  </div>
+                </div>
+              </div>
+            ) : filteredRestaurants.length === 0 ? (
+              <div className="flex items-center justify-center py-12 text-muted-foreground">
+                <div className="text-center space-y-4">
+                  <div className="text-6xl opacity-50">🔍</div>
+                  <div className="space-y-2">
+                    <p className="text-base font-medium">검색 결과가 없습니다</p>
+                    <p className="text-sm text-muted-foreground/70">다른 조건으로 검색해보세요</p>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {filteredRestaurants.slice(0, 20).map((r, idx) => (
+                  <motion.div
+                    key={`desktop-${r.name}-${idx}`}
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: idx * 0.03 }}
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.98 }}
                   >
-                    <div className="flex items-start gap-4">
-                      {/* 썸네일 */}
-                      <div className="relative overflow-hidden rounded-xl shrink-0">
-                        <img
-                          src={r.image || "/placeholder.svg"}
-                          alt={r.name}
-                          loading="lazy"
-                          sizes="80px"
-                          className="w-20 h-20 object-cover transition-transform duration-300 group-hover:scale-110"
-                        />
-                      </div>
-
-                      {/* 본문 */}
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 mb-1.5">
-                          <h3
-                            className="font-semibold text-foreground text-base md:text-lg leading-snug break-keep line-clamp-2"
-                            title={r.name}
-                          >
-                            {r.name}
-                          </h3>
-                          {r.badge && (
-                            <Badge
-                              variant="secondary"
-                              className="text-xs bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300"
+                    <Card
+                      className="p-5 cursor-pointer bg-white/95 dark:bg-slate-800/95 backdrop-blur-sm hover:bg-white dark:hover:bg-slate-800 border-white/40 dark:border-slate-700/40 shadow-lg hover:shadow-2xl transition-all duration-300 rounded-3xl group overflow-hidden"
+                      onClick={() => r.id && goDetail(r.id, r.favorited, r.category ?? null)}
+                    >
+                      <div className="flex items-center gap-4">
+                        <div className="relative overflow-hidden rounded-2xl shrink-0">
+                          <img
+                            src={r.image || "/placeholder.svg"}
+                            alt={r.name}
+                            loading="lazy"
+                            sizes="80px"
+                            className="w-20 h-20 object-cover transition-transform duration-500 group-hover:scale-110"
+                          />
+                          {r.wasteTier && (
+                            <div
+                              className={`absolute -top-2 -right-2 w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${getTierColor(r.wasteTier)} shadow-xl border-2 border-white dark:border-slate-800`}
                             >
-                              {r.badge}
-                            </Badge>
+                              {getTierIcon(r.wasteTier)}
+                            </div>
                           )}
+                          <div className="absolute inset-0 bg-gradient-to-t from-black/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
                         </div>
-                        <p className="text-sm text-muted-foreground mb-2 line-clamp-2 leading-relaxed">
-                          {r.description}
-                        </p>
-                        <div className="flex items-center gap-3 text-sm text-muted-foreground">
-                          <div className="flex items-center gap-1">
-                            <Star className="h-4 w-4 fill-current text-green-500" />
-                            <span className="text-green-600 font-semibold">
-                              {clamp05(r.displayScore ?? 0).toFixed(1)}
-                            </span>
-                          </div>
-                          {r.category && (
-                            <span className="px-2 py-0.5 bg-slate-100 dark:bg-slate-800 rounded-lg text-xs">
-                              {r.category}
-                            </span>
-                          )}
-                          {r.distance && <span className="text-xs opacity-75">{r.distance}</span>}
-                        </div>
-                      </div>
 
-                      {/* 우측 아이콘들 */}
-                      <div className="flex flex-col items-end gap-2 shrink-0 self-start">
-                        {r.mapy != null && r.mapx != null && (
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              flyTo(r.mapy!, r.mapx!);
-                            }}
-                            className="h-8 w-8 rounded-xl bg-white/80 dark:bg-slate-700/80 hover:bg-blue-50 dark:hover:bg-blue-900/30 shadow"
-                            title="지도에서 보기"
-                          >
-                            <MapPin className="h-4 w-4 text-blue-600" />
-                          </Button>
-                        )}
-                        {isLoggedIn && (
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              toggleFavorite(idx);
-                            }}
-                            title={r.favorited ? "즐겨찾기 해제" : "즐겨찾기 추가"}
-                            className="h-8 w-8 rounded-xl bg-white/80 dark:bg-slate-700/80 hover:bg-red-50 dark:hover:bg-red-900/30 shadow"
-                          >
-                            <Heart
-                              className={`h-4 w-4 transition-colors duration-200 ${
-                                r.favorited ? "fill-red-500 text-red-500" : "text-gray-400"
-                              }`}
-                            />
-                          </Button>
-                        )}
+                        <div className="flex-1 min-w-0 space-y-2">
+                          <div className="flex items-start justify-between gap-2">
+                            <h3
+                              className="font-bold text-foreground text-lg leading-tight break-keep line-clamp-2 group-hover:text-green-600 transition-colors duration-200"
+                              title={r.name}
+                            >
+                              {r.name}
+                            </h3>
+                            {r.wasteTier && (
+                              <Badge
+                                className={`${getTierColor(r.wasteTier)} text-xs font-bold px-2 py-1 rounded-full shadow-md shrink-0`}
+                              >
+                                {getTierName(r.wasteTier)}
+                              </Badge>
+                            )}
+                          </div>
+
+                          <div className="flex items-center gap-3 text-sm">
+                            <div className="flex items-center gap-1.5 bg-gradient-to-r from-yellow-50 to-orange-50 dark:from-yellow-900/20 dark:to-orange-900/20 px-3 py-1.5 rounded-full border border-yellow-200/50 dark:border-yellow-800/50">
+                              <div className="flex items-center gap-0.5">
+                                {renderStars(clamp05(r.displayScore ?? 0))}
+                              </div>
+                              <span className="text-yellow-700 dark:text-yellow-300 font-bold text-sm">
+                                {clamp05(r.displayScore ?? 0).toFixed(1)}
+                              </span>
+                            </div>
+                            {r.reviewCount != null && r.reviewCount > 0 && (
+                              <div className="flex items-center gap-1 bg-blue-50 dark:bg-blue-900/20 px-2 py-1 rounded-full">
+                                <MessageCircle className="h-3 w-3 text-blue-600 dark:text-blue-400" />
+                                <span className="text-blue-700 dark:text-blue-300 font-medium text-xs">
+                                  {r.reviewCount}
+                                </span>
+                              </div>
+                            )}
+                            {r.distance && (
+                              <span className="text-xs text-muted-foreground bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded-full">
+                                {r.distance}
+                              </span>
+                            )}
+                          </div>
+
+                          {r.address && (
+                            <p className="text-xs text-muted-foreground/80 line-clamp-1" title={r.address}>
+                              📍 {r.address}
+                            </p>
+                          )}
+                        </div>
+
+                        <div className="flex flex-col items-center gap-2 shrink-0">
+                          {r.mapy != null && r.mapx != null && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                flyTo(r.mapy!, r.mapx!)
+                              }}
+                              className="h-10 w-10 rounded-2xl bg-gradient-to-r from-blue-50 to-cyan-50 dark:from-blue-900/20 dark:to-cyan-900/20 hover:from-blue-100 hover:to-cyan-100 dark:hover:from-blue-800/30 dark:hover:to-cyan-800/30 shadow-md hover:shadow-lg transition-all duration-200 border border-blue-200/50 dark:border-blue-800/50"
+                            >
+                              <Navigation className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+                            </Button>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  </Card>
-                </motion.div>
-              ))}
-            </AnimatePresence>
-          )}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          toggleFavorite(idx)
+                        }}
+                        className="absolute top-3 right-3 h-8 w-8 rounded-full bg-white/80 hover:bg-white shadow-lg"
+                      >
+                        <Heart
+                          className={`h-4 w-4 transition-colors ${
+                            r.favorited ? "fill-red-500 text-red-500" : "text-gray-400"
+                          }`}
+                        />
+                      </Button>
+                    </Card>
+                  </motion.div>
+                ))}
+              </div>
+            )}
+          </div>
         </motion.div>
 
-        {/* 지도 */}
+        {/* Map */}
         <div className="flex-1 relative">
           <div ref={mapRef} id="map" className="absolute inset-0 w-full h-full" />
 
-          {/* 부동 컨트롤 */}
+          {selectedRestaurant && (
+            <motion.div
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.9 }}
+              className="absolute top-20 left-4 right-4 md:left-80 md:right-auto md:w-80 z-50"
+            >
+              <Card className="p-4 bg-white/95 dark:bg-slate-800/95 backdrop-blur-xl border-white/40 dark:border-slate-700/40 shadow-2xl rounded-2xl">
+                <div className="flex items-start justify-between mb-3">
+                  <h3 className="font-bold text-lg text-foreground">{selectedRestaurant.name}</h3>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => setSelectedRestaurant(null)}
+                    className="h-8 w-8 rounded-full"
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                </div>
+
+                <div className="flex items-center gap-3 mb-3">
+                  <div className="relative overflow-hidden rounded-xl shrink-0">
+                    <img
+                      src={selectedRestaurant.image || "/placeholder.svg"}
+                      alt={selectedRestaurant.name}
+                      className="w-16 h-16 object-cover"
+                    />
+                    {selectedRestaurant.wasteTier && (
+                      <div
+                        className={`absolute -top-1 -right-1 w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold ${getTierColor(selectedRestaurant.wasteTier)} shadow-lg border border-white dark:border-slate-800`}
+                      >
+                        {getTierIcon(selectedRestaurant.wasteTier)}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2 mb-1">
+                      <div className="flex items-center gap-1">
+                        {[...Array(5)].map((_, i) => (
+                          <Star
+                            key={i}
+                            className={`h-4 w-4 ${
+                              i < Math.floor(calculateWasteStarRating(selectedRestaurant.wasteScore ?? 0))
+                                ? "fill-green-500 text-green-500"
+                                : "text-gray-300"
+                            }`}
+                          />
+                        ))}
+                        <span className="text-sm font-medium text-green-600 ml-1">
+                          {calculateWasteStarRating(selectedRestaurant.wasteScore ?? 0).toFixed(1)}
+                        </span>
+                      </div>
+                      {selectedRestaurant.wasteTier && (
+                        <Badge
+                          className={`${getTierColor(selectedRestaurant.wasteTier)} text-xs font-bold px-2 py-1 rounded-full`}
+                        >
+                          {getTierName(selectedRestaurant.wasteTier)}
+                        </Badge>
+                      )}
+                    </div>
+                    {selectedRestaurant.reviewCount != null && selectedRestaurant.reviewCount > 0 && (
+                      <div className="flex items-center gap-1">
+                        <MessageCircle className="h-3 w-3 text-blue-600 dark:text-blue-400" />
+                        <span className="text-blue-700 dark:text-blue-300 font-medium text-sm">
+                          리뷰 {selectedRestaurant.reviewCount}개
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {selectedRestaurant.address && (
+                  <p className="text-sm text-muted-foreground mb-3">{selectedRestaurant.address}</p>
+                )}
+
+                <Button
+                  onClick={() => {
+                    if (selectedRestaurant.id) {
+                      goDetail(selectedRestaurant.id, selectedRestaurant.favorited, selectedRestaurant.category ?? null)
+                    }
+                    setSelectedRestaurant(null)
+                  }}
+                  className="w-full bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white rounded-xl"
+                >
+                  상세 정보 보기
+                </Button>
+              </Card>
+            </motion.div>
+          )}
+
+          {/* This section is for the desktop view, mobile view has its own */}
+
+          {/* Enhanced Bottom Controls */}
           <motion.div
-            className="absolute bottom-20 md:bottom-16 left-1/2 -translate-x-1/2 z-10 flex gap-3"
             initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
+            className="pointer-events-none absolute left-0 right-0 bottom-0 z-10 px-4 pb-[calc(env(safe-area-inset-bottom)+16px)]"
           >
-            <Button
-              onClick={handleSearchCurrentBounds}
-              disabled={loadingMapRestaurants}
-              className="h-12 px-6 rounded-2xl bg-white/90 dark:bg-slate-800/90 backdrop-blur-xl text-foreground hover:bg-white dark:hover:bg-slate-700 shadow-xl border border-white/20 dark:border-slate-700/50"
-            >
-              {loadingMapRestaurants ? (
-                <>
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  검색 중...
-                </>
-              ) : (
-                <>
-                  <Search className="h-4 w-4 mr-2" />
-                  현 지도에서 검색
-                </>
-              )}
-            </Button>
+            <div className="mx-auto max-w-2xl flex items-center justify-center gap-3 pointer-events-auto">
+              <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
+                <Button
+                  onClick={handleSearchCurrentBounds}
+                  disabled={loadingMapRestaurants}
+                  className="h-14 px-8 rounded-2xl bg-white/95 dark:bg-slate-800/95 backdrop-blur-xl text-foreground hover:bg-white dark:hover:bg-slate-700 shadow-2xl border border-white/30 dark:border-slate-700/50 font-medium"
+                  title="현 지도에서 검색"
+                >
+                  {loadingMapRestaurants ? (
+                    <>
+                      <Loader2 className="h-5 w-5 mr-3 animate-spin" />
+                      검색 중...
+                    </>
+                  ) : (
+                    <>
+                      <Search className="h-5 w-5 mr-3" />현 지도에서 검색
+                    </>
+                  )}
+                </Button>
+              </motion.div>
 
-            <Button
-              variant="outline"
-              onClick={recenterToUser}
-              className="h-12 px-6 rounded-2xl bg-white/90 dark:bg-slate-800/90 backdrop-blur-xl hover:bg-blue-50 dark:hover:bg-blue-900/30 shadow-xl border border-white/20 dark:border-slate-700/50"
-              title="내 위치로 돌아가기"
-            >
-              <LocateFixed className="h-4 w-4 mr-2 text-blue-600" />
-              <span className="hidden sm:inline">내 위치</span>
-            </Button>
+              <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
+                <Button
+                  variant="outline"
+                  onClick={recenterToUser}
+                  className="h-14 px-6 rounded-2xl bg-white/95 dark:bg-slate-800/95 backdrop-blur-xl hover:bg-blue-50 dark:hover:bg-blue-900/30 shadow-2xl border border-white/30 dark:border-slate-700/50 font-medium"
+                  title="내 위치로 돌아가기"
+                >
+                  <LocateFixed className="h-5 w-5 mr-2 text-blue-600" />내 위치
+                </Button>
+              </motion.div>
+            </div>
           </motion.div>
         </div>
       </div>
 
-      {/* 하단 TOP5 */}
+      {/* Enhanced Mobile Bottom List */}
       <motion.div
-        className="bg-white/60 dark:bg-slate-900/60 backdrop-blur-xl border-t border-white/20 dark:border-slate-800/50 shrink-0 shadow-2xl"
+        className="md:hidden bg-white/90 dark:bg-slate-900/90 backdrop-blur-xl border-t border-white/20 dark:border-slate-800/30 shrink-0 shadow-2xl"
         initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
       >
-        <div className="p-6 max-h=[320px] overflow-y-auto">
+        <div className="p-4 max-h-[50vh] overflow-y-auto">
           <div className="flex items-center justify-between mb-4">
-            <motion.h3 className="text-xl font-bold bg-gradient-to-r from-green-600 to-emerald-600 bg-clip-text text-transparent flex items-center gap-3">
-              <div className="p-2 rounded-xl bg-gradient-to-br from-green-500 to-emerald-600 shadow-lg">
-                <Star className="h-5 w-5 text-white" />
-              </div>
-              오늘의 착한 식당 TOP5
-            </motion.h3>
+            <h2 className="text-lg font-bold bg-gradient-to-r from-green-600 via-emerald-600 to-teal-600 bg-clip-text text-transparent flex items-center gap-2">
+              <MapPin className="h-5 w-5 text-green-600" />
+              주변 맛집
+            </h2>
+            <div className="flex items-center gap-2">
+              <select
+                value={tierFilter}
+                onChange={(e) => setTierFilter(e.target.value as any)}
+                className="h-9 rounded-xl border bg-white/95 dark:bg-slate-800/95 text-sm px-3 font-medium shadow-md backdrop-blur-sm"
+              >
+                <option value="ALL">🍽️ 전체</option>
+                <option value="UNRANK">🥢 젓가락</option>
+                <option value="브론즈">🥄 나무수저</option>
+                <option value="실버">🥄 은수저</option>
+                <option value="골드">🍴 금수저</option>
+                <option value="플래티넘">🍽️ 다이아수저</option>
+                <option value="다이아">👑 왕관수저</option>
+              </select>
+              <select
+                value={sortKey}
+                onChange={(e) => setSortKey(e.target.value as any)}
+                className="h-9 rounded-xl border bg-white/95 dark:bg-slate-800/95 text-sm px-3 font-medium shadow-md backdrop-blur-sm"
+              >
+                <option value="rating">⭐ 별점 순</option>
+                <option value="reviews">💬 리뷰 수 순</option>
+              </select>
+              <Badge
+                variant="secondary"
+                className="bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 font-semibold px-3 py-1 rounded-full shadow-sm"
+              >
+                {filteredRestaurants.length}곳
+              </Badge>
+            </div>
           </div>
 
-          {loading ? (
-            <div className="flex items-center justify-center py-12">
-              <div className="text-center">
-                <Loader2 className="h-8 w-8 animate-spin mx-auto mb-4 text-green-500" />
-                <span className="text-muted-foreground text-sm">식당 정보를 불러오는 중...</span>
-              </div>
-            </div>
-          ) : error ? (
-            <div className="text-center text-red-500 py-12 bg-red-50 dark:bg-red-900/20 rounded-2xl">
-              <p className="text-sm">식당 정보를 불러올 수 없습니다</p>
-            </div>
-          ) : topRestaurants.length ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
-              {topRestaurants.map((restaurant, index) => {
-                const score = clamp05(restaurant.displayScore ?? 0);
-                return (
-                  <motion.div
-                    key={`top-${restaurant.name}-${index}`}
-                    initial={{ opacity: 0, y: 12 }}
-                    animate={{ opacity: 1, y: 0 }}
-                  >
-                    <Card
-                      className="cursor-pointer bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm hover:bg-white/90 dark:hover:bg-slate-800/90 border-white/20 dark:border-slate-700/50 shadow-lg transition-all duration-200 rounded-2xl group"
-                      onClick={() =>
-                        restaurant.id &&
-                        goDetail(restaurant.id, restaurant.favorited, restaurant.category ?? null)
-                      }
-                    >
-                      <CardContent className="p-4">
-                        <div className="flex items-center gap-4">
-                          {/* 순위 */}
-                          <div className="relative">
-                            <div className="bg-gradient-to-br from-green-500 to-emerald-600 text-white rounded-2xl w-10 h-10 flex items-center justify-center text-lg font-bold shadow-lg">
-                              {index + 1}
-                            </div>
-                            <div className="absolute -top-1 -right-1 w-4 h-4 bg-yellow-400 rounded-full animate-pulse" />
-                          </div>
-
-                          {/* 썸네일 */}
-                          <div className="relative overflow-hidden rounded-xl">
-                            <img
-                              src={restaurant.image || "/placeholder.svg"}
-                              alt={restaurant.name}
-                              loading="lazy"
-                              sizes="56px"
-                              className="w-14 h-14 object-cover transition-transform duration-300 group-hover:scale-110"
-                            />
-                          </div>
-
-                          {/* 본문 */}
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2 mb-1.5 min-w-0">
-                              <h4
-                                className="flex-1 min-w-0 font-semibold text-foreground text-[15px] leading-snug break-keep line-clamp-2"
-                                title={restaurant.name}
-                              >
-                                {restaurant.name}
-                              </h4>
-                              <Badge
-                                variant={restaurant.category ? "secondary" : "outline"}
-                                className="shrink-0 max-w-[50%] truncate text-xs bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300"
-                                title={restaurant.category || "기타"}
-                              >
-                                {restaurant.category || "기타"}
-                              </Badge>
-                            </div>
-
-                            {/* 평점/거리 */}
-                            <div className="flex items-center gap-3 text-sm text-muted-foreground">
-                              <div className="flex items-center gap-1">
-                                {[...Array(5)].map((_, i) => (
-                                  <Star
-                                    key={`s-${restaurant.name}-${i}`}
-                                    className={`h-3 w-3 ${
-                                      i < Math.round(score)
-                                        ? "fill-current text-green-500"
-                                        : "text-gray-300"
-                                    }`}
-                                  />
-                                ))}
-                                <span className="font-semibold text-green-600 ml-1">
-                                  {score.toFixed(1)}
-                                </span>
-                              </div>
-                              {restaurant.distance && (
-                                <span className="text-xs opacity-75">{restaurant.distance}</span>
-                              )}
-                            </div>
-                          </div>
+          <div className="space-y-3">
+            {filteredRestaurants.slice(0, 10).map((r, idx) => (
+              <motion.div
+                key={`mobile-${r.name}-${idx}`}
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: idx * 0.02 }}
+                whileHover={{ scale: 1.01 }}
+                whileTap={{ scale: 0.99 }}
+              >
+                <Card
+                  className="p-4 cursor-pointer bg-white/95 dark:bg-slate-800/95 backdrop-blur-sm hover:bg-white dark:hover:bg-slate-800 border-white/40 dark:border-slate-700/40 shadow-lg hover:shadow-xl transition-all duration-200 rounded-2xl group"
+                  onClick={() => r.id && goDetail(r.id, r.favorited, r.category ?? null)}
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="relative overflow-hidden rounded-xl shrink-0">
+                      <img
+                        src={r.image || "/placeholder.svg"}
+                        alt={r.name}
+                        loading="lazy"
+                        sizes="60px"
+                        className="w-16 h-16 object-cover transition-transform duration-300 group-hover:scale-110"
+                      />
+                      {r.wasteTier && (
+                        <div
+                          className={`absolute -top-1 -right-1 w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold ${getTierColor(r.wasteTier)} shadow-lg border border-white dark:border-slate-800`}
+                        >
+                          {getTierIcon(r.wasteTier)}
                         </div>
-                      </CardContent>
-                    </Card>
-                  </motion.div>
-                );
-              })}
-            </div>
-          ) : (
-            <div className="text-center text-muted-foreground py-12 bg-slate-50 dark:bg-slate-800/50 rounded-2xl">
-              <Star className="h-16 w-16 mx-auto mb-4 opacity-30" />
-              <h3 className="text-lg font-medium mb-2">식당 정보가 없습니다</h3>
-              <p className="text-sm">검색어를 입력하고 검색 버튼을 눌러보세요</p>
-            </div>
-          )}
+                      )}
+                    </div>
+
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-start justify-between gap-2 mb-2">
+                        <h3
+                          className="font-bold text-foreground text-base leading-snug break-keep line-clamp-1"
+                          title={r.name}
+                        >
+                          {r.name}
+                        </h3>
+                        {r.wasteTier && (
+                          <Badge
+                            className={`${getTierColor(r.wasteTier)} text-xs font-bold px-2 py-0.5 rounded-full shadow-sm shrink-0`}
+                          >
+                            {getTierName(r.wasteTier)}
+                          </Badge>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-3 text-sm">
+                        <div className="flex items-center gap-1 bg-yellow-50 dark:bg-yellow-900/20 px-2 py-1 rounded-full border border-yellow-200/50 dark:border-yellow-800/50">
+                          <div className="flex items-center gap-0.5">
+                            {renderStars(clamp05(r.displayScore ?? 0)).slice(0, 1)}
+                          </div>
+                          <span className="text-yellow-700 dark:text-yellow-300 font-bold text-xs">
+                            {clamp05(r.displayScore ?? 0).toFixed(1)}
+                          </span>
+                        </div>
+                        {r.distance && (
+                          <span className="text-xs text-muted-foreground bg-gray-100 dark:bg-gray-800 px-2 py-0.5 rounded-full">
+                            {r.distance}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1 shrink-0">
+                      {r.mapy != null && r.mapx != null && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            flyTo(r.mapy!, r.mapx!)
+                          }}
+                          className="h-8 w-8 rounded-lg bg-white/90 dark:bg-slate-700/90 hover:bg-blue-50 dark:hover:bg-blue-900/30 shadow-md border border-blue-200/50 dark:border-blue-800/50"
+                        >
+                          <Navigation className="h-3 w-3 text-blue-600 dark:text-blue-400" />
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                </Card>
+              </motion.div>
+            ))}
+          </div>
         </div>
       </motion.div>
     </div>
-  );
+  )
 }
