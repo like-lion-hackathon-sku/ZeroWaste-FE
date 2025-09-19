@@ -21,25 +21,18 @@ class ApiClient {
   }
 
   /** 공통 요청 래퍼 */
-  private async request<T>(
-    endpoint: string,
-    options: RequestInit = {},
-    _retrying = false
-  ): Promise<ApiResponse<T>> {
+  private async request<T>(endpoint: string, options: RequestInit = {}, _retrying = false): Promise<ApiResponse<T>> {
     try {
       const url = this.buildUrl(endpoint)
-      const isFormData =
-        typeof FormData !== "undefined" && options.body instanceof FormData
+      const isFormData = typeof FormData !== "undefined" && options.body instanceof FormData
 
       const headers: HeadersInit = { ...(options.headers || {}) }
       if (!isFormData) {
-        if (!("Content-Type" in headers))
-          (headers as Record<string, string>)["Content-Type"] = "application/json"
-        if (!("Accept" in headers))
-          (headers as Record<string, string>)["Accept"] = "application/json"
+        if (!("Content-Type" in headers)) (headers as Record<string, string>)["Content-Type"] = "application/json"
+        if (!("Accept" in headers)) (headers as Record<string, string>)["Accept"] = "application/json"
       }
 
-      let res = await fetch(url, {
+      const res = await fetch(url, {
         credentials: "include",
         cache: "no-store",
         ...options,
@@ -159,7 +152,16 @@ class ApiClient {
     return this.request(`/restaurants/nearby?q=${encodeURIComponent(q)}`)
   }
   async getRestaurantDetail(id: number) {
-    return this.request(`/restaurants/${id}/detail`, { method: "GET" })
+    // 식당 상세 + 사진 배열까지 받을 수 있음
+    return this.request<{
+      id: number
+      name: string
+      category: string
+      address?: string
+      telephone?: string
+      photos?: { id: number; photo_name: string }[]   // ✅ 추가
+      menus?: { id: number; name: string; photo?: string }[]
+    }>(`/restaurants/${id}/detail`, { method: "GET" })
   }
   async getRestaurantReviews(id: number) {
     return this.request(`/restaurants/${id}/reviews`)
@@ -171,7 +173,7 @@ class ApiClient {
   }
   async addFavorite(restaurantId: number) {
     return this.request(`/favorites`, {
-      method: "PUT",
+      method: "POST", // ✅ 명세서에 맞춤 (PUT → POST)
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ restaurantId }),
     })
@@ -185,7 +187,10 @@ class ApiClient {
     telephone?: string
   }) {
     const payload = { ...place, mapx: Math.round(place.mapx), mapy: Math.round(place.mapy) }
-    return this.request(`/favorites`, { method: "PUT", body: JSON.stringify({ place: payload }) })
+    return this.request(`/favorites`, {
+      method: "POST", // ✅ 외부 장소 즐겨찾기도 POST로 통일
+      body: JSON.stringify({ place: payload }),
+    })
   }
   async removeFavorite(restaurantId: number) {
     return this.request(`/favorites/${restaurantId}`, { method: "DELETE" })
@@ -199,12 +204,134 @@ class ApiClient {
     return this.request("/badges/me")
   }
 
-  // ───────────────────────── Reviews
-  async createReviewForRestaurant(
+  // ───────────────────────── Stamps
+  async getUserStamps() {
+    return this.request("/stamps/me")
+  }
+  async getUserStampHistory() {
+    return this.request("/stamps/me/history", { method: "GET" }) // ✅ 누락 보완
+  }
+  async useStamp(restaurantId: number, code: string) {
+    return this.request("/biz/stamps/use", {
+      method: "PATCH",
+      body: JSON.stringify({ restaurantId, code }),
+    })
+  }
+  async getStampRewards(restaurantId: number) {
+    return this.request(`/stamps/rewards/${restaurantId}`)
+  }
+  async claimStampReward(restaurantId: number, rewardId: number) {
+    return this.request(`/stamps/rewards/claim`, {
+      method: "POST",
+      body: JSON.stringify({ restaurantId, rewardId }),
+    })
+  }
+
+  // ───────────────────────── Notifications
+  async getNotifications() {
+    return this.request("/notifications")
+  }
+  async markNotificationAsRead(notificationId: number) {
+    return this.request(`/notifications/${notificationId}`, {
+      method: "PATCH",
+    })
+  }
+
+  // ───────────────────────── Business APIs
+  async getBusinessRestaurants() {
+    return this.request("/biz/restaurants")
+  }
+  async createBusinessRestaurant(data: {
+    name: string
+    category: string
+    address: string
+    telephone?: string
+    mapx: number
+    mapy: number
+  }) {
+    return this.request("/biz/restaurants", {
+      method: "POST",
+      body: JSON.stringify(data),
+    })
+  }
+  async updateBusinessRestaurant(
     restaurantId: number,
-    payload: { contents: string; score: number }
+    data: {
+      name?: string
+      category?: string
+      address?: string
+      telephone?: string
+    },
   ) {
-    return this.request(`/reviews/restaurants/${restaurantId}/reviews`, {
+    return this.request("/biz/restaurants", {
+      method: "PUT",
+      body: JSON.stringify({ restaurantId, ...data }),
+    })
+  }
+  async deleteBusinessRestaurant(restaurantId: number) {
+    return this.request("/biz/restaurants", {
+      method: "DELETE",
+      body: JSON.stringify({ restaurantId }),
+    })
+  }
+  async getBusinessRestaurantDetail(restaurantId: number) {
+    return this.request(`/biz/restaurants/${restaurantId}`)
+  }
+  async uploadBusinessRestaurantPhoto(restaurantId: number, file: File) {
+    const fd = new FormData()
+    fd.append("file", file)
+    return this.request<{ id: number; fileName: string; url: string }>(
+      `/biz/restaurants/${restaurantId}/photos`,
+      { method: "POST", body: fd },
+    )
+  }
+  async deleteBusinessRestaurantPhoto(restaurantId: number, photoId: number) {
+    return this.request(`/biz/restaurants/${restaurantId}/photos/${photoId}`, {
+      method: "DELETE",
+    })
+  }
+  async getBusinessReviews() {
+    return this.request("/biz/reviews")
+  }
+  async getBusinessReviewFeedback(reviewId: number) {
+    return this.request(`/biz/reviews/${reviewId}/feedback`)
+  }
+  async getBusinessMenu(restaurantId: number) {
+    // ✅ DB 최종 구조 반영: photo 필드 포함
+    return this.request<{ id: number; name: string; photo?: string }[]>(
+      `/biz/restaurants/${restaurantId}/menu`,
+      { method: "GET" },
+    )
+  }
+  async getBusinessStats() {
+    return this.request("/biz/stats")
+  }
+  async getBusinessAnalytics(period?: string) {
+    const params = period ? `?period=${encodeURIComponent(period)}` : ""
+    return this.request(`/biz/analytics${params}`)
+  }
+  async createStampReward(restaurantId: number, data: { condition: number; reward: string }) {
+    return this.request("/biz/stamps/rewards", {
+      method: "POST",
+      body: JSON.stringify({ restaurantId, ...data }),
+    })
+  }
+  async updateStampReward(rewardId: number, data: { condition?: number; reward?: string }) {
+    return this.request(`/biz/stamps/rewards/${rewardId}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    })
+  }
+  async deleteStampReward(rewardId: number) {
+    return this.request(`/biz/stamps/rewards/${rewardId}`, {
+      method: "DELETE",
+    })
+  }
+
+  // ───────────────────────── Reviews
+  async createReviewForRestaurant(restaurantId: number, payload: { contents: string; score: number }) {
+    // ✅ 경로 교정: /reviews/restaurants/... → /restaurants/{id}/reviews
+    return this.request(`/restaurants/${restaurantId}/reviews`, {
       method: "POST",
       body: JSON.stringify(payload),
     })
@@ -222,6 +349,14 @@ class ApiClient {
     if (form) return this.request(`/reviews/${id}/analyze`, { method: "POST", body: form })
     return this.request(`/reviews/${id}/analyze`, { method: "POST" })
   }
+  async createReview(restaurantId: number, data: { content: string; score?: number; photos?: File[] }) {
+    // 필요시 사진까지 한 번에 보낼 수 있는 변형 (BE에서 허용 시)
+    const fd = new FormData()
+    fd.append("content", data.content)
+    if (data.score != null) fd.append("score", String(data.score))
+    if (data.photos) data.photos.forEach((photo, i) => fd.append(`photos[${i}]`, photo))
+    return this.request(`/restaurants/${restaurantId}/reviews`, { method: "POST", body: fd })
+  }
 
   // ───────────────────────── Images
   async uploadImage(imageType: "profile" | "review", file: File) {
@@ -229,17 +364,33 @@ class ApiClient {
     fd.append("file", file)
     return this.request<{ ok: boolean; type: string; fileName: string; url: string }>(
       `/images/${encodeURIComponent(imageType)}/upload`,
-      { method: "POST", body: fd }
+      { method: "POST", body: fd },
     )
   }
-  getImageUrl(imageType: "profile" | "review", fileName: string) {
+  getImageUrl(imageType: "profile" | "review" | "restaurant", fileName: string) {
     return this.buildUrl(`/images/${encodeURIComponent(imageType)}/${encodeURIComponent(fileName)}`)
   }
   async analyzeImage(imageType: "profile" | "review", fileName: string) {
-    return this.request(
-      `/images/${encodeURIComponent(imageType)}/${encodeURIComponent(fileName)}/analyze`,
-      { method: "POST" }
-    )
+    return this.request(`/images/${encodeURIComponent(imageType)}/${encodeURIComponent(fileName)}/analyze`, {
+      method: "POST",
+    })
+  }
+
+  // ───────────────────────── Search APIs
+  async searchRestaurants(query: string, filters?: { category?: string; location?: string }) {
+    const params = new URLSearchParams()
+    params.set("q", query)
+    if (filters?.category) params.set("category", filters.category)
+    if (filters?.location) params.set("location", filters.location)
+    return this.request(`/restaurants/search?${params.toString()}`)
+  }
+
+  // ───────────────────────── User Profile APIs
+  async getUserStats() {
+    return this.request("/auth/stats")
+  }
+  async deleteAccount() {
+    return this.request("/auth/delete", { method: "DELETE" })
   }
 }
 

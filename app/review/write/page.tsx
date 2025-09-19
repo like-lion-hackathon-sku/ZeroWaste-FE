@@ -110,7 +110,7 @@ export default function WriteReviewPage() {
           fileName,
           url: previewUrl,
           preview: previewUrl,
-          type: (uploadedImages.length % 2 === 0 ? "before" : "after") as const,
+          type: (uploadedImages.length % 2 === 0 ? "before" : "after") as UploadedImage["type"],
         }
         setUploadedImages((prev) => [...prev, newImage])
       } catch (e: any) {
