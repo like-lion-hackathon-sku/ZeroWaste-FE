@@ -33,20 +33,22 @@ import {
   useUserBadges,
   useFavorites,
   useUserReviews,
-  useUserStamps,
 } from "@/lib/hooks/use-api-with-fallback"
 import { apiClient } from "@/lib/api/client"
 import { formatDate } from "@/lib/utils/database-helpers"
-import { UserRole } from "@/lib/types/database"
 
+// ────────────────────────────────────────────────────────────
+// 로컬 타입/유틸
+// ────────────────────────────────────────────────────────────
+type UserRole = "USER" | "OWNER"
 type TabKey = "리뷰" | "즐겨찾기" | "스탬프" | "뱃지" | "restaurant" | "reviews"
 
 const toArray = <T,>(v: any): T[] =>
   Array.isArray(v) ? v : (v?.items ?? v?.success?.items ?? [])
 
-/* ────────────────────────────────────────────────────────────
-   타입
-──────────────────────────────────────────────────────────── */
+// ────────────────────────────────────────────────────────────
+// 타입
+// ────────────────────────────────────────────────────────────
 type RestaurantLite = {
   id: number
   name: string
@@ -91,30 +93,55 @@ type RestaurantStamp = {
   maxStamps: number     // 한 권 완성에 필요한 개수(예: 5)
 }
 
-/* ────────────────────────────────────────────────────────────
-   API Hooks
-──────────────────────────────────────────────────────────── */
+// ────────────────────────────────────────────────────────────
+// 로컬 훅: 스탬프(서버 직접 조회)
+// ────────────────────────────────────────────────────────────
 const useUserStampsData = () => {
-  const { data: stampsData, loading, error, isUsingFallback } = useUserStamps()
-  const raw = toArray<any>(stampsData)
+  const [stamps, setStamps] = useState<RestaurantStamp[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [isUsingFallback, setIsUsingFallback] = useState(false)
 
-  const stamps: RestaurantStamp[] = raw.map((stamp: any) => ({
-    restaurantId: stamp?.restaurant?.id ?? stamp?.id,
-    restaurantName: stamp?.restaurant?.name ?? `식당 ${stamp?.restaurant?.id ?? stamp?.id}`,
-    totalStamps: stamp?.stamps?.length ?? 0,
-    maxStamps: 5,
-  }))
+  useEffect(() => {
+    let ignore = false
+    ;(async () => {
+      try {
+        const res = await apiClient.getUserStamps()
+        if (!res.success) {
+          if (!ignore) {
+            setError(res.error || "스탬프 조회 실패")
+            setIsUsingFallback(true)
+            setLoading(false)
+          }
+          return
+        }
+        const raw = toArray<any>(res.data)
+        const mapped: RestaurantStamp[] = raw.map((stamp: any) => ({
+          restaurantId: stamp?.restaurant?.id ?? stamp?.id,
+          restaurantName: stamp?.restaurant?.name ?? `식당 ${stamp?.restaurant?.id ?? stamp?.id}`,
+          totalStamps: stamp?.stamps?.length ?? 0,
+          maxStamps: 5,
+        }))
+        if (!ignore) setStamps(mapped)
+      } catch (e: any) {
+        if (!ignore) setError(e?.message || "스탬프 조회 실패")
+      } finally {
+        if (!ignore) setLoading(false)
+      }
+    })()
+    return () => { ignore = true }
+  }, [])
 
   return { stamps, loading, error, isUsingFallback }
 }
 
-/* ────────────────────────────────────────────────────────────
-   컴포넌트
-──────────────────────────────────────────────────────────── */
+// ────────────────────────────────────────────────────────────
+// 컴포넌트
+// ────────────────────────────────────────────────────────────
 export default function ProfilePage() {
   const router = useRouter()
   const [activeTab, setActiveTab] = useState<TabKey>("스탬프")
-  const [userRole, setUserRole] = useState<UserRole>(UserRole.USER)
+  const [userRole, setUserRole] = useState<UserRole>("USER")
 
   const {
     data: profile,
@@ -125,7 +152,6 @@ export default function ProfilePage() {
   const { data: badges, loading: badgesLoading, isUsingFallback: badgesFallback } = useUserBadges()
   const { data: favorites, loading: favoritesLoading, isUsingFallback: favoritesFallback } = useFavorites()
   const { data: reviews, loading: reviewsLoading, isUsingFallback: reviewsFallback } = useUserReviews()
-
   const { stamps: restaurantStamps, loading: stampsLoading, isUsingFallback: stampsFallback } = useUserStampsData()
 
   // 로딩/에러
@@ -257,11 +283,11 @@ export default function ProfilePage() {
   }, [reviewList])
 
   const handleRoleSwitch = () => {
-    if (userRole === UserRole.USER) {
-      setUserRole(UserRole.OWNER)
+    if (userRole === "USER") {
+      setUserRole("OWNER")
       setActiveTab("restaurant")
     } else {
-      setUserRole(UserRole.USER)
+      setUserRole("USER")
       setActiveTab("reviews")
     }
   }
@@ -327,8 +353,8 @@ export default function ProfilePage() {
       return next
     })
 
-    // TODO: 서버와 동기화 필요 시 여기에서 실제 사용 API 호출
-    // await apiClient.useStampBook({ restaurantId: stamp.restaurantId })
+    // TODO: 서버와 동기화 필요 시 실제 사용 API 호출
+    // await apiClient.useStamp(restaurantId, code)
   }
 
   // 로딩/에러 뷰
@@ -441,7 +467,7 @@ export default function ProfilePage() {
                   </motion.p>
                 </div>
 
-                {userRole === UserRole.OWNER && (
+                {userRole === "OWNER" && (
                   <motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.6 }}>
                     <div className="flex flex-col items-center gap-2">
                       <div className="bg-gradient-to-r from-orange-500 to-red-600 text-white px-3 py-1 rounded-full text-sm font-medium">사장님</div>
@@ -453,12 +479,12 @@ export default function ProfilePage() {
                 <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.7 }}>
                   <Button
                     onClick={handleRoleSwitch}
-                    variant={userRole === UserRole.OWNER ? "default" : "outline"}
-                    className={`${userRole === UserRole.OWNER
+                    variant={userRole === "OWNER" ? "default" : "outline"}
+                    className={`${userRole === "OWNER"
                       ? "bg-gradient-to-r from-orange-500 to-red-600 hover:from-orange-600 hover:to-red-700"
                       : "border-green-500 text-green-600 hover:bg-green-50 dark:hover:bg-green-900/20"} transition-all duration-300`}
                   >
-                    {userRole === UserRole.USER ? (
+                    {userRole === "USER" ? (
                       <>
                         <Store className="h-4 w-4 mr-2" />
                         사장 전환
@@ -474,7 +500,7 @@ export default function ProfilePage() {
               </div>
 
               <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.7 }} className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                {userRole === UserRole.USER ? (
+                {userRole === "USER" ? (
                   <>
                     <motion.div whileHover={{ scale: 1.05 }} className="text-center p-4 bg-gradient-to-br from-green-500/10 to-emerald-500/10 backdrop-blur-sm rounded-2xl border border-green-200/30">
                       <div className="text-2xl font-bold text-green-600 mb-1">{reviewList.length}</div>
@@ -541,8 +567,8 @@ export default function ProfilePage() {
         {/* 탭 */}
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}>
           <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as TabKey)} className="w-full">
-            <TabsList className={`grid w-full ${userRole === UserRole.USER ? "grid-cols-4" : "grid-cols-2"} backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 h-12`}>
-              {userRole === UserRole.USER ? (
+            <TabsList className={`grid w-full ${userRole === "USER" ? "grid-cols-4" : "grid-cols-2"} backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 h-12`}>
+              {userRole === "USER" ? (
                 <>
                   <TabsTrigger value="리뷰" className="data-[state=active]:bg-green-500/20 data-[state=active]:text-green-700 dark:data-[state=active]:text-green-400">
                     리뷰
@@ -570,7 +596,7 @@ export default function ProfilePage() {
             </TabsList>
 
             {/* USER 탭들 */}
-            {userRole === UserRole.USER && (
+            {userRole === "USER" && (
               <>
                 {/* 리뷰 */}
                 <TabsContent value="리뷰" className="mt-6">
@@ -724,7 +750,7 @@ export default function ProfilePage() {
                   </motion.div>
                 </TabsContent>
 
-                {/* 스탬프 (식당별 페이징 + 사용횟수) */}
+                {/* 스탬프 */}
                 <TabsContent value="스탬프" className="mt-6">
                   <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }}>
                     <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-xl">
@@ -939,7 +965,7 @@ export default function ProfilePage() {
             )}
 
             {/* OWNER 탭들 */}
-            {userRole === UserRole.OWNER && (
+            {userRole === "OWNER" && (
               <>
                 <TabsContent value="restaurant" className="mt-6">
                   <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }}>
