@@ -33,7 +33,6 @@ import {
   useUserBadges,
   useFavorites,
   useUserReviews,
-  useUserStamps,
 } from "@/lib/hooks/use-api-with-fallback"
 import { apiClient } from "@/lib/api/client"
 import { formatDate } from "@/lib/utils/database-helpers"
@@ -100,55 +99,47 @@ const useUserStampsData = () => {
   const [error, setError] = useState<string | null>(null)
   const [isUsingFallback, setIsUsingFallback] = useState(false)
 
-  // 👉 필요 시 수정해서 쓰는 목업 데이터
-  const MOCK_STAMPS: RestaurantStamp[] = [
-    { restaurantId: 101, restaurantName: "제로 그린 식당", totalStamps: 7, maxStamps: 5 },
-    { restaurantId: 102, restaurantName: "에코 스시", totalStamps: 3, maxStamps: 5 },
-    { restaurantId: 103, restaurantName: "리필 마켓", totalStamps: 10, maxStamps: 5 },
+  // ✅ 기본 목업 (API 실패/없을 때 보여줄 값)
+  const MOCK: RestaurantStamp[] = [
+    { restaurantId: 101, restaurantName: "그린 비스트로", totalStamps: 7, maxStamps: 5 },
+    { restaurantId: 202, restaurantName: "제로웨이스트 키친", totalStamps: 3, maxStamps: 5 },
   ]
 
   useEffect(() => {
     let ignore = false
     ;(async () => {
+      setLoading(true)
+      setError(null)
       try {
+        // 서버에 쿠키가 없어도 클라에서만 호출되게 되어 있으니 안전하지만
+        // 혹시 에러나 빈 응답이면 목업으로 폴백
         const res = await apiClient.getUserStamps()
-        if (!res.success) {
-          if (!ignore) {
-            setIsUsingFallback(true)
-            setError(res.error || "스탬프 조회 실패")
-            setStamps(MOCK_STAMPS)                 // ❗ 실패 시 목업 채움
-          }
-          return
-        }
-
-        const raw = toArray<any>(res.data)
-        if (!raw || raw.length === 0) {
-          // ❗ 빈 응답이어도 목업 사용
-          if (!ignore) {
-            setIsUsingFallback(true)
-            setStamps(MOCK_STAMPS)
-          }
-          return
-        }
-
-        const mapped: RestaurantStamp[] = raw.map((stamp: any) => ({
-          restaurantId: stamp?.restaurant?.id ?? stamp?.id,
-          restaurantName: stamp?.restaurant?.name ?? `식당 ${stamp?.restaurant?.id ?? stamp?.id}`,
-          totalStamps: stamp?.stamps?.length ?? 0,
-          maxStamps: 5,
-        }))
-        if (!ignore) setStamps(mapped)
-      } catch (e: any) {
-        if (!ignore) {
-          setError(e?.message || "스탬프 조회 실패")
+        if (!ignore && res?.success) {
+          const raw = Array.isArray(res.data)
+            ? res.data
+            : (res.data as any)?.items ?? []
+          const normalized: RestaurantStamp[] = raw.map((stamp: any) => ({
+            restaurantId: stamp?.restaurant?.id ?? stamp?.id,
+            restaurantName: stamp?.restaurant?.name ?? `식당 ${stamp?.restaurant?.id ?? stamp?.id}`,
+            totalStamps: stamp?.stamps?.length ?? 0,
+            maxStamps: 5,
+          }))
+          setStamps(normalized)
+          setIsUsingFallback(false)
+        } else {
+          setStamps(MOCK)
           setIsUsingFallback(true)
-          setStamps(MOCK_STAMPS)                   // ❗ 예외 시도 목업
+        }
+      } catch (e) {
+        if (!ignore) {
+          setStamps(MOCK)
+          setIsUsingFallback(true)
+          setError(e instanceof Error ? e.message : "failed to load stamps")
         }
       } finally {
         if (!ignore) setLoading(false)
       }
     })()
-
     return () => { ignore = true }
   }, [])
 
