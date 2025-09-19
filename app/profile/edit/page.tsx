@@ -1,7 +1,6 @@
 "use client"
 
-import React from "react"
-import { useState, useEffect } from "react"
+import React, { useEffect, useMemo, useState } from "react"
 import { motion } from "framer-motion"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -14,39 +13,63 @@ import { useUserProfile } from "@/lib/hooks/use-api-with-fallback"
 import { apiClient } from "@/lib/api/client"
 import { formatDate } from "@/lib/utils/database-helpers"
 
+/** 훅에서 온 프로필 데이터를 화면에서 안전하게 쓰기 위한 로컬 타입 */
+type SafeProfile = {
+  nickname?: string | null
+  email?: string | null
+  profile?: string | null // 서버에 저장된 파일명
+  created_at?: string | null
+}
+
 export default function EditProfilePage() {
   const router = useRouter()
-  const { data: user, loading, error, isUsingFallback } = useUserProfile()
 
-  const [formData, setFormData] = useState({ nickname: "", email: "" })
-  const [preview, setPreview] = useState<string>("")     // 화면 미리보기
-  const [file, setFile] = useState<File | null>(null)    // 업로드 파일
-  const [useDefault, setUseDefault] = useState(false)    // 기본 이미지로 되돌리기
+  // 훅 원본
+  const {
+    data: rawUser,
+    loading,
+    error,
+    isUsingFallback,
+  } = useUserProfile()
+
+  // 화면에서 쓸 안전한 프로필 객체
+  const p = useMemo(() => (rawUser ?? {}) as SafeProfile, [rawUser])
+
+  const [formData, setFormData] = useState<{ nickname: string; email: string }>({
+    nickname: "",
+    email: "",
+  })
+  const [preview, setPreview] = useState<string>("") // 화면 미리보기 URL
+  const [file, setFile] = useState<File | null>(null) // 업로드 파일
+  const [useDefault, setUseDefault] = useState(false) // 기본 이미지로 되돌리기
   const [saving, setSaving] = useState(false)
 
-  // 초기 로드: 유저 정보/이미지 세팅
+  /* 초기 로드: 유저 정보/이미지 세팅 */
   useEffect(() => {
-    if (!user) return
-    setFormData({ nickname: user.nickname, email: user.email })
+    if (!rawUser) return
+    // 닉네임/이메일 기본값
+    setFormData({
+      nickname: p.nickname ?? "",
+      email: p.email ?? "",
+    })
 
     // 서버에 저장된 파일명이 있을 때 GET URL 생성
-    if (user.profile) {
-      const url = apiClient.getImageUrl("profile", user.profile)
+    if (p.profile) {
+      const url = apiClient.getImageUrl?.("profile", p.profile) ?? ""
       setPreview(url)
     } else {
       setPreview("")
     }
     setFile(null)
     setUseDefault(false)
-  }, [user])
+  }, [rawUser, p.nickname, p.email, p.profile])
 
   const handleInputChange = (k: "nickname" | "email", v: string) =>
-    setFormData((p) => ({ ...p, [k]: v }))
+    setFormData((prev) => ({ ...prev, [k]: v }))
 
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0]
     if (!f) return
-    // 간단한 가드
     if (!/^image\/(png|jpeg|jpg)$/i.test(f.type)) {
       alert("PNG 또는 JPG 이미지를 선택해주세요.")
       return
@@ -57,6 +80,7 @@ export default function EditProfilePage() {
     }
     setFile(f)
     setUseDefault(false)
+
     const reader = new FileReader()
     reader.onload = (ev) => setPreview((ev.target?.result as string) || "")
     reader.readAsDataURL(f)
@@ -65,11 +89,11 @@ export default function EditProfilePage() {
   const handleResetImage = () => {
     setFile(null)
     setPreview("")
-    setUseDefault(true) // 기본 이미지로 변경 플래그
+    setUseDefault(true) // 기본 이미지로 변경
   }
 
   const handleSave = async () => {
-    if (!user) return
+    if (!rawUser) return
     setSaving(true)
     try {
       const payload: {
@@ -80,18 +104,17 @@ export default function EditProfilePage() {
         nickname: formData.nickname,
       }
 
-      // 이미지 처리 우선순위:
-      // 1) 새 파일 선택 시 -> 파일 업로드(FormData, apiClient 내부 처리)
-      // 2) 기본 이미지로 변경 체크 시 -> defaultImage: true
-      // 3) 아무 변경 없으면 이미지 필드 미포함 (닉네임만 수정)
       if (file) {
         payload.profileImage = file
       } else if (useDefault) {
         payload.defaultImage = true
       }
 
-      const res = await apiClient.updateProfile(payload)
-      if (!res.success) throw new Error(typeof res.error === "string" ? res.error : "프로필 업데이트 실패")
+      // api 타입 선언이 없으면 any로 호출
+      const res: any = await apiClient.updateProfile(payload)
+      if (!res?.success) {
+        throw new Error(typeof res?.error === "string" ? res.error : "프로필 업데이트 실패")
+      }
 
       router.back()
     } catch (e: any) {
@@ -100,6 +123,8 @@ export default function EditProfilePage() {
       setSaving(false)
     }
   }
+
+  const createdAtText = useMemo(() => formatDate(p.created_at ?? ""), [p.created_at])
 
   if (loading) {
     return (
@@ -116,7 +141,7 @@ export default function EditProfilePage() {
     )
   }
 
-  if (error || !user) {
+  if (error || !rawUser) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-green-50 via-sky-50 to-emerald-50 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900 flex items-center justify-center">
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="text-center">
@@ -234,7 +259,7 @@ export default function EditProfilePage() {
               <div>
                 <Label className="text-sm font-medium text-gray-700 dark:text-gray-300">가입일</Label>
                 <Input
-                  value={formatDate(user.created_at)}
+                  value={createdAtText}
                   disabled
                   className="mt-1 h-12 bg-gray-100 dark:bg-gray-800 border-gray-200 dark:border-gray-700"
                 />
