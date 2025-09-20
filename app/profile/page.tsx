@@ -120,6 +120,7 @@ export default function ProfilePage() {
   const [removingId, setRemovingId] = useState<number | null>(null)
 
   const [reviewList, setReviewList] = useState<ReviewVM[]>([])
+  const [deletingReviewId, setDeletingReviewId] = useState<number | string | null>(null) // ✅ 리뷰 삭제 로딩 상태
 
   const [ownerRestaurants] = useState<OwnerRestaurant[]>([
     { id: 1, name: "그린 비스트로", category: "양식", address: "서울시 강남구 테헤란로 123", telephone: "02-1234-5678", rating: 4.7, reviewCount: 24 },
@@ -231,6 +232,26 @@ export default function ProfilePage() {
     } finally { setRemovingId(null) }
   }
 
+  // ✅ 리뷰 삭제
+  const handleDeleteReview = async (reviewId: number | string) => {
+    if (!confirm("이 리뷰를 삭제할까요?")) return
+    const rid = Number(reviewId)
+    setDeletingReviewId(reviewId)
+
+    const prev = reviewList
+    setReviewList((list) => list.filter((r) => Number(r.id) !== rid))
+    try {
+      const res = await apiClient.deleteReview(rid) // DELETE /api/reviews/{review_id}
+      if (!res.success) throw new Error(res.error || "리뷰 삭제 실패")
+    } catch (err) {
+      console.error(err)
+      setReviewList(prev)
+      alert("리뷰 삭제에 실패했습니다.")
+    } finally {
+      setDeletingReviewId(null)
+    }
+  }
+
   // 스탬프 페이징/사용
   const [pageByRestaurant, setPageByRestaurant] = useState<Record<number, number>>({})
   const [usedBooksByRestaurant, setUsedBooksByRestaurant] = useState<Record<number, number>>({})
@@ -301,7 +322,7 @@ export default function ProfilePage() {
             <ArrowLeft className="h-4 w-4 mr-2" />
             뒤로가기
           </Button>
-        <h1 className="font-bold text-[clamp(18px,4vw,24px)] bg-gradient-to-r from-green-600 to-sky-600 bg-clip-text text-transparent">
+          <h1 className="font-bold text-[clamp(18px,4vw,24px)] bg-gradient-to-r from-green-600 to-sky-600 bg-clip-text text-transparent">
             프로필
           </h1>
           <div className="flex items-center gap-2">
@@ -510,8 +531,25 @@ export default function ProfilePage() {
                               <p className="text-gray-700 dark:text-gray-300 mb-3 break-words whitespace-pre-wrap leading-relaxed">{review.comment || "댓글 없음"}</p>
 
                               <div className="flex justify-end">
-                                <Button variant="outline" size="sm" onClick={() => router.push(`/review/edit/${review.id}`)} className="bg-white/50 hover:bg-white/80 border-white/30">
-                                  수정
+                                <Button
+                                  type="button"
+                                  variant="destructive"
+                                  size="sm"
+                                  onClick={() => handleDeleteReview(review.id)}
+                                  disabled={deletingReviewId === review.id}
+                                  className="bg-red-500/90 hover:bg-red-600"
+                                >
+                                  {deletingReviewId === review.id ? (
+                                    <>
+                                      <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                                      삭제 중…
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Trash2 className="h-4 w-4 mr-2" />
+                                      삭제
+                                    </>
+                                  )}
                                 </Button>
                               </div>
                             </motion.div>
@@ -672,9 +710,8 @@ export default function ProfilePage() {
                                     )}
                                   </div>
 
-                                  {/* 컨트롤: 모바일 세로 정렬, 데스크톱 3열 */}
+                                  {/* 컨트롤 */}
                                   <div className="mt-3 flex flex-col gap-3 sm:grid sm:grid-cols-[1fr_auto_1fr] sm:items-center">
-                                    {/* 가운데: 완성/사용하기 */}
                                     <div className="order-1 sm:order-2 justify-self-center text-center">
                                       {avail >= stamp.maxStamps ? (
                                         <div className="inline-flex items-center gap-2">
@@ -696,7 +733,6 @@ export default function ProfilePage() {
                                       )}
                                     </div>
 
-                                    {/* 왼쪽: 페이지네이션 */}
                                     <div className="order-2 sm:order-1 flex items-center justify-center sm:justify-start gap-2 flex-wrap">
                                       <Button variant="outline" size="sm" onClick={() => setPage(rid, Math.max(1, curPage - 1))} disabled={curPage <= 1} className="h-8 px-2">
                                         <ChevronLeft className="h-4 w-4" />
@@ -719,9 +755,8 @@ export default function ProfilePage() {
                                       </Button>
                                     </div>
 
-                                    {/* 오른쪽: 사용 횟수 */}
                                     <div className="order-3 sm:order-3 text-center sm:text-right">
-                                      {usedBooks > 0 && <div className="text-xs text-gray-600 dark:text-gray-300">사용 {usedBooks}회</div>}
+                                      {(usedBooksByRestaurant[rid] ?? 0) > 0 && <div className="text-xs text-gray-600 dark:text-gray-300">사용 {usedBooksByRestaurant[rid]}회</div>}
                                     </div>
                                   </div>
                                 </motion.div>

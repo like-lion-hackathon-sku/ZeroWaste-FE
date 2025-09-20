@@ -1,11 +1,11 @@
-"use client";
+"use client"
 
-import Link from "next/link";
-import { Button } from "@/components/ui/button";
-import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { Leaf, MapPin, Star, Users, Award, Camera, Heart, ArrowRight, Sparkles, Globe, Shield } from "lucide-react";
-import { motion, type Variants } from "framer-motion";
+import Link from "next/link"
+import { Button } from "@/components/ui/button"
+import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Badge } from "@/components/ui/badge"
+import { Leaf, MapPin, Star, Users, Award, Camera, Heart, ArrowRight, Sparkles, Globe, Shield } from "lucide-react"
+import { motion, type Variants } from "framer-motion"
 
 /* ───────── framer-motion variants ───────── */
 const containerVariants: Variants = {
@@ -14,7 +14,7 @@ const containerVariants: Variants = {
     opacity: 1,
     transition: { staggerChildren: 0.04, delayChildren: 0.1 },
   },
-};
+}
 
 const itemVariants: Variants = {
   hidden: { opacity: 0, y: 16 },
@@ -23,7 +23,7 @@ const itemVariants: Variants = {
     y: 0,
     transition: { type: "spring", stiffness: 220, damping: 26 },
   },
-};
+}
 
 export default function HomePage() {
   const features = [
@@ -55,11 +55,11 @@ export default function HomePage() {
       color: "text-primary",
       bgColor: "bg-primary/10",
     },
-  ] as const;
+  ] as const
 
   const gallery = [
     {
-      image: "/placeholder-0igdm.png",
+      image: "/eco-friendly-restaurant-with-green-plants-and-sust.jpg",
       title: "친환경 인증 식당",
       description: "제로웨이스트를 실천하는 검증된 식당들",
     },
@@ -73,7 +73,7 @@ export default function HomePage() {
       title: "활발한 커뮤니티",
       description: "함께 만들어가는 지속가능한 식문화",
     },
-  ] as const;
+  ] as const
 
   return (
     <div className="min-h-screen bg-background overflow-hidden">
@@ -298,8 +298,7 @@ export default function HomePage() {
                 className="text-xl px-12 py-6 rounded-2xl glass-card hover:bg-card/90 transition-all duration-300 bg-transparent"
               >
                 <Link href="/map" className="flex items-center gap-3">
-                  <Star className="h-6 w-6" />
-                  더 알아보기
+                  <Star className="h-6 w-6" />더 알아보기
                 </Link>
               </Button>
             </motion.div>
@@ -352,5 +351,5 @@ export default function HomePage() {
         </div>
       </footer>
     </div>
-  );
+  )
 }
