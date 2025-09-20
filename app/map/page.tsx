@@ -225,9 +225,10 @@ export default function MapWithListPage() {
   const [loadingMapRestaurants, setLoadingMapRestaurants] = useState(false)
   const [useMapList, setUseMapList] = useState(false)
 
-  // 검색어
-  const [kw, setKw] = useState("")
+  // 검색어 ── ✅ 기본값 "맛집"
+  const [kw, setKw] = useState("맛집")
   const restoredRef = useRef(false)
+  const autoSearchOnceRef = useRef(false) // ✅ 자동검색 1회 플래그
 
   // 필터 상태
   const [sortKey, setSortKey] = useState<"rating" | "reviews">("rating")
@@ -311,7 +312,7 @@ export default function MapWithListPage() {
     })
     return Array.from(qs).slice(0, 6)
   }
-  const callNearby = async (q: string, display = 30, start = 1) => {
+  const callNearby = (q: string, display = 30, start = 1) => {
     const search = new URLSearchParams({ q, display: String(display), start: String(start) })
     return fetchJson(`/restaurants/nearby?${search.toString()}`)
   }
@@ -646,6 +647,26 @@ export default function MapWithListPage() {
     }
   }, [naverReady])
 
+  // ✅ 맵이 준비되고 최초 idle 시점에 ‘맛집’ 현 지도 자동 검색 (세션 복원 시 스킵)
+  useEffect(() => {
+    if (!naverReady || !mapObjRef.current) return
+    if (autoSearchOnceRef.current || restoredRef.current) return
+    if (!kw.trim()) return
+
+    const onceIdle = window.naver.maps.Event.addListener(mapObjRef.current, "idle", async () => {
+      if (autoSearchOnceRef.current) return
+      autoSearchOnceRef.current = true
+      await handleSearchCurrentBounds()
+      window.naver.maps.Event.removeListener(onceIdle)
+    })
+
+    return () => {
+      try {
+        window.naver.maps.Event.removeListener(onceIdle)
+      } catch {}
+    }
+  }, [naverReady, kw])
+
   useEffect(() => {
     if (!naverReady || !mapObjRef.current) return
     markersRef.current.forEach((m) => m.setMap(null))
@@ -655,7 +676,7 @@ export default function MapWithListPage() {
         const pos = new window.naver.maps.LatLng(r.mapy, r.mapx)
         const marker = new window.naver.maps.Marker({ position: pos, map: mapObjRef.current, title: r.name })
         window.naver.maps.Event.addListener(marker, "click", () => {
-          setSelectedRestaurant({ ...r }) // index 전달 제거
+          setSelectedRestaurant({ ...r })
         })
         markersRef.current.push(marker)
       }
@@ -799,7 +820,7 @@ export default function MapWithListPage() {
       </motion.header>
 
       <div className="flex flex-1 min-h-0">
-        {/* ── 왼쪽 사이드 리스트 (하단 버튼 제거) ── */}
+        {/* ── 왼쪽 사이드 리스트 ── */}
         <motion.div
           initial={{ opacity: 0, x: -20 }}
           animate={{ opacity: 1, x: 0 }}
@@ -821,7 +842,7 @@ export default function MapWithListPage() {
                 </Badge>
               </div>
 
-              {/* 필터 버튼 (동일) */}
+              {/* 필터 */}
               <div className="space-y-4">
                 <div className="flex items-center gap-2 flex-wrap">
                   <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
@@ -859,7 +880,7 @@ export default function MapWithListPage() {
                   </motion.div>
                 </div>
 
-                {/* 티어 필터 (동일) */}
+                {/* 티어 필터 */}
                 <div className="space-y-2">
                   <div className="flex items-center gap-2">
                     <label className="text-sm font-semibold text-muted-foreground">등급 필터</label>
@@ -981,7 +1002,7 @@ export default function MapWithListPage() {
                             )}
                           </div>
 
-                          {/* ⭐ 별점 + 💬 리뷰(항상 표기, 더 큼직) */}
+                          {/* ⭐ 별점 + 💬 리뷰 */}
                           <div className="flex items-center justify-between gap-2">
                             <div className="flex items-center gap-2 text-sm">
                               <div className="flex items-center gap-1.5 bg-gradient-to-r from-green-50 to-emerald-50 dark:from-green-900/20 dark:to-emerald-900/20 px-3 py-1.5 rounded-full border border-green-200/50 dark:border-green-800/50">
@@ -1002,7 +1023,7 @@ export default function MapWithListPage() {
                             </div>
 
                             <div className="flex items-center gap-1 shrink-0">
-                              {/* ❤️ 하트 강조 (크게/채움) */}
+                              {/* ❤️ */}
                               <Button
                                 variant="ghost"
                                 size="icon"
@@ -1147,7 +1168,7 @@ export default function MapWithListPage() {
             </motion.div>
           )}
 
-          {/* 지도 하단 전역 컨트롤(유지) */}
+          {/* 지도 하단 전역 컨트롤 */}
           <motion.div
             initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
@@ -1189,7 +1210,7 @@ export default function MapWithListPage() {
         </div>
       </div>
 
-      {/* 모바일 하단 리스트 (하트/리뷰 강조) */}
+      {/* 모바일 하단 리스트 */}
       <motion.div
         className="md:hidden bg-white/90 dark:bg-slate-900/90 backdrop-blur-xl border-t border-white/20 dark:border-slate-800/30 shrink-0 shadow-xl"
         initial={{ opacity: 0, y: 12 }}
