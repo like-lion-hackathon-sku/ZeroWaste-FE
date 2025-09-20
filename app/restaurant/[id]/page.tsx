@@ -75,7 +75,12 @@ type UIReview = {
   comment?: string
   images?: string[]
 }
-type UIMenuItem = { name?: string; price?: string; description?: string }
+type UIMenuItem = {
+  name?: string
+  price?: string
+  description?: string
+  thumb?: string | null
+}
 type UIRestaurant = {
   id: number
   name: string
@@ -83,7 +88,6 @@ type UIRestaurant = {
   badge?: string | null
   wasteScore?: number | null
   totalReviews?: number | null
-  /** 지도와 동일한 형식: 예) 카페,디저트>베이커리 */
   category?: string | null
   distance?: string | null
   address?: string | null
@@ -97,6 +101,51 @@ type UIRestaurant = {
   infoSections?: { title: string; body: string }[]
 }
 
+/* ── 배치 분석 스키마(서버 응답) ── */
+type PerMenu = {
+  name: string
+  count: number
+  avg_leftover: number
+  worst_samples?: string[]
+  best_samples?: string[]
+  insight?: string
+}
+type Overall = {
+  total_records: number
+  weighted_score_100: number
+  summary: string
+  actions?: string[]
+}
+type BatchAnalysis = {
+  per_menu: PerMenu[]
+  overall: Overall
+}
+
+/** 상세(raw)의 사진/메뉴 파일명을 presigned URL로 변환 */
+async function resolveSignedUrls(raw: any) {
+  // 갤러리: type 2 = restaurant
+  const photoNames: string[] = Array.isArray(raw?.photos)
+    ? raw.photos.map((p: any) => (typeof p === "string" ? p : p?.photo_name)).filter(Boolean)
+    : []
+
+  const galleryUrls = await Promise.all(
+    photoNames.map((fn) => apiClient.getImageSignedUrl(2, fn).catch(() => "")),
+  )
+
+  // 메뉴: type 3 = menu
+  const menus: any[] = Array.isArray(raw?.menus) ? raw.menus : []
+  const menuThumbUrls = await Promise.all(
+    menus.map((m) =>
+      m?.photo ? apiClient.getImageSignedUrl(3, m.photo).catch(() => "") : Promise.resolve(""),
+    ),
+  )
+
+  // 원본 메뉴 배열에 _thumbUrl 주입
+  const menusWithThumb = menus.map((m, i) => ({ ...m, _thumbUrl: menuThumbUrls[i] || "" }))
+
+  return { galleryUrls: galleryUrls.filter(Boolean), menusWithThumb }
+}
+
 /* ───────────────── 카테고리 라벨 정규화 ───────────────── */
 function firstNonEmpty(...vals: any[]) {
   for (const v of vals) {
@@ -106,7 +155,6 @@ function firstNonEmpty(...vals: any[]) {
   return null
 }
 
-/** 다양한 원본 형태 → `대분류,중분류>소분류>세부` 같은 지도 표기 */
 function toCategoryLabel(raw: any): string | null {
   const h = raw?.header ?? {}
   const t = raw?.tabs ?? {}
@@ -136,7 +184,6 @@ function toCategoryLabel(raw: any): string | null {
   ].filter(Boolean)
 
   const flat = firstNonEmpty(raw?.category, h?.category, t?.info?.category, ext?.category, path, arr, tiered)
-
   if (!flat) return null
 
   let label = ""
@@ -167,7 +214,8 @@ const normalizeReview = (r: any): UIReview => {
       ? u
       : (u?.name ?? u?.username ?? u?.nickname ?? r.nickname ?? r.userName ?? r.authorName ?? r.author ?? "익명")
 
-  const ratingRaw = r.score ?? r.waste_rating ?? r.rating ?? r.stars ?? r.star ?? r.wasteScore ?? 0
+  // BE에는 별점이 없으니(남는양 leftoverRate? → 숫자면 그대로 사용)
+  const ratingRaw = r.score ?? r.leftoverRate ?? r.waste_rating ?? r.rating ?? r.stars ?? r.star ?? r.wasteScore ?? 0
 
   const comment = r.contents ?? r.comment ?? r.content ?? r.text ?? ""
   const date = r.createdAt ?? r.created_at ?? r.date ?? r.created ?? ""
@@ -180,7 +228,7 @@ const normalizeReview = (r: any): UIReview => {
   return {
     id: Number(r.id ?? r.review_id ?? 0),
     userName: (name || "익명").trim(),
-    wasteRating: Number(ratingRaw) || 0,
+    wasteRating: Number(r.wasteRating ?? ratingRaw) || 0,
     date,
     comment,
     images,
@@ -189,30 +237,21 @@ const normalizeReview = (r: any): UIReview => {
 
 /* ───────────────── Restaurant 정규화 ───────────────── */
 function normalizeRestaurant(raw: any): UIRestaurant {
-  // v2 형태(header/tabs)
   if (raw?.header && raw?.tabs) {
     const h = raw.header ?? {}
     const t = raw.tabs ?? {}
-
     const menuItems: UIMenuItem[] = Array.isArray(t.menu?.items)
-      ? t.menu.items.map((m: any) => ({
-          name: m?.name,
-          price: m?.price ?? "",
-          description: m?.description ?? "",
-        }))
+      ? t.menu.items.map((m: any) => ({ name: m?.name, price: m?.price ?? "", description: m?.description ?? "" }))
       : []
-
     const gallery: string[] = Array.isArray(t.gallery?.photos)
       ? t.gallery.photos.map((p: any) => (typeof p === "string" ? p : p?.url)).filter(Boolean)
       : []
-
-    const fav =
-      !!h.isFavorite || !!h.is_favorite || !!h.favorited || !!raw?.isFavorite || !!raw?.is_favorite || !!raw?.favorited
+    const fav = !!h.isFavorite || !!h.is_favorite || !!h.favorited || !!raw?.isFavorite || !!raw?.is_favorite || !!raw?.favorited
 
     return {
       id: Number(h.id ?? 0),
       name: String(h.name ?? "알 수 없는 식당"),
-      image: h.heroPhoto ?? null,
+      image: gallery[0] ?? h.heroPhoto ?? null,
       badge: h.badge ?? null,
       wasteScore: typeof h.ecoScore === "number" ? h.ecoScore : null,
       totalReviews: typeof h.reviewCount === "number" ? h.reviewCount : 0,
@@ -229,47 +268,67 @@ function normalizeRestaurant(raw: any): UIRestaurant {
     }
   }
 
-  // 일반 형태
-  const ext = raw?.external ?? {}
-  const eco = raw?.stats?.ecoScore
-  const photos: string[] = Array.isArray(ext.photos) ? (ext.photos as any[]).map((p) => p?.url).filter(Boolean) : []
-  const fav =
-    !!raw?.isFavorite ||
-    !!raw?.is_favorite ||
-    !!raw?.favorited ||
-    !!ext?.isFavorite ||
-    !!ext?.is_favorite ||
-    !!ext?.favorited
+  const galleryFromSigned: string[] = Array.isArray(raw?._galleryUrls) ? raw._galleryUrls : []
+  const menuArr: any[] = Array.isArray(raw?.menus) ? raw.menus : []
+  const menu: UIMenuItem[] = menuArr.map((m: any) => ({
+    name: m?.name,
+    price: "",
+    description: "",
+    thumb: m?._thumbUrl || "",
+  }))
+  const fav = !!raw?.isFavorite || !!raw?.is_favorite || !!raw?.favorited
 
   return {
     id: Number(raw?.id ?? 0),
     name: String(raw?.name ?? "알 수 없는 식당"),
-    image: raw?.image ?? null,
+    image: galleryFromSigned[0] || null,
     badge: raw?.badge ?? null,
-    wasteScore: typeof eco === "number" ? eco : null,
-    totalReviews:
-      typeof raw?.stats?._count === "number"
-        ? raw.stats._count
-        : typeof raw?.totalReviews === "number"
-          ? raw.totalReviews
-          : 0,
-    category: toCategoryLabel(raw) ?? ext.category ?? raw?.category ?? null,
+    wasteScore:
+      typeof raw?.ecoScore === "number"
+        ? raw.ecoScore
+        : (typeof raw?.stats?.ecoScore === "number" ? raw.stats.ecoScore : null),
+    totalReviews: typeof raw?.reviewCount === "number" ? raw.reviewCount : 0,
+    category: raw?.category ?? null,
     distance: raw?.distance ?? null,
-    address: ext.address ?? raw?.address ?? null,
-    telephone: ext.telephone ?? raw?.telephone ?? null,
+    address: raw?.address ?? null,
+    telephone: raw?.telephone ?? null,
     hours: raw?.hours ?? null,
     description: raw?.description ?? null,
     favorited: fav,
-    menu: Array.isArray(ext.menus)
-      ? (ext.menus as any[]).map((m) => ({
-          name: m?.name,
-          price: m?.price,
-          description: m?.description,
-        }))
-      : [],
-    gallery: photos,
+    menu,
+    gallery: galleryFromSigned,
     reviews: [],
   }
+}
+
+function MenuThumb({ src, alt }: { src?: string | null; alt: string }) {
+  return (
+    <div className="relative shrink-0">
+      <div className="h-20 w-20 md:h-24 md:w-24 rounded-2xl overflow-hidden border border-white/30 dark:border-slate-700/50 shadow-sm bg-muted">
+        <img
+          src={src || "/placeholder.svg"}
+          alt={alt}
+          className="w-full h-full object-cover"
+          loading="lazy"
+        />
+      </div>
+    </div>
+  )
+}
+
+/* ── 리뷰 → 배치분석 입력 포맷으로 변환 ── */
+function buildBatchFromReviews(revs: UIReview[]) {
+  return revs.map((r) => ({
+    date: (r.date || "").slice(0, 10) || new Date().toISOString().slice(0, 10),
+    time: "점심",
+    food_menu: [
+      {
+        name: "전체", // 실제 메뉴명을 알면 교체
+        leftover_score: Number(r.wasteRating) || 0,
+        user_comment: r.comment || "",
+      },
+    ],
+  }))
 }
 
 /* ───────────────── Page ───────────────── */
@@ -291,10 +350,13 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
   const [reviewsError, setReviewsError] = useState<string | null>(null)
   const [reviewsFetched, setReviewsFetched] = useState(false)
 
-  // ── NEW: AI 요약 상태
+  // AI 요약 (폴백용)
   const [aiSummary, setAiSummary] = useState<string | null>(null)
   const [aiLoading, setAiLoading] = useState(false)
   const [aiError, setAiError] = useState<string | null>(null)
+
+  // 배치 분석 결과
+  const [batch, setBatch] = useState<BatchAnalysis | null>(null)
 
   async function loadReviewsOnce(id: number) {
     if (!id || reviewsFetched) return
@@ -323,45 +385,36 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
     }
   }
 
-  // ── NEW: AI 요약 로더 (API → 폴백)
-  const summarizeWithFallback = async (id: number, reviewData: UIReview[]) => {
+  const summarizeWithFallback = async (_id: number, reviewData: UIReview[]) => {
     setAiLoading(true)
     setAiError(null)
     try {
-      // 1) 서버 AI 요약 시도
-      const res = await apiClient.getAiReviewSummary?.(id)
+      const res = await apiClient.getAiReviewSummary?.(_id)
       if (res?.success && res.data) {
         const text =
-          typeof res.data === "string"
-            ? res.data
-            : (res.data as any)?.summary || (res.data as any)?.text || null
+          typeof res.data === "string" ? res.data : (res.data as any)?.summary || (res.data as any)?.text || null
         if (text) {
           setAiSummary(String(text))
           return
         }
       }
 
-      // 2) 폴백: 클라에서 간단 요약 생성
+      // 폴백: 간단 요약
       const positives = reviewData.filter((r) => (r.wasteRating ?? 0) >= 4)
       const neutrals = reviewData.filter((r) => (r.wasteRating ?? 0) >= 3 && (r.wasteRating ?? 0) < 4)
       const negatives = reviewData.filter((r) => (r.wasteRating ?? 0) < 3)
 
       const topPhrases = (arr: UIReview[], limit = 3) =>
-        arr
-          .map((r) => (r.comment || "").trim())
-          .filter(Boolean)
-          .slice(0, limit)
+        arr.map((r) => (r.comment || "").trim()).filter(Boolean).slice(0, limit)
 
       const bullets: string[] = [
         `긍정 리뷰 ${positives.length}건 · 보통 ${neutrals.length}건 · 아쉬움 ${negatives.length}건.`,
       ]
-
       const add = (title: string, items: string[]) => {
         if (!items.length) return
         bullets.push(`${title}`)
         items.forEach((t) => bullets.push(`- ${t.slice(0, 120)}`))
       }
-
       add("좋았던 점", topPhrases(positives))
       add("보통이었던 점", topPhrases(neutrals))
       add("아쉬웠던 점", topPhrases(negatives))
@@ -369,6 +422,42 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
       setAiSummary(bullets.join("\n"))
     } catch (e: any) {
       setAiError(e?.message || "AI 요약 생성에 실패했어요.")
+    } finally {
+      setAiLoading(false)
+    }
+  }
+
+  /** 🔁 배치 분석(서버 호출) */
+  const analyzeOnServer = async () => {
+    if (!reviews.length) {
+      setBatch(null)
+      setAiSummary(null)
+      return
+    }
+    setAiLoading(true)
+    setAiError(null)
+    try {
+      const payload = buildBatchFromReviews(reviews)
+
+      // apiClient.analyzeWasteBatch 가 있다면 이걸 사용해도 됨.
+      const res = await fetch("/api/ai/waste/analyze-batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+      const data = await res.json()
+      if (!res.ok || !data?.ok) {
+        throw new Error(data?.error || "분석 실패")
+      }
+
+      const result: BatchAnalysis = data.result
+      setBatch(result)
+      setAiSummary(result?.overall?.summary ?? null)
+    } catch (e: any) {
+      // 실패 시 폴백 요약
+      setBatch(null)
+      await summarizeWithFallback(restaurantId, reviews)
+      setAiError(e?.message || "AI 분석에 실패했어요.")
     } finally {
       setAiLoading(false)
     }
@@ -382,6 +471,7 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
       setError(null)
       setReviewsFetched(false)
       setAiSummary(null)
+      setBatch(null)
       try {
         const res = await apiClient.getRestaurantDetail(restaurantId)
         if (!mounted) return
@@ -389,8 +479,9 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
           setError(res.error || "식당 정보를 불러올 수 없습니다.")
           setRaw(null)
         } else {
-          setRaw(res.data)
-          // 리뷰/요약 선로딩
+          const { galleryUrls, menusWithThumb } = await resolveSignedUrls(res.data)
+          const enriched = { ...res.data, _galleryUrls: galleryUrls, menus: menusWithThumb }
+          setRaw(enriched)
           await loadReviewsOnce(restaurantId)
         }
       } catch (e: any) {
@@ -406,14 +497,14 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
     }
   }, [restaurantId])
 
-  // 리뷰 로딩 끝나면 AI 요약 실행(한 번만)
+  // 리뷰 로딩 끝나면 AI 분석 1회(실패 시 폴백)
   useEffect(() => {
-    if (!reviewsFetched || aiSummary || aiLoading) return
-    summarizeWithFallback(restaurantId, reviews)
+    if (!reviewsFetched || aiLoading || batch || aiSummary) return
+    analyzeOnServer()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reviewsFetched])
 
-  // 리뷰 탭 진입 시(미로드면 1회)
+  // 리뷰 탭 진입 시 미로드면 1회
   useEffect(() => {
     if (activeTab !== "reviews" || !restaurantId || reviewsFetched) return
     loadReviewsOnce(restaurantId)
@@ -434,12 +525,7 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
     const mergedDescription = [base.description, mock.facilities].filter(Boolean).join("\n\n")
     const mergedMenu = Array.isArray(mock.menu) && mock.menu.length > 0 ? mock.menu : base.menu
 
-    return {
-      ...base,
-      description: mergedDescription,
-      menu: mergedMenu,
-      infoSections: mock.infoSections,
-    }
+    return { ...base, description: mergedDescription, menu: mergedMenu, infoSections: mock.infoSections }
   }, [raw])
 
   // 즐겨찾기
@@ -481,13 +567,11 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
   const handleShare = () => {
     if (!restaurant) return
     if (navigator.share) {
-      navigator
-        .share({
-          title: restaurant.name,
-          text: "에코 친화 식당 정보 공유",
-          url: typeof window !== "undefined" ? window.location.href : "",
-        })
-        .catch(() => {})
+      navigator.share({
+        title: restaurant.name,
+        text: "에코 친화 식당 정보 공유",
+        url: typeof window !== "undefined" ? window.location.href : "",
+      }).catch(() => {})
     } else {
       alert("이 브라우저는 공유 기능을 지원하지 않아요.")
     }
@@ -501,16 +585,17 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
     router.push(`/restaurant/edit/${restaurantId}`)
   }
 
-  // ── NEW: 스탬프 사용(QR 스캔 화면 이동)
   const handleUseStamp = () => {
     router.push(`/scan?type=stamp&restaurantId=${restaurantId}`)
   }
 
-  // 리뷰 평균(있으면 사용)
+  // 리뷰 평균(0점 제외)
   const reviewsAvg = useMemo(() => {
     if (!reviews.length) return null
-    const sum = reviews.reduce((acc, r) => acc + (Number(r.wasteRating) || 0), 0)
-    return Math.round((sum / reviews.length) * 10) / 10
+    const valid = reviews.map(r => Number(r.wasteRating) || 0).filter(v => v > 0)
+    if (!valid.length) return null
+    const sum = valid.reduce((a, b) => a + b, 0)
+    return Math.round((sum / valid.length) * 10) / 10
   }, [reviews])
 
   if (loading) {
@@ -533,19 +618,12 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
   if (error || !restaurant) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-50 via-red-50/30 to-orange-50/30 dark:from-slate-950 dark:via-red-950/20 dark:to-orange-950/20 flex items-center justify-center">
-        <motion.div
-          className="text-center max-w-md mx-auto p-8"
-          initial={{ opacity: 0, scale: 0.9 }}
-          animate={{ opacity: 1, scale: 1 }}
-        >
+        <motion.div className="text-center max-w-md mx-auto p-8" initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }}>
           <div className="w-20 h-20 mx-auto rounded-3xl bg-gradient-to-br from-red-500 to-orange-600 flex items-center justify-center shadow-2xl mb-6">
             <Sparkles className="h-10 w-10 text-white" />
           </div>
           <div className="text-lg font-semibold text-red-600 mb-4">{error || "식당 정보를 불러올 수 없습니다"}</div>
-          <Button
-            onClick={() => router.back()}
-            className="rounded-2xl bg-gradient-to-r from-red-500 to-orange-600 hover:from-red-600 hover:to-orange-700 shadow-lg"
-          >
+          <Button onClick={() => router.back()} className="rounded-2xl bg-gradient-to-r from-red-500 to-orange-600 hover:from-red-600 hover:to-orange-700 shadow-lg">
             <ArrowLeft className="h-4 w-4 mr-2" />
             뒤로가기
           </Button>
@@ -554,11 +632,8 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
     )
   }
 
-  // 표시할 별점
   const starFromEco = calculateWasteStarRating(restaurant.wasteScore ?? 0)
-  const displayStar = reviewsAvg ?? starFromEco
-
-  // 표시할 카테고리: 쿼리 우선 → BE 값 → ETC
+  const displayStar = (reviewsAvg ?? starFromEco)
   const displayCategory = restaurant.category || "ETC"
 
   return (
@@ -582,18 +657,19 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
             </Button>
           </motion.div>
           <div className="flex items-center gap-2">
-            {/* NEW: 스탬프 사용(QR 스캔 이동) */}
-            <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={handleUseStamp}
-                title="스탬프 사용 (QR 스캔)"
-                className="h-10 w-10 rounded-2xl bg-white/50 dark:bg-slate-800/50 backdrop-blur-sm hover:bg-purple-50 dark:hover:bg-purple-900/30 shadow-lg transition-all duration-200"
-              >
-                <QrCode className="h-4 w-4 text-purple-600" />
-              </Button>
-            </motion.div>
+            {isOwnerMode && (
+              <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleUseStamp}
+                  title="스탬프 사용 (QR 스캔)"
+                  className="h-10 w-10 rounded-2xl bg-white/50 dark:bg-slate-800/50 backdrop-blur-sm hover:bg-purple-50 dark:hover:bg-purple-900/30 shadow-lg transition-all duration-200"
+                >
+                  <QrCode className="h-4 w-4 text-purple-600" />
+                </Button>
+              </motion.div>
+            )}
 
             {isOwnerMode && (
               <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}>
@@ -630,9 +706,7 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
                   aria-pressed={isFav}
                   className="h-10 w-10 rounded-2xl bg-white/50 dark:bg-slate-800/50 backdrop-blur-sm hover:bg-red-50 dark:hover:bg-red-900/30 shadow-lg transition-all duration-200"
                 >
-                  <Heart
-                    className={`h-4 w-4 transition-all duration-200 ${isFav ? "fill-red-500 text-red-500 scale-110" : "text-gray-400"}`}
-                  />
+                  <Heart className={`h-4 w-4 transition-all duration-200 ${isFav ? "fill-red-500 text-red-500 scale-110" : "text-gray-400"}`} />
                 </Button>
               </motion.div>
             )}
@@ -662,11 +736,7 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
         >
           <div className="flex items-center gap-3 mb-4">
             {restaurant.badge && (
-              <motion.div
-                initial={{ opacity: 0, scale: 0.8 }}
-                animate={{ opacity: 1, scale: 1 }}
-                transition={{ delay: 0.5 }}
-              >
+              <motion.div initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: 0.5 }}>
                 <Badge
                   variant={restaurant.badge === "착한 식당" ? "default" : "secondary"}
                   className="bg-green-500/90 text-white border-green-400 shadow-lg backdrop-blur-sm px-3 py-1 text-sm"
@@ -678,21 +748,11 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
             )}
           </div>
 
-          <motion.h1
-            className="text-3xl md:text-4xl font-bold text-white mb-3 drop-shadow-lg"
-            initial={{ opacity: 0, x: -20 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ delay: 0.4 }}
-          >
+          <motion.h1 className="text-3xl md:text-4xl font-bold text-white mb-3 drop-shadow-lg" initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.4 }}>
             {restaurant.name}
           </motion.h1>
 
-          <motion.div
-            className="flex items-center gap-6 text-white/90"
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.6 }}
-          >
+          <motion.div className="flex items-center gap-6 text-white/90" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.6 }}>
             <div className="flex items-center gap-2 bg-white/20 backdrop-blur-sm rounded-2xl px-4 py-2">
               <StarRating value={displayStar} size={18} colorClass="text-green-400" emptyClass="text-white/60" />
               <span className="font-bold text-lg ml-2">{displayStar.toFixed(1)}</span>
@@ -712,28 +772,16 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}>
           <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
             <TabsList className="grid w-full grid-cols-4 bg-white/60 dark:bg-slate-800/60 backdrop-blur-xl border border-white/20 dark:border-slate-700/50 rounded-2xl p-1 shadow-lg">
-              <TabsTrigger
-                value="info"
-                className="rounded-xl data-[state=active]:bg-white dark:data-[state=active]:bg-slate-700 data-[state=active]:shadow-lg transition-all duration-200"
-              >
+              <TabsTrigger value="info" className="rounded-xl data-[state=active]:bg-white dark:data-[state=active]:bg-slate-700 data-[state=active]:shadow-lg transition-all duration-200">
                 <MapPin className="h-4 w-4 mr-2" /> 정보
               </TabsTrigger>
-              <TabsTrigger
-                value="menu"
-                className="rounded-xl data-[state=active]:bg-white dark:data-[state=active]:bg-slate-700 data-[state=active]:shadow-lg transition-all duration-200"
-              >
+              <TabsTrigger value="menu" className="rounded-xl data-[state=active]:bg-white dark:data-[state=active]:bg-slate-700 data-[state=active]:shadow-lg transition-all duration-200">
                 <Sparkles className="h-4 w-4 mr-2" /> 메뉴
               </TabsTrigger>
-              <TabsTrigger
-                value="gallery"
-                className="rounded-xl data-[state=active]:bg-white dark:data-[state=active]:bg-slate-700 data-[state=active]:shadow-lg transition-all duration-200"
-              >
+              <TabsTrigger value="gallery" className="rounded-xl data-[state=active]:bg-white dark:data-[state=active]:bg-slate-700 data-[state=active]:shadow-lg transition-all duration-200">
                 <Camera className="h-4 w-4 mr-2" /> 갤러리
               </TabsTrigger>
-              <TabsTrigger
-                value="reviews"
-                className="rounded-xl data-[state=active]:bg-white dark:data-[state=active]:bg-slate-700 data-[state=active]:shadow-lg transition-all duration-200"
-              >
+              <TabsTrigger value="reviews" className="rounded-xl data-[state=active]:bg-white dark:data-[state=active]:bg-slate-700 data-[state=active]:shadow-lg transition-all duration-200">
                 <Users className="h-4 w-4 mr-2" /> 리뷰
               </TabsTrigger>
             </TabsList>
@@ -741,13 +789,7 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
             <AnimatePresence mode="wait">
               {/* Info */}
               <TabsContent value="info" className="mt-8">
-                <motion.div
-                  className="space-y-6"
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -20 }}
-                  transition={{ duration: 0.3 }}
-                >
+                <motion.div className="space-y-6" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} transition={{ duration: 0.3 }}>
                   <Card className="bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm border-white/20 dark:border-slate-700/50 shadow-xl rounded-3xl overflow-hidden">
                     <CardHeader className="bg-gradient-to-r from-green-500/10 to-emerald-500/10 border-b border-white/20 dark:border-slate-700/50">
                       <CardTitle className="flex items-center gap-3 text-xl">
@@ -759,28 +801,19 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
                     </CardHeader>
                     <CardContent className="p-6 space-y-6">
                       {restaurant.address && (
-                        <motion.div
-                          className="flex items-center gap-4 p-4 bg-slate-50 dark:bg-slate-800/50 rounded-2xl"
-                          whileHover={{ scale: 1.01 }}
-                        >
+                        <motion.div className="flex items-center gap-4 p-4 bg-slate-50 dark:bg-slate-800/50 rounded-2xl" whileHover={{ scale: 1.01 }}>
                           <MapPin className="h-5 w-5 text-green-600" />
                           <span className="text-foreground font-medium">{restaurant.address}</span>
                         </motion.div>
                       )}
                       {restaurant.telephone && (
-                        <motion.div
-                          className="flex items-center gap-4 p-4 bg-slate-50 dark:bg-slate-800/50 rounded-2xl"
-                          whileHover={{ scale: 1.01 }}
-                        >
+                        <motion.div className="flex items-center gap-4 p-4 bg-slate-50 dark:bg-slate-800/50 rounded-2xl" whileHover={{ scale: 1.01 }}>
                           <Phone className="h-5 w-5 text-blue-600" />
                           <span className="text-foreground font-medium">{restaurant.telephone}</span>
                         </motion.div>
                       )}
                       {restaurant.hours && (
-                        <motion.div
-                          className="flex items-center gap-4 p-4 bg-slate-50 dark:bg-slate-800/50 rounded-2xl"
-                          whileHover={{ scale: 1.01 }}
-                        >
+                        <motion.div className="flex items-center gap-4 p-4 bg-slate-50 dark:bg-slate-800/50 rounded-2xl" whileHover={{ scale: 1.01 }}>
                           <Clock className="h-5 w-5 text-orange-600" />
                           <span className="text-foreground font-medium">{restaurant.hours}</span>
                         </motion.div>
@@ -827,16 +860,8 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
                       </CardTitle>
                     </CardHeader>
                     <CardContent className="p-6">
-                      <motion.div
-                        className="text-center p-8 bg-gradient-to-br from-green-100 to-emerald-100 dark:from-green-900/30 dark:to-emerald-900/30 rounded-2xl"
-                        whileHover={{ scale: 1.02 }}
-                      >
-                        <motion.div
-                          className="text-4xl font-bold text-green-600 mb-2"
-                          initial={{ scale: 0 }}
-                          animate={{ scale: 1 }}
-                          transition={{ delay: 0.5, type: "spring" }}
-                        >
+                      <motion.div className="text-center p-8 bg-gradient-to-br from-green-100 to-emerald-100 dark:from-green-900/30 dark:to-emerald-900/30 rounded-2xl" whileHover={{ scale: 1.02 }}>
+                        <motion.div className="text-4xl font-bold text-green-600 mb-2" initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ delay: 0.5, type: "spring" }}>
                           {displayStar}
                         </motion.div>
                         <div className="text-lg text-green-700 dark:text-green-300 font-medium">잔반 별점</div>
@@ -851,12 +876,7 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
 
               {/* Menu */}
               <TabsContent value="menu" className="mt-8">
-                <motion.div
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -20 }}
-                  transition={{ duration: 0.3 }}
-                >
+                <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} transition={{ duration: 0.3 }}>
                   <Card className="bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm border-white/20 dark:border-slate-700/50 shadow-xl rounded-3xl overflow-hidden">
                     <CardHeader className="bg-gradient-to-r from-orange-500/10 to-yellow-500/10 border-b border-white/20 dark:border-slate-700/50">
                       <CardTitle className="flex items-center gap-3 text-xl">
@@ -867,41 +887,55 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
                       </CardTitle>
                     </CardHeader>
                     <CardContent className="p-6">
-                      <div className="space-y-4">
-                        {restaurant.menu && restaurant.menu.length > 0 ? (
-                          restaurant.menu.map((item, index) => (
+                      {restaurant.menu && restaurant.menu.length > 0 ? (
+                        <div className="grid gap-4">
+                          {restaurant.menu.map((item, index) => (
                             <motion.div
                               key={index}
-                              className="flex justify-between items-start p-6 border border-white/20 dark:border-slate-700/50 rounded-2xl bg-white/50 dark:bg-slate-800/50 backdrop-blur-sm shadow-lg hover:shadow-xl transition-all duration-300"
-                              initial={{ opacity: 0, x: -20 }}
-                              animate={{ opacity: 1, x: 0 }}
-                              transition={{ delay: index * 0.1 }}
-                              whileHover={{ scale: 1.01, x: 4 }}
+                              initial={{ opacity: 0, y: 8 }}
+                              animate={{ opacity: 1, y: 0 }}
+                              transition={{ duration: 0.18, delay: index * 0.02 }}
+                              className="group rounded-2xl border border-white/20 dark:border-slate-700/50 bg-white/70 dark:bg-slate-800/70 backdrop-blur-sm shadow-sm hover:shadow-lg hover:bg-white/90 dark:hover:bg-slate-800/90 transition-all duration-200"
                             >
-                              <div className="flex-1">
-                                <h3 className="font-semibold text-foreground mb-2 text-lg">{item.name || "메뉴"}</h3>
-                                <p className="text-sm text-muted-foreground whitespace-pre-wrap leading-relaxed">
-                                  {item.description || ""}
-                                </p>
-                              </div>
-                              {item.price && (
-                                <div className="text-xl font-bold text-green-600 ml-6 bg-green-50 dark:bg-green-900/30 px-4 py-2 rounded-xl">
-                                  {item.price}
+                              <div className="p-4 md:p-5 flex items-center gap-4 md:gap-5">
+                                {item.thumb ? (
+                                  <MenuThumb src={item.thumb} alt={item.name || "menu"} />
+                                ) : (
+                                  <MenuThumb src={null} alt={item.name || "menu"} />
+                                )}
+
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex items-start justify-between gap-3">
+                                    <h3 className="font-semibold text-foreground text-base md:text-lg leading-snug line-clamp-1">
+                                      {item.name || "메뉴"}
+                                    </h3>
+                                    {item.price && (
+                                      <span className="shrink-0 px-3 py-1.5 rounded-xl text-sm md:text-base font-bold bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-300 border border-green-200/50 dark:border-green-800/60">
+                                        {item.price}
+                                      </span>
+                                    )}
+                                  </div>
+
+                                  {item.description && (
+                                    <p className="mt-1.5 text-sm text-muted-foreground leading-relaxed line-clamp-2">
+                                      {item.description}
+                                    </p>
+                                  )}
                                 </div>
-                              )}
+                              </div>
                             </motion.div>
-                          ))
-                        ) : (
-                          <motion.div
-                            className="text-center text-muted-foreground py-16 bg-slate-50 dark:bg-slate-800/50 rounded-2xl"
-                            initial={{ opacity: 0 }}
-                            animate={{ opacity: 1 }}
-                          >
-                            <Sparkles className="h-16 w-16 mx-auto mb-4 opacity-30" />
-                            <p className="text-lg">메뉴 정보가 없습니다</p>
-                          </motion.div>
-                        )}
-                      </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <motion.div
+                          className="text-center text-muted-foreground py-16 bg-slate-50 dark:bg-slate-800/50 rounded-2xl"
+                          initial={{ opacity: 0 }}
+                          animate={{ opacity: 1 }}
+                        >
+                          <Sparkles className="h-16 w-16 mx-auto mb-4 opacity-30" />
+                          <p className="text-lg">메뉴 정보가 없습니다</p>
+                        </motion.div>
+                      )}
                     </CardContent>
                   </Card>
                 </motion.div>
@@ -909,12 +943,7 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
 
               {/* Gallery */}
               <TabsContent value="gallery" className="mt-8">
-                <motion.div
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -20 }}
-                  transition={{ duration: 0.3 }}
-                >
+                <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} transition={{ duration: 0.3 }}>
                   <Card className="bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm border-white/20 dark:border-slate-700/50 shadow-xl rounded-3xl overflow-hidden">
                     <CardHeader className="bg-gradient-to-r from-purple-500/10 to-pink-500/10 border-b border-white/20 dark:border-slate-700/50">
                       <CardTitle className="flex items-center gap-3 text-xl">
@@ -944,11 +973,7 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
                             </motion.div>
                           ))
                         ) : (
-                          <motion.div
-                            className="col-span-full text-center text-muted-foreground py-16 bg-slate-50 dark:bg-slate-800/50 rounded-2xl"
-                            initial={{ opacity: 0 }}
-                            animate={{ opacity: 1 }}
-                          >
+                          <motion.div className="col-span-full text-center text-muted-foreground py-16 bg-slate-50 dark:bg-slate-800/50 rounded-2xl" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
                             <Camera className="h-16 w-16 mx-auto mb-4 opacity-30" />
                             <p className="text-lg">사진이 없습니다</p>
                           </motion.div>
@@ -961,13 +986,7 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
 
               {/* Reviews */}
               <TabsContent value="reviews" className="mt-8">
-                <motion.div
-                  className="space-y-6"
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -20 }}
-                  transition={{ duration: 0.3 }}
-                >
+                <motion.div className="space-y-6" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} transition={{ duration: 0.3 }}>
                   {/* 요약 */}
                   <Card className="bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm border-white/20 dark:border-slate-700/50 shadow-xl rounded-3xl overflow-hidden">
                     <CardHeader className="bg-gradient-to-r from-blue-500/10 to-cyan-500/10 border-b border-white/20 dark:border-slate-700/50">
@@ -994,47 +1013,110 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
                     </CardContent>
                   </Card>
 
-                  {/* NEW: AI 리뷰 요약 */}
-                  <Card className="bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm border-white/20 dark:border-slate-700/50 shadow-xl rounded-3xl overflow-hidden">
-                    <CardHeader className="bg-gradient-to-r from-purple-500/10 to-pink-500/10 border-b border-white/20 dark:border-slate-700/50">
-                      <CardTitle className="flex items-center justify-between text-xl">
-                        <span className="flex items-center gap-3">
-                          <div className="p-2 rounded-xl bg-gradient-to-br from-purple-500 to-pink-600 shadow-lg">
-                            <Bot className="h-5 w-5 text-white" />
+                  {/* AI 리뷰 요약 (배치 분석) */}
+                  {isOwnerMode && (
+                    <Card className="bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm border-white/20 dark:border-slate-700/50 shadow-xl rounded-3xl overflow-hidden">
+                      <CardHeader className="bg-gradient-to-r from-purple-500/10 to-pink-500/10 border-b border-white/20 dark:border-slate-700/50">
+                        <CardTitle className="flex items-center justify-between text-xl">
+                          <span className="flex items-center gap-3">
+                            <div className="p-2 rounded-xl bg-gradient-to-br from-purple-500 to-pink-600 shadow-lg">
+                              <Bot className="h-5 w-5 text-white" />
+                            </div>
+                            AI 리뷰 요약
+                          </span>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={analyzeOnServer}
+                            className="rounded-xl hover:bg-white/60 dark:hover:bg-slate-700/50"
+                            title="다시 분석"
+                          >
+                            <RefreshCw className={`h-4 w-4 ${aiLoading ? "animate-spin" : ""}`} />
+                          </Button>
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent className="p-6 space-y-6">
+                        {aiLoading ? (
+                          <div className="flex items-center justify-center py-10 text-muted-foreground">
+                            <Loader2 className="h-5 w-5 animate-spin mr-2" /> 분석 중…
                           </div>
-                          AI 리뷰 요약
-                        </span>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => summarizeWithFallback(restaurantId, reviews)}
-                          className="rounded-xl hover:bg-white/60 dark:hover:bg-slate-700/50"
-                          title="다시 분석"
-                        >
-                          <RefreshCw className={`h-4 w-4 ${aiLoading ? "animate-spin" : ""}`} />
-                        </Button>
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent className="p-6">
-                      {aiLoading ? (
-                        <div className="flex items-center justify-center py-10 text-muted-foreground">
-                          <Loader2 className="h-5 w-5 animate-spin mr-2" /> 분석 중…
-                        </div>
-                      ) : aiError ? (
-                        <div className="text-center text-red-500 py-8 bg-red-50 dark:bg-red-900/20 rounded-xl">
-                          {aiError}
-                        </div>
-                      ) : aiSummary ? (
-                        <div className="prose prose-sm dark:prose-invert max-w-none whitespace-pre-wrap leading-relaxed">
-                          {aiSummary}
-                        </div>
-                      ) : (
-                        <div className="text-center text-muted-foreground py-8">
-                          아직 보여줄 요약이 없어요.
-                        </div>
-                      )}
-                    </CardContent>
-                  </Card>
+                        ) : aiError ? (
+                          <div className="text-center text-red-500 py-8 bg-red-50 dark:bg-red-900/20 rounded-xl">
+                            {aiError}
+                          </div>
+                        ) : batch ? (
+                          <>
+                            {/* 전체 요약 */}
+                            <div className="prose prose-sm dark:prose-invert max-w-none whitespace-pre-wrap leading-relaxed">
+                              {batch.overall.summary}
+                            </div>
+
+                            {/* 개선 액션 */}
+                            {batch.overall.actions?.length ? (
+                              <ul className="list-disc pl-5 space-y-1 text-sm text-foreground">
+                                {batch.overall.actions.map((a, i) => (
+                                  <li key={i}>{a}</li>
+                                ))}
+                              </ul>
+                            ) : null}
+
+                            {/* 메뉴별 인사이트 */}
+                            {batch.per_menu?.length ? (
+                              <div className="grid gap-4">
+                                {batch.per_menu.map((m, i) => (
+                                  <div
+                                    key={i}
+                                    className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-white/20 dark:border-slate-700/50"
+                                  >
+                                    <div className="font-semibold">{m.name}</div>
+                                    <div className="text-sm text-muted-foreground">
+                                      평균 잔반 {m.avg_leftover}점 (총 {m.count}회)
+                                    </div>
+                                    {m.insight && (
+                                      <div className="mt-2 text-sm whitespace-pre-wrap">{m.insight}</div>
+                                    )}
+                                    {(m.best_samples?.length || m.worst_samples?.length) && (
+                                      <div className="mt-3 grid gap-2 text-sm">
+                                        {m.best_samples?.length ? (
+                                          <div>
+                                            <div className="font-medium">👍 Best</div>
+                                            <ul className="list-disc pl-5">
+                                              {m.best_samples.slice(0, 2).map((s, idx) => (
+                                                <li key={idx}>{s}</li>
+                                              ))}
+                                            </ul>
+                                          </div>
+                                        ) : null}
+                                        {m.worst_samples?.length ? (
+                                          <div>
+                                            <div className="font-medium">⚠️ Worst</div>
+                                            <ul className="list-disc pl-5">
+                                              {m.worst_samples.slice(0, 2).map((s, idx) => (
+                                                <li key={idx}>{s}</li>
+                                              ))}
+                                            </ul>
+                                          </div>
+                                        ) : null}
+                                      </div>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            ) : null}
+                          </>
+                        ) : aiSummary ? (
+                          // 폴백 요약 표시
+                          <div className="prose prose-sm dark:prose-invert max-w-none whitespace-pre-wrap leading-relaxed">
+                            {aiSummary}
+                          </div>
+                        ) : (
+                          <div className="text-center text-muted-foreground py-8">
+                            아직 보여줄 요약이 없어요.
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+                  )}
 
                   {/* 목록 */}
                   <Card className="bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm border-white/20 dark:border-slate-700/50 shadow-xl rounded-3xl overflow-hidden">

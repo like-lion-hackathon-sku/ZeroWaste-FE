@@ -150,6 +150,7 @@ class ApiClient {
     const q = (params?.search ?? "맛집").trim()
     return this.request(`/restaurants/nearby?q=${encodeURIComponent(q)}`)
   }
+  
   async getRestaurantsNearby(bbox: string, limit = 20, cursor = 0) {
     const sp = new URLSearchParams()
     sp.set("bbox", bbox)
@@ -157,23 +158,22 @@ class ApiClient {
     sp.set("cursor", String(cursor))
     return this.request(`/restaurants/nearby?${sp.toString()}`)
   }
+  
   async getRestaurantsInBounds(bounds: { minLat: number; maxLat: number; minLng: number; maxLng: number; category?: string; search?: string }) {
     const q = (bounds.search ?? "맛집").trim()
     return this.request(`/restaurants/nearby?q=${encodeURIComponent(q)}`)
   }
   async getRestaurantDetail(id: number) {
     return this.request<{
-      id: number
-      name: string
-      category: string
-      address?: string
-      telephone?: string
-      photos?: { id: number; photo_name: string }[]
-      menus?: { id: number; name: string; photo?: string }[]
-    }>(`/restaurants/${id}/detail`, { method: "GET" })
+      id: number; name: string; category: string;
+      address?: string; telephone?: string;
+      photos?: { id: number; photo_name: string }[];
+      menus?: { id: number; name: string; photo?: string }[];
+    }>(`/restaurants/${id}/detail`, { method: "GET" });
   }
+
   async getRestaurantReviews(id: number) {
-    return this.request(`/restaurants/${id}/reviews`)
+    return this.request(`/restaurants/${id}/reviews`);
   }
 
   /** ✅ (추가) 일반 사용자 메뉴 목록 */
@@ -313,7 +313,24 @@ class ApiClient {
     if (form) return this.request(`/reviews/${id}/analyze`, { method: "POST", body: form })
     return this.request(`/reviews/${id}/analyze`, { method: "POST" })
   }
-
+  async analyzeWasteBatch(payload: any) {
+    // 내부 Next 라우트이므로 baseUrl('/_be')를 타지 말고 직접 호출
+    const res = await fetch("/api/ai/waste/analyze-batch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      // 쿠키가 필요하면 아래 주석 해제:
+      // credentials: "include",
+      body: JSON.stringify(payload),
+    });
+  
+    const data = await res.json().catch(() => ({}));
+  
+    if (!res.ok || !data?.ok) {
+      return { success: false, error: data?.error || `HTTP ${res.status}` } as ApiResponse<any>;
+    }
+    // data.result(= { per_menu, overall })를 그대로 넘겨주기
+    return { success: true, data: data.result } as ApiResponse<any>;
+  }
   // ───────────────────────── Images (presigned URL 방식 + 업로드)
   private async fetchPresignedUrl(fileType: 0 | 1 | 2 | 3, fileName: string): Promise<string | null> {
     if (!fileName) return null
@@ -383,5 +400,5 @@ class ApiClient {
 }
 
 // 싱글턴 인스턴스 export
-
 export const apiClient = new ApiClient()
+
