@@ -120,9 +120,54 @@ export default function ProfilePage() {
   const [removingId, setRemovingId] = useState<number | null>(null)
   const [reviewList, setReviewList] = useState<ReviewVM[]>([])
 
-  const [ownerRestaurants] = useState<OwnerRestaurant[]>([
-    { id: 1, name: "그린 비스트로", category: "양식", address: "서울시 강남구 테헤란로 123", telephone: "02-1234-5678", rating: 4.7, reviewCount: 24 },
-  ])
+  const [ownerRestaurants, setOwnerRestaurants] = useState<OwnerRestaurant[]>([])
+  useEffect(() => {
+    let ignore = false
+    ;(async () => {
+      try {
+        const res = await apiClient.getBusinessRestaurants()
+        if (!res.success) throw new Error(res.error || "목록 로드 실패")
+  
+        // FE 표준 응답: { success, data } 형태 → data가 배열이거나 { items }일 수 있음
+        const data = (res.data ?? []) as any
+        const list: any[] = Array.isArray(data?.items)
+          ? data.items
+          : Array.isArray(data)
+          ? data
+          : []
+  
+        const norm: OwnerRestaurant[] = list.map((r: any) => ({
+          id: Number(r.id),
+          name: String(r.name ?? ""),
+          category: r.category ?? null,
+          address: r.address ?? null,
+          telephone: r.telephone ?? null,
+          // 있으면 사용, 없으면 생략
+          rating: r.rating ?? undefined,
+          reviewCount: r.reviewCount ?? undefined,
+        }))
+  
+        if (!ignore) setOwnerRestaurants(norm)
+      } catch (e) {
+        console.error(e)
+        if (!ignore) setOwnerRestaurants([])
+      }
+    })()
+    return () => { ignore = true }
+  }, [])
+  const handleDelete = async (id: number) => {
+    if (!confirm("정말 삭제할까요?")) return
+    const res = await apiClient.deleteBusinessRestaurant(id)
+    if (!res.success) return alert(res.error || "삭제 실패")
+    setOwnerRestaurants((prev) => prev.filter((r) => r.id !== id))
+  }
+  
+  // 수정 예시
+  const handleQuickEdit = async (id: number, patch: { name?: string; category?: string; address?: string; telephone?: string }) => {
+    const res = await apiClient.updateBusinessRestaurant(id, patch) // ✅ 1번 수정 반영됨
+    if (!res.success) return alert(res.error || "수정 실패")
+    setOwnerRestaurants((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)))
+  }
   const ownerStats = useMemo(() => {
     const totalReceivedReviews = ownerRestaurants.reduce((s, r) => s + (r.reviewCount || 0), 0)
     const avgOwnerRating = ownerRestaurants.length > 0
@@ -397,19 +442,27 @@ export default function ProfilePage() {
 
   // ✅ 아바타 이미지 URL
   const [avatarSrc, setAvatarSrc] = useState<string>("/placeholder.svg")
-  useEffect(() => {
-    let ignore = false
-    ;(async () => {
-      const fileName = (me as any)?.profile
-      if (!fileName) {
-        setAvatarSrc("/placeholder.svg")
-        return
-      }
-      const url = await apiClient.getImageSignedUrl(0, fileName) // 0 = 프로필
-      if (!ignore && url) setAvatarSrc(url)
-    })()
-    return () => { ignore = true }
-  }, [me])
+
+useEffect(() => {
+  let ignore = false
+  ;(async () => {
+    // 1) profile / profileImage 둘 다 지원 + 절대 URL도 바로 사용
+    const raw = (me as any)?.profile ?? (me as any)?.profileImage
+    if (!raw) { setAvatarSrc("/placeholder.svg"); return }
+
+    // 절대 URL이면 그대로 사용
+    if (/^https?:\/\//i.test(raw)) {
+      if (!ignore) setAvatarSrc(raw)
+      return
+    }
+
+    // 2) 서명 URL 시도 → 실패 시 구버전 경로 fallback
+    const signed = await apiClient.getImageSignedUrl(0, raw).catch(() => "")
+    const fallback = apiClient.getImageUrlByType(0, raw) // "/_be/images/0/<fileName>"
+    if (!ignore) setAvatarSrc(signed || fallback)
+  })()
+  return () => { ignore = true }
+}, [me])
   const showFallbackWarning = badgesFallback || favoritesFallback || reviewsFallback || stampsFallback
 
   // ---------- 본문 렌더 ----------

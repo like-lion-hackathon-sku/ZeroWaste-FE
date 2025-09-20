@@ -203,11 +203,28 @@ class ApiClient {
   async createBusinessRestaurant(data: { name: string; category: string; address: string; telephone?: string; mapx: number; mapy: number }) {
     return this.request("/biz/restaurants", { method: "POST", body: JSON.stringify(data) })
   }
-  async updateBusinessRestaurant(restaurantId: number, data: { name?: string; category?: string; address?: string; telephone?: string }) {
-    return this.request("/biz/restaurants", { method: "PUT", body: JSON.stringify({ restaurantId, ...data }) })
+  async updateBusinessRestaurant(id: number, data: { name?: string; category?: string; address?: string; telephone?: string }) {
+    return this.request("/biz/restaurants", { method: "PUT", body: JSON.stringify({ id, ...data }) })
   }
   async deleteBusinessRestaurant(restaurantId: number) {
     return this.request("/biz/restaurants", { method: "DELETE", body: JSON.stringify({ restaurantId }) })
+  }
+  async uploadViaSignedUrl(type: 0|1|2|3, file: File) {
+    const safeName = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}_${file.name}`;
+    const signed = await apiClient.request<{ url: string }>(
+      `/images/${type}/${encodeURIComponent(safeName)}`
+    )
+    if (!signed.success || !signed.data?.url) {
+      return { success: false, error: "서명 URL 발급 실패" } as ApiResponse<any>;
+    }
+  
+    // ⛳️ 헤더를 넣지 말고 그대로 PUT (서명에 Content-Type이 없을 때)
+    const putRes = await fetch(signed.data.url, { method: "PUT", body: file })
+  
+    if (!putRes.ok) {
+      return { success: false, error: `스토리지 업로드 실패 (${putRes.status})` } as ApiResponse<any>;
+    }
+    return { success: true, data: { fileName: safeName } };
   }
   async getBusinessRestaurantDetail(restaurantId: number) { return this.request(`/biz/restaurants/${restaurantId}`) }
   async uploadBusinessRestaurantPhoto(restaurantId: number, file: File) {

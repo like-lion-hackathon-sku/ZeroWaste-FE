@@ -29,6 +29,51 @@ import {
 import { apiClient } from "@/lib/api/client";
 import AnalyzingModal from "@/components/ai/AnalyzingModal";
 
+/* ─────────────────────────────
+   (프론트 전용) 로컬 분석 함수
+   - preview(blob URL)로 이미지를 캔버스에 그리고
+     아주 단순한 밝기 평균을 0~5 점수로 환산
+───────────────────────────── */
+async function analyzeLocally(
+  src: string
+): Promise<{ success: boolean; data?: { score: number; summary: string }; error?: string }> {
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const i = new Image();
+      i.crossOrigin = "anonymous";
+      i.onload = () => resolve(i);
+      i.onerror = () => reject(new Error("이미지 로드 실패"));
+      i.src = src;
+    });
+
+    const w = 256, h = 256;
+    const canvas = document.createElement("canvas");
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext("2d")!;
+    ctx.drawImage(img, 0, 0, w, h);
+
+    const { data } = ctx.getImageData(0, 0, w, h);
+    let sum = 0;
+    for (let p = 0; p < data.length; p += 4) {
+      const r = data[p], g = data[p+1], b = data[p+2];
+      // 가벼운 밝기 가중치
+      sum += 0.2126*r + 0.7152*g + 0.0722*b;
+    }
+    const avg = sum / (w*h);                // 0~255
+    const score5 = Math.max(0, Math.min(5, (avg / 255) * 5)); // 0~5
+    const score = Math.round(score5 * 10) / 10;
+
+    const summary =
+      score >= 4 ? "잔반이 거의 없어 보입니다." :
+      score >= 2.5 ? "보통 수준입니다." :
+      "잔반이 적지 않아 보입니다.";
+
+    return { success: true, data: { score, summary } };
+  } catch (e:any) {
+    return { success: false, error: e?.message || "로컬 분석 실패" };
+  }
+}
+
 /* ---------------- Types ---------------- */
 type RestaurantInfo = { id: number; name: string; category?: string | null };
 
@@ -43,15 +88,11 @@ type MenuItem = {
 type UploadedImage = {
   id: string;
   fileName: string;
-  url: string;     // 절대 URL
-  preview: string; // 절대 URL
-
-  shotType: ShotType;
-  ai?: {
-    score: number; // 0~5
-    summary: string;
-    analyzed_at?: string;
-  };
+  url: string;
+  preview: string;
+  shotType: "before" | "after";
+  file?: File;          // ← 추가
+  ai?: { score: number; summary: string; analyzed_at?: string };
 };
 
 /* ─────────────────────────────
@@ -127,9 +168,7 @@ export default function ReviewWritePage() {
         if (!ignore) setLoadingRestaurant(false);
       }
     })();
-    return () => {
-      ignore = true;
-    };
+    return () => { ignore = true; };
   }, [restaurantId]);
 
   /* -------- 메뉴 목록 -------- */
@@ -154,9 +193,7 @@ export default function ReviewWritePage() {
         if (!ignore) setMenusLoading(false);
       }
     })();
-    return () => {
-      ignore = true;
-    };
+    return () => { ignore = true; };
   }, [restaurantId]);
 
   /* -------- 메뉴 검색(보조) -------- */
@@ -167,42 +204,27 @@ export default function ReviewWritePage() {
   }, [menus, menuQuery]);
 
   /* -------- 업로드 (AFTER 고정) -------- */
-  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files) return;
-
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files
+    if (!files) return
+  
+    const next: UploadedImage[] = []
     for (const file of Array.from(files)) {
-      try {
-        if (!file.type.startsWith("image/")) continue;
-
-        const up = await apiClient.uploadImage("review", file);
-        if (!up.success) throw new Error(up.error || "이미지 업로드 실패");
-
-        const { fileName } = up.data!;
-        // 절대 URL로 저장 (분석 호출 안정성)
-        const rel = apiClient.getImageUrl("review", fileName);
-        const previewUrl = apiClient.toAbsoluteUrl(rel);
-
-        setUploadedImages((prev) => [
-          ...prev,
-          {
-            id: Date.now().toString() + Math.random().toString(36).slice(2, 10),
-            fileName,
-            url: previewUrl,     // 절대 URL
-            preview: previewUrl, // 절대 URL
-            shotType: "after",
-          },
-        ]);
-      } catch (err: any) {
-        console.error(err);
-        alert(err?.message || "이미지 업로드 중 오류가 발생했어요.");
-      }
+      const previewUrl = URL.createObjectURL(file)
+      const fakeName = `${Date.now()}_${Math.random().toString(36).slice(2,8)}_${file.name}`
+  
+      next.push({
+        id: crypto.randomUUID(),
+        fileName: fakeName,
+        preview: previewUrl,
+        url: "",
+        shotType: "after",
+        file,                               // ← 저장
+      })
     }
-
-    try {
-      e.target.value = "";
-    } catch {}
-  };
+    setUploadedImages(prev => [...prev, ...next])
+    e.target.value = ""
+  }
 
   /* -------- 평균 재계산: AFTER만 -------- */
   const recalcAverage = (imgs: UploadedImage[]) => {
@@ -225,50 +247,45 @@ export default function ReviewWritePage() {
     });
   };
 
-
-  /* -------- AI 분석 (이미지 URL → 우리 BE → Gradio) -------- */
+  /* -------- AI 분석 (프론트만) -------- */
   const analyzeImage = async (imageId: string) => {
-    const target = uploadedImages.find((img) => img.id === imageId);
-    if (!target) return alert("이미지를 찾을 수 없어요.");
-    if (!selectedMenuId) return alert("먼저 메뉴를 선택해주세요.");
-    if (selectedMenuId === OTHER_MENU_ID && !customMenuName.trim()) {
-      alert("‘기타(직접 입력)’을 선택하셨다면 메뉴명을 입력해주세요.");
-      return;
-    }
-
+    const target = uploadedImages.find(i => i.id === imageId)
+    if (!target) return
+    if (!target.file) return alert("원본 파일이 없습니다. 다시 업로드 해주세요.")
+  
     try {
-      setShowAILoadingModal(true);
-      setIsAnalyzing(true);
-
-
-      // 클라이언트 헬퍼 (내부에서 절대 URL 보정 + 에러 정규화)
-      const resp = await apiClient.analyzeWasteByPublicUrl(target.url);
-      if (!resp.success) throw new Error(resp.error || "AI 분석 실패");
-
-      const payload: any = resp.data ?? {};
-      const scoreNum = Number(payload?.score5 ?? payload?.score ?? 0);
-      const summaryStr = String(payload?.summary ?? "");
-      const safeScore = Math.max(0, Math.min(5, Number.isFinite(scoreNum) ? Math.round(scoreNum * 10) / 10 : 0));
-
-      setUploadedImages((prev) => {
-        const next = prev.map((img) =>
+      setShowAILoadingModal(true)
+      setIsAnalyzing(true)
+  
+      const fd = new FormData()
+      fd.append("image", target.file)                         // ← 파일 전송
+      if (selectedMenuId === OTHER_MENU_ID && customMenuName.trim()) {
+        fd.append("menuName", customMenuName.trim())
+      }
+  
+      const res = await fetch("/api/ai/waste/analyze", { method: "POST", body: fd })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || !data?.ok) throw new Error(data?.error || `AI 분석 실패(${res.status})`)
+  
+      const score = Number(data.score ?? 0)
+      const summary = String(data.summary ?? "")
+  
+      // state 반영 + 평균 재계산
+      setUploadedImages(prev => {
+        const next = prev.map(img =>
           img.id === imageId
-            ? { ...img, ai: { score: safeScore, summary: summaryStr, analyzed_at: new Date().toISOString() } }
+            ? { ...img, ai: { score, summary, analyzed_at: new Date().toISOString() } }
             : img
-        );
-        recalcAverage(next); // 평균 갱신
-        return next;
-      });
+        )
+        recalcAverage(next)
+        return next
+      })
     } catch (e: any) {
-      console.error(e);
-      alert(e?.message || "AI 분석에 실패했어요. 다시 시도해주세요.");
+      alert(e?.message || "AI 분석 실패")
     } finally {
-      setTimeout(() => {
-        setShowAILoadingModal(false);
-        setIsAnalyzing(false);
-      }, 1200);
+      setTimeout(() => { setShowAILoadingModal(false); setIsAnalyzing(false) }, 1200)
     }
-  };
+  }
 
   /* -------- 평균 4.0 이상 감지 → 배너/스탬프 카드 노출 -------- */
   useEffect(() => {
@@ -308,6 +325,7 @@ export default function ReviewWritePage() {
         })),
       };
 
+      // 백엔드로 리뷰 생성(분석은 프론트에서 이미 완료)
       const resp = await apiClient.createReviewForRestaurant(restaurantId, payload);
 
       if (!resp.success) {
@@ -319,9 +337,7 @@ export default function ReviewWritePage() {
         }
         if (err.includes("409") || err.includes("이미 작성한 리뷰가 존재")) {
           setConflict409("이미 작성한 리뷰가 존재합니다. 기존 리뷰를 수정하거나 삭제 후 다시 시도해주세요.");
-          try {
-            window.scrollTo({ top: 0, behavior: "smooth" });
-          } catch {}
+          try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch {}
           return;
         }
         throw new Error(err || "리뷰 생성에 실패했어요.");

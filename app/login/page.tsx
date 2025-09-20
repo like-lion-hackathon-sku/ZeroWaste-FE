@@ -52,7 +52,7 @@ export default function LoginPage() {
     id: Number(u?.id ?? 0),
     email: String(u?.email ?? ""),
     nickname: u?.nickname ?? null,
-    profile: u?.profile ?? null,
+    profile: u?.profile ?? u?.profileImage ?? null,
     is_completed: Boolean(u?.is_completed ?? u?.isCompleted ?? false),
     role: u?.role === "BIZ" ? "BIZ" : "USER",
   })

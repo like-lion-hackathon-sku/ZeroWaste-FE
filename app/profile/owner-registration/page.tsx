@@ -125,22 +125,22 @@ export default function OwnerRegistrationPage() {
     setLoading(true)
 
     try {
+      const mapx = Math.round(127.0276)   // TODO: 실제 주소→좌표 변환 붙이면 교체
+const mapy = Math.round(37.4979)
       // TODO: 이미지/메뉴 업로드는 BE 스펙에 맞춰 FormData로 확장 가능
       const res = await apiClient.createBusinessRestaurant({
         name: restaurantName,
-        category: "KOREAN", // 기본값, 추후 선택 가능
+        category: "KOREAN",
         address: restaurantInfo.address,
         telephone: restaurantInfo.phone,
-        mapx: 127.0276, // TODO: 주소→좌표 변환
-        mapy: 37.4979,
+        mapx,
+        mapy,
       })
 
-      if (!res.success) {
-        throw new Error(res.error || "식당 등록에 실패했습니다.")
-      }
-
-      alert("사장님 등록이 완료되었습니다!")
-      router.push("/profile")
+      if (!res.success) throw new Error(res.error || "식당 등록에 실패했습니다.")
+        const rid = (res.data as any)?.restaurantId
+        alert("사장님 등록이 완료되었습니다!")
+        router.push(rid ? `/restaurant/${rid}?isOwnerMode=true` : "/profile")
     } catch (error: any) {
       alert(error?.message || "등록 중 오류가 발생했습니다. 다시 시도해주세요.")
       console.error("Owner registration error:", error)
