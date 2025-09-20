@@ -26,19 +26,7 @@ export class FallbackService {
     return FallbackService.instance
   }
 
-  private showWarning() {
-    if (!this.warningShown && typeof window !== "undefined") {
-      this.warningShown = true
-      console.warn("[v0] Using fallback data - 연결되면 실제 데이터가 표시됩니다")
-
-      // Show user-friendly notification
-      setTimeout(() => {
-        if (window.confirm("API 연결에 실패했습니다. 연결되면 실제 데이터가 표시됩니다.")) {
-          // User acknowledged the warning
-        }
-      }, 1000)
-    }
-  }
+  
 
   async getRestaurants(params?: { category?: string; search?: string }): Promise<ApiResponse<RestaurantWithDetails[]>> {
     this.showWarning()
