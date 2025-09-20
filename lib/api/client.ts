@@ -383,5 +383,5 @@ class ApiClient {
 }
 
 // 싱글턴 인스턴스 export
-export const apiClient = new ApiClient()
 
+export const apiClient = new ApiClient()

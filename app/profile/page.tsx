@@ -15,10 +15,13 @@ import {
 } from "lucide-react"
 import { useRouter } from "next/navigation"
 
-// ✅ 프로필 기본 정보는 Zustand에서 읽음
+// ✅ Zustand
 import { useUserStore } from "@/lib/state/user"
 
+// ✅ 데이터 훅(즐겨찾기/리뷰/뱃지)
 import { useUserBadges, useFavorites, useUserReviews } from "@/lib/hooks/use-api-with-fallback"
+
+// ✅ API 클라이언트
 import { apiClient } from "@/lib/api/client"
 import { formatDate } from "@/lib/utils/database-helpers"
 import { UserRole } from "@/lib/types/database"
@@ -31,18 +34,29 @@ import { Input } from "@/components/ui/input"
 // ✅ QR
 import { QRCodeCanvas } from "qrcode.react"
 
-// ---------- 유틸 ----------
+/* ─────────────────────────────────────────────────────────
+   공통 타입/유틸
+────────────────────────────────────────────────────────── */
 type TabKey = "리뷰" | "즐겨찾기" | "스탬프" | "뱃지" | "restaurant" | "reviews" | "owner-badges"
 const toArray = <T,>(v: any): T[] => (Array.isArray(v) ? v : (v?.items ?? v?.success?.items ?? []))
 
-// ---------- 타입 ----------
 type RestaurantLite = { id: number; name: string; category?: string | null; address?: string | null; telephone?: string | null }
 type FavoriteItem = { id?: number; restaurant_id: number | null; restaurant?: RestaurantLite; name?: string; category?: string | null; restaurantId?: number; address?: string | null; telephone?: string | null }
 type ReviewVM = { id: number | string; restaurant?: { id: number; name: string; category?: string | null }; waste_rating: number; comment: string; created_at?: string | null }
 type OwnerRestaurant = { id: number; name: string; category?: string | null; address?: string | null; telephone?: string | null; rating?: number; reviewCount?: number }
 type RestaurantStamp = { restaurantId: number; restaurantName: string; totalStamps: number; maxStamps: number }
+type StampHistoryItem = {
+  id: number | string
+  restaurantId: number
+  restaurantName: string
+  type: "earn" | "use"
+  count: number
+  created_at?: string | null
+}
 
-// ---------- 스탬프 훅 ----------
+/* ─────────────────────────────────────────────────────────
+   스탬프 훅들 (API/ERD 포맷 모두 지원 + 폴백 포함)
+────────────────────────────────────────────────────────── */
 const useUserStampsData = () => {
   const [stamps, setStamps] = useState<RestaurantStamp[]>([])
   const [loading, setLoading] = useState(true)
@@ -61,19 +75,43 @@ const useUserStampsData = () => {
       setError(null)
       try {
         const res = await apiClient.getUserStamps()
-        if (!ignore && res?.success) {
-          const raw = Array.isArray(res.data) ? res.data : (res.data as any)?.items ?? []
-          const normalized: RestaurantStamp[] = raw.map((s: any) => ({
+        if (!res?.success) throw new Error(res?.error || "failed")
+
+        const raw = Array.isArray(res.data) ? res.data : (res.data as any)?.items ?? []
+        let out: RestaurantStamp[] = []
+
+        if (raw.length > 0 && raw.some((r: any) => "restaurant_id" in r || "used_at" in r)) {
+          // ✅ ERD rows (used_at == null 만 보유)
+          const map = new Map<number, { name?: string; count: number }>()
+          for (const r of raw) {
+            const rid = Number(r?.restaurant_id ?? r?.restaurantId ?? r?.restaurant?.id)
+            if (!Number.isFinite(rid)) continue
+            const used = r?.used_at ?? r?.usedAt
+            if (used) continue
+            const cur = map.get(rid) ?? { name: r?.restaurant?.name, count: 0 }
+            cur.count += 1
+            cur.name = cur.name || r?.restaurant?.name
+            map.set(rid, cur)
+          }
+          out = Array.from(map.entries()).map(([rid, v]) => ({
+            restaurantId: rid,
+            restaurantName: v.name ?? `식당 ${rid}`,
+            totalStamps: v.count,
+            maxStamps: 5,
+          }))
+        } else {
+          // ✅ 기존 응답: 레스토랑별 묶음
+          out = raw.map((s: any) => ({
             restaurantId: s?.restaurant?.id ?? s?.id,
             restaurantName: s?.restaurant?.name ?? `식당 ${s?.restaurant?.id ?? s?.id}`,
             totalStamps: s?.stamps?.length ?? 0,
             maxStamps: 5,
           }))
-          setStamps(normalized)
+        }
+
+        if (!ignore) {
+          setStamps(out)
           setIsUsingFallback(false)
-        } else {
-          setStamps(MOCK)
-          setIsUsingFallback(true)
         }
       } catch (e) {
         if (!ignore) {
@@ -91,34 +129,112 @@ const useUserStampsData = () => {
   return { stamps, loading, error, isUsingFallback }
 }
 
-// ---------- 페이지 ----------
+const useUserStampHistory = () => {
+  const [items, setItems] = useState<StampHistoryItem[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [isUsingFallback, setIsUsingFallback] = useState(false)
+
+  const MOCK: StampHistoryItem[] = [
+    { id: "m1", restaurantId: 101, restaurantName: "그린 비스트로", type: "earn", count: 1, created_at: new Date(Date.now()-864e5).toISOString() },
+    { id: "m2", restaurantId: 101, restaurantName: "그린 비스트로", type: "use",  count: 3, created_at: new Date(Date.now()-36e5).toISOString() },
+  ]
+
+  useEffect(() => {
+    let ignore = false
+    ;(async () => {
+      setLoading(true); setError(null)
+      try {
+        const res = await apiClient.getUserStampHistory()
+        if (!res?.success) throw new Error(res?.error || "failed")
+
+        const raw = Array.isArray(res.data) ? res.data : (res.data as any)?.items ?? []
+        const norm: StampHistoryItem[] = raw.map((r: any) => {
+          const rid = Number(r?.restaurant_id ?? r?.restaurantId ?? r?.restaurant?.id)
+          const rname = r?.restaurant?.name ?? r?.restaurantName ?? (Number.isFinite(rid) ? `식당 ${rid}` : "식당")
+          const isUse =
+            String(r?.type || "").toLowerCase() === "use" ||
+            r?.action === "USE" ||
+            r?.used === true ||
+            "stamp_reward_id" in (r || {}) ||
+            "code" in (r || {})
+
+          return {
+            id: r?.id ?? crypto.getRandomValues(new Uint32Array(2)).join("-"),
+            restaurantId: rid || 0,
+            restaurantName: rname,
+            type: isUse ? "use" : "earn",
+            count: Number(r?.count ?? r?.stamps ?? r?.units ?? 1),
+            created_at: r?.createdAt ?? r?.created_at ?? null,
+          }
+        }).sort((a,b) => (new Date(b.created_at||0).getTime() - new Date(a.created_at||0).getTime()))
+
+        if (!ignore) { setItems(norm); setIsUsingFallback(false) }
+      } catch (e) {
+        if (!ignore) {
+          setItems(MOCK)
+          setIsUsingFallback(true)
+          setError(e instanceof Error ? e.message : "failed to load history")
+        }
+      } finally {
+        if (!ignore) setLoading(false)
+      }
+    })()
+    return () => { ignore = true }
+  }, [])
+
+  return { items, loading, error, isUsingFallback }
+}
+
+/* ─────────────────────────────────────────────────────────
+   얇은 래퍼: 로그인 여부만 보고 분기 (훅 거의 없음)
+────────────────────────────────────────────────────────── */
 export default function ProfilePage() {
+  const me = useUserStore((s) => s.user)
+  return me ? <LoggedInProfileView /> : <LoginGate />
+}
+
+function LoginGate() {
+  const router = useRouter()
+  return (
+    <div className="min-h-screen flex items-center justify-center">
+      <div className="text-center">
+        <p className="mb-4 text-gray-600">로그인이 필요해요.</p>
+        <Button onClick={() => router.push("/login")} className="bg-green-600 hover:bg-green-700">
+          로그인하기
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+/* ─────────────────────────────────────────────────────────
+   본 뷰: 모든 훅은 여기에서만 실행 → 훅 순서 고정
+────────────────────────────────────────────────────────── */
+function LoggedInProfileView() {
   const router = useRouter()
   const [activeTab, setActiveTab] = useState<TabKey>("스탬프")
   const [userRole, setUserRole] = useState<UserRole>(UserRole.USER)
 
-  // ✅ 스토어에서 현재 사용자 (로그인 여부 판별)
-  const me = useUserStore((s) => s.user)
+  // ✅ 스토어 사용자
+  const me = useUserStore((s) => s.user) as { nickname?: string; email?: string; created_at?: string | null; profile?: string | null }
 
-  // 목록 데이터는 기존 훅 사용
-  const { data: badges, loading: badgesLoading, isUsingFallback: badgesFallback } = useUserBadges()
+  // ✅ 데이터 훅들 (항상 호출)
+  const { data: badges } = useUserBadges()
   const { data: favorites, loading: favoritesLoading, isUsingFallback: favoritesFallback } = useFavorites()
   const { data: reviews, loading: reviewsLoading, isUsingFallback: reviewsFallback } = useUserReviews()
+
   const { stamps: restaurantStamps, loading: stampsLoading, isUsingFallback: stampsFallback } = useUserStampsData()
+  const { items: stampHistory, loading: historyLoading, isUsingFallback: historyFallback } = useUserStampHistory()
 
-  // 전체 로딩 상태
-  const isLoading = badgesLoading || favoritesLoading || reviewsLoading || stampsLoading
+  const isLoading = favoritesLoading || reviewsLoading || stampsLoading || historyLoading
 
-  const earnedBadgesCount = useMemo(
-    () => toArray<any>(badges).filter((b) => !!(b?.badge ?? b?.name)).length,
-    [badges],
-  )
-
-  // 즐겨찾기/리뷰 렌더 준비
+  // 즐겨찾기/리뷰/사장 식당 상태
   type ValidFavorite = FavoriteItem & { restaurant_id: number; restaurant: RestaurantLite }
   const [favList, setFavList] = useState<ValidFavorite[]>([])
   const [removingId, setRemovingId] = useState<number | null>(null)
   const [reviewList, setReviewList] = useState<ReviewVM[]>([])
+  const [deletingId, setDeletingId] = useState<number | string | null>(null)
 
   const [ownerRestaurants, setOwnerRestaurants] = useState<OwnerRestaurant[]>([])
   useEffect(() => {
@@ -128,7 +244,6 @@ export default function ProfilePage() {
         const res = await apiClient.getBusinessRestaurants()
         if (!res.success) throw new Error(res.error || "목록 로드 실패")
   
-        // FE 표준 응답: { success, data } 형태 → data가 배열이거나 { items }일 수 있음
         const data = (res.data ?? []) as any
         const list: any[] = Array.isArray(data?.items)
           ? data.items
@@ -136,16 +251,9 @@ export default function ProfilePage() {
           ? data
           : []
   
-        const norm: OwnerRestaurant[] = list.map((r: any) => ({
-          id: Number(r.id),
-          name: String(r.name ?? ""),
-          category: r.category ?? null,
-          address: r.address ?? null,
-          telephone: r.telephone ?? null,
-          // 있으면 사용, 없으면 생략
-          rating: r.rating ?? undefined,
-          reviewCount: r.reviewCount ?? undefined,
-        }))
+        const norm: OwnerRestaurant[] = list.map((r: any) => ([
+          "id","name","category","address","telephone","rating","reviewCount"
+        ] as const).reduce((acc,k)=>({...acc,[k]: r?.[k]}), {} as OwnerRestaurant)) as any
   
         if (!ignore) setOwnerRestaurants(norm)
       } catch (e) {
@@ -155,6 +263,7 @@ export default function ProfilePage() {
     })()
     return () => { ignore = true }
   }, [])
+
   const handleDelete = async (id: number) => {
     if (!confirm("정말 삭제할까요?")) return
     const res = await apiClient.deleteBusinessRestaurant(id)
@@ -162,12 +271,12 @@ export default function ProfilePage() {
     setOwnerRestaurants((prev) => prev.filter((r) => r.id !== id))
   }
   
-  // 수정 예시
   const handleQuickEdit = async (id: number, patch: { name?: string; category?: string; address?: string; telephone?: string }) => {
-    const res = await apiClient.updateBusinessRestaurant(id, patch) // ✅ 1번 수정 반영됨
+    const res = await apiClient.updateBusinessRestaurant(id, patch)
     if (!res.success) return alert(res.error || "수정 실패")
     setOwnerRestaurants((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)))
   }
+
   const ownerStats = useMemo(() => {
     const totalReceivedReviews = ownerRestaurants.reduce((s, r) => s + (r.reviewCount || 0), 0)
     const avgOwnerRating = ownerRestaurants.length > 0
@@ -243,12 +352,64 @@ export default function ProfilePage() {
     })()
   }, [reviews])
 
+  const handleDeleteReview = async (id: number | string) => {
+    if (!confirm("이 리뷰를 삭제할까요?")) return
+    setDeletingId(id)
+    const prev = reviewList
+    setReviewList((list) => list.filter((r) => r.id !== id))
+    try {
+      const res = await apiClient.deleteReview(Number(id))
+      if (!res.success) throw new Error(res.error || "삭제 실패")
+    } catch (e) {
+      setReviewList(prev)
+      alert("리뷰 삭제에 실패했습니다.")
+      console.error(e)
+    } finally {
+      setDeletingId(null)
+    }
+  }
+
   const avgRating = useMemo(() => {
     const total = reviewList.length
     if (total === 0) return 0
     const sum = reviewList.reduce((acc, r) => acc + (Number(r.waste_rating) || 0), 0)
     return Math.max(0, Math.min(5, Math.round((sum / total) * 10) / 10))
   }, [reviewList])
+
+  /* ───────────── Badge 계산(리뷰 기반) ─────────────
+     - totalReviews: 누적 리뷰 수
+     - uniqueRestaurants: 서로 다른 식당 수
+     - badgeRules: 진행 규칙(필요 시 언제든 추가/변경)
+  */
+  const badgeStats = useMemo(() => {
+    const totalReviews = reviewList.length
+    const uniqueRestaurants = new Set(
+      reviewList.map((r) => r.restaurant?.id).filter(Boolean)
+    ).size
+    return { totalReviews, uniqueRestaurants }
+  }, [reviewList])
+
+  const badgeRules = useMemo(() => ([
+    // 누적 리뷰 수
+    { id: "good_customer_lv1", name: "착한 손님 Lv.1", icon: "🥢", description: "누적 리뷰 10개",  progress: badgeStats.totalReviews,     target: 10 },
+    { id: "good_customer_lv2", name: "착한 손님 Lv.2", icon: "🍴", description: "누적 리뷰 30개",  progress: badgeStats.totalReviews,     target: 30 },
+    { id: "good_customer_lv3", name: "착한 손님 Lv.3", icon: "🍃", description: "누적 리뷰 50개",  progress: badgeStats.totalReviews,     target: 50 },
+    // 다양한 식당 수
+    { id: "food_explorer_lv1", name: "다양한 미식가 Lv.1", icon: "🌮", description: "서로 다른 식당 5곳 리뷰",  progress: badgeStats.uniqueRestaurants, target: 5 },
+    { id: "food_explorer_lv2", name: "다양한 미식가 Lv.2", icon: "🍜", description: "서로 다른 식당 10곳 리뷰", progress: badgeStats.uniqueRestaurants, target: 10 },
+    { id: "food_explorer_lv3", name: "다양한 미식가 Lv.3", icon: "🍣", description: "서로 다른 식당 20곳 리뷰", progress: badgeStats.uniqueRestaurants, target: 20 },
+  ]), [badgeStats])
+
+  const earnedBadges = useMemo(
+    () => badgeRules.filter(b => b.progress >= b.target),
+    [badgeRules]
+  )
+  const inProgressBadges = useMemo(
+    () => badgeRules.filter(b => b.progress < b.target),
+    [badgeRules]
+  )
+  // 상단 카드에 표시할 획득 뱃지 카운트는 FE 계산치 사용
+  const earnedBadgesCount = earnedBadges.length
 
   const handleRoleSwitch = () => {
     if (userRole === UserRole.USER) {
@@ -260,7 +421,7 @@ export default function ProfilePage() {
 
   // ───────────── 스탬프: ‘개수’ 단위 사용 + 페이징 ─────────────
   const [pageByRestaurant, setPageByRestaurant] = useState<Record<number, number>>({})
-  const [usedUnitsByRestaurant, setUsedUnitsByRestaurant] = useState<Record<number, number>>({}) // ✅ 핵심: 사용 개수
+  const [usedUnitsByRestaurant, setUsedUnitsByRestaurant] = useState<Record<number, number>>({})
 
   const getAvailable = (s: RestaurantStamp) =>
     Math.max(0, s.totalStamps - (usedUnitsByRestaurant[s.restaurantId] ?? 0))
@@ -284,7 +445,7 @@ export default function ProfilePage() {
         generating: boolean
         token?: string
         payload?: string
-        expiresAt?: number   // epoch ms
+        expiresAt?: number
         remainSec?: number
       }
 
@@ -292,7 +453,7 @@ export default function ProfilePage() {
 
   const openUseDialog = (s: RestaurantStamp) => {
     const avail = getAvailable(s)
-    const maxUsable = Math.min(10, avail) // 최대 10
+    const maxUsable = Math.min(10, avail)
     if (avail < 3) {
       alert("스탬프가 3개 이상일 때만 사용할 수 있어요.")
       return
@@ -302,7 +463,7 @@ export default function ProfilePage() {
       step: "choose",
       restaurant: s,
       maxUsable,
-      count: Math.min(3, maxUsable), // 최소 기본 3
+      count: Math.min(3, maxUsable),
       generating: false,
     })
   }
@@ -310,13 +471,13 @@ export default function ProfilePage() {
   async function generateUseQR(restaurant: RestaurantStamp, count: number) {
     try {
       setStampDialog((s) => ({ ...(s as any), generating: true }))
-      const be = await apiClient.createStampUseIntent?.({
+      const be = await (apiClient as any).createStampUseIntent?.({
         restaurantId: restaurant.restaurantId,
         count,
       })
       let token = ""
       let payload = ""
-      let expiresAt = Date.now() + 2 * 60 * 1000 // 120s 기본
+      let expiresAt = Date.now() + 2 * 60 * 1000
 
       if (be?.success) {
         token = be.data?.token ?? ""
@@ -326,11 +487,9 @@ export default function ProfilePage() {
         // 폴백: 로컬 페이로드
         const nonce = crypto.getRandomValues(new Uint32Array(4)).join("-")
         token = `local-${nonce}`
-
         const userId = (me as any)?.id ?? (me as any)?.userId ?? "me"
         const now = Date.now()
         expiresAt = now + 2 * 60 * 1000
-
         const localPayload = {
           ver: 1,
           type: "stamp.use",
@@ -423,51 +582,34 @@ export default function ProfilePage() {
     } finally { setRemovingId(null) }
   }
 
-  // ---------- 로그인 게이트 ----------
-  if (!me) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="text-center">
-          <p className="mb-4 text-gray-600">로그인이 필요해요.</p>
-          <Button onClick={() => router.push("/login")} className="bg-green-600 hover:bg-green-700">
-            로그인하기
-          </Button>
-        </div>
-      </div>
-    )
-  }
-
-  // ✅ 프로필 표시용 데이터 (Zustand)
-  const p = me as { nickname?: string; email?: string; created_at?: string | null; profile?: string | null }
-
   // ✅ 아바타 이미지 URL
   const [avatarSrc, setAvatarSrc] = useState<string>("/placeholder.svg")
+  useEffect(() => {
+    let ignore = false
+    ;(async () => {
+      const raw = (me as any)?.profile ?? (me as any)?.profileImage
+      if (!raw) { setAvatarSrc("/placeholder.svg"); return }
+      if (/^https?:\/\//i.test(raw)) {
+        if (!ignore) setAvatarSrc(raw)
+        return
+      }
+      const signed = await apiClient.getImageSignedUrl(0, raw).catch(() => "")
+      const fallback = apiClient.getImageUrlByType(0, raw)
+      if (!ignore) setAvatarSrc(signed || fallback)
+    })()
+    return () => { ignore = true }
+  }, [me])
 
-useEffect(() => {
-  let ignore = false
-  ;(async () => {
-    // 1) profile / profileImage 둘 다 지원 + 절대 URL도 바로 사용
-    const raw = (me as any)?.profile ?? (me as any)?.profileImage
-    if (!raw) { setAvatarSrc("/placeholder.svg"); return }
+  const showFallbackWarning =
+    favoritesFallback || reviewsFallback || stampsFallback || historyFallback
 
-    // 절대 URL이면 그대로 사용
-    if (/^https?:\/\//i.test(raw)) {
-      if (!ignore) setAvatarSrc(raw)
-      return
-    }
+  const [historyOpen, setHistoryOpen] = useState(false)
 
-    // 2) 서명 URL 시도 → 실패 시 구버전 경로 fallback
-    const signed = await apiClient.getImageSignedUrl(0, raw).catch(() => "")
-    const fallback = apiClient.getImageUrlByType(0, raw) // "/_be/images/0/<fileName>"
-    if (!ignore) setAvatarSrc(signed || fallback)
-  })()
-  return () => { ignore = true }
-}, [me])
-  const showFallbackWarning = badgesFallback || favoritesFallback || reviewsFallback || stampsFallback
-
-  // ---------- 본문 렌더 ----------
+  /* ─────────────────────────────────────────────────────────
+     렌더
+  ────────────────────────────────────────────────────────── */
   return (
-    <div className="min-h-screen bg-gray-50 pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]">
+    <div className="min-h-screen bg-gray-50 pt/[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]">
       {showFallbackWarning && (
         <div className="bg-yellow-50 border-l-4 border-yellow-400 px-4 py-3 text-sm">
           연결되면 실제 데이터가 표시됩니다. 현재는 목업 데이터를 사용 중입니다.
@@ -503,7 +645,7 @@ useEffect(() => {
               <div className="flex items-center gap-4 mb-6">
                 <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ delay: 0.3, type: "spring", stiffness: 200 }}>
                   <Avatar className="h-16 w-16 sm:h-20 sm:w-20 ring-4 ring-green-500/20">
-                    <AvatarImage src={avatarSrc} alt={p.nickname || "user"} />
+                    <AvatarImage src={avatarSrc} alt={me?.nickname || "user"} />
                     <AvatarFallback className="bg-gradient-to-br from-green-500 to-emerald-600 text-white">
                       <User className="h-7 w-7" />
                     </AvatarFallback>
@@ -515,14 +657,14 @@ useEffect(() => {
                     initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.4 }}
                     className="text-[clamp(18px,5vw,22px)] font-bold bg-gradient-to-r from-gray-900 to-gray-700 dark:from-white dark:to-gray-300 bg-clip-text text-transparent mb-1 truncate"
                   >
-                    {p.nickname}
+                    {me?.nickname}
                   </motion.h2>
                   <motion.p initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.5 }} className="text-gray-600 dark:text-gray-300 mb-1 truncate">
-                    {p.email}
+                    {me?.email}
                   </motion.p>
-                  {p.created_at && (
+                  {me?.created_at && (
                     <motion.p initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.6 }} className="text-xs text-gray-500 dark:text-gray-400">
-                      가입일: {formatDate(p.created_at ?? "")}
+                      가입일: {formatDate(me.created_at ?? "")}
                     </motion.p>
                   )}
                 </div>
@@ -678,8 +820,16 @@ useEffect(() => {
                                 <p className="text-gray-700 dark:text-gray-300 mb-3 break-words whitespace-pre-wrap leading-relaxed">{review.comment || "댓글 없음"}</p>
 
                                 <div className="flex justify-end">
-                                  <Button variant="outline" size="sm" onClick={() => router.push(`/review/edit/${review.id}`)} className="bg-white/50 hover:bg白/80 border-white/30">
-                                    수정
+                                  <Button
+                                    variant="destructive"
+                                    size="sm"
+                                    onClick={() => handleDeleteReview(review.id)}
+                                    disabled={deletingId === review.id}
+                                    className="gap-2"
+                                    title="리뷰 삭제"
+                                  >
+                                    {deletingId === review.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                                    삭제
                                   </Button>
                                 </div>
                               </motion.div>
@@ -779,10 +929,20 @@ useEffect(() => {
                 <TabsContent value="스탬프" className="mt-6">
                   <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-xl">
                     <CardHeader className="p-4 sm:p-6">
-                      <CardTitle className="flex items-center gap-2 text-[clamp(16px,4vw,18px)]">
-                        <Stamp className="h-5 w-5 text-purple-500" />
-                        내 스탬프 ({restaurantStamps.length})
-                      </CardTitle>
+                      <div className="flex items-center justify-between gap-3">
+                        <CardTitle className="flex items-center gap-2 text-[clamp(16px,4vw,18px)]">
+                          <Stamp className="h-5 w-5 text-purple-500" />
+                          내 스탬프 ({restaurantStamps.length})
+                        </CardTitle>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setHistoryOpen(true)}
+                          className="border-purple-400 text-purple-600 hover:bg-purple-50 dark:hover:bg-purple-900/20"
+                        >
+                          사용/적립 내역 보기
+                        </Button>
+                      </div>
                     </CardHeader>
 
                     <CardContent className="p-4 sm:p-6">
@@ -801,7 +961,7 @@ useEffect(() => {
                               const startIdx = (curPage - 1) * stamp.maxStamps
                               const filledOnThisPage = Math.max(0, Math.min(stamp.maxStamps, avail - startIdx))
                               const extraBeyondFirst = Math.max(0, avail - stamp.maxStamps)
-                              const booksUsed = Math.floor((usedUnitsByRestaurant[rid] ?? 0) / stamp.maxStamps) // 안내용
+                              const booksUsed = Math.floor((usedUnitsByRestaurant[rid] ?? 0) / stamp.maxStamps)
 
                               return (
                                 <motion.div
@@ -912,48 +1072,77 @@ useEffect(() => {
                 {/* 뱃지 (USER) */}
                 <TabsContent value="뱃지" className="mt-6">
                   <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }} className="space-y-6">
+                    {/* 획득한 뱃지 */}
                     <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-xl">
                       <CardHeader className="p-4 sm:p-6">
                         <CardTitle className="flex items-center gap-2 text-[clamp(16px,4vw,18px)]">
                           <Award className="h-5 w-5 text-orange-500" />
-                          획득한 뱃지 ({earnedBadgesCount})
+                          획득한 뱃지 ({earnedBadges.length})
                         </CardTitle>
                       </CardHeader>
-                      <CardContent className="p-4 sm:p-6">{/* 상세 UI 필요 시 채워넣기 */}</CardContent>
+                      <CardContent className="p-4 sm:p-6">
+                        {earnedBadges.length === 0 ? (
+                          <div className="text-center text-gray-500 py-8">아직 획득한 뱃지가 없습니다.</div>
+                        ) : (
+                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                            {earnedBadges.map((badge, idx) => (
+                              <motion.div
+                                key={badge.id}
+                                initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: 0.05 * idx }}
+                                whileHover={{ scale: 1.03 }}
+                                className="p-4 bg-green-500/10 backdrop-blur-sm border border-green-200/40 rounded-2xl text-center"
+                              >
+                                <div className="text-3xl mb-2">{badge.icon}</div>
+                                <h3 className="font-semibold text-gray-900 dark:text-white mb-1">{badge.name}</h3>
+                                <p className="text-sm text-gray-600 dark:text-gray-300">{badge.description}</p>
+                                <div className="mt-3">
+                                  <Progress value={100} className="h-2" />
+                                  <p className="text-xs mt-1 text-gray-500">{badge.target}/{badge.target}</p>
+                                </div>
+                              </motion.div>
+                            ))}
+                          </div>
+                        )}
+                      </CardContent>
                     </Card>
 
+                    {/* 진행 중인 뱃지 */}
                     <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-xl">
                       <CardHeader className="p-4 sm:p-6">
                         <CardTitle className="flex items-center gap-2 text-[clamp(16px,4vw,18px)]">
                           <Users className="h-5 w-5 text-gray-500" />
-                          진행 중인 뱃지 (2)
+                          진행 중인 뱃지 ({inProgressBadges.length})
                         </CardTitle>
                       </CardHeader>
                       <CardContent className="p-4 sm:p-6">
-                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                          {[
-                            { id: "good_customer_3", name: "착한 손님 Lv.3", icon: "🍃", description: "누적 리뷰 50개", progress: reviewList.length || 0, target: 50 },
-                            { id: "eco_influencer", name: "에코 인플루언서", icon: "📸", description: "AI 분석 사진 20장 업로드", progress: 15, target: 20 },
-                          ].map((badge, index) => (
-                            <motion.div
-                              key={badge.id}
-                              initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: 0.05 * index }}
-                              whileHover={{ scale: 1.03 }}
-                              className="p-4 bg-gray-500/10 backdrop-blur-sm border border-gray-200/30 rounded-2xl text-center"
-                            >
-                              <div className="text-3xl mb-2 opacity-50">{badge.icon}</div>
-                              <h3 className="font-semibold text-gray-900 dark:text-white mb-1">{badge.name}</h3>
-                              <p className="text-sm text-gray-600 dark:text-gray-300 mb-3">{badge.description}</p>
-                              <div className="space-y-2">
-                                <div className="flex justify-between text-sm">
-                                  <span>진행률</span>
-                                  <span>{badge.progress}/{badge.target}</span>
-                                </div>
-                                <Progress value={(badge.progress / badge.target) * 100} className="h-2" />
-                              </div>
-                            </motion.div>
-                          ))}
-                        </div>
+                        {inProgressBadges.length === 0 ? (
+                          <div className="text-center text-gray-500 py-8">진행 중인 뱃지가 없습니다.</div>
+                        ) : (
+                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                            {inProgressBadges.map((badge, index) => {
+                              const pct = Math.min(100, Math.round((badge.progress / badge.target) * 100))
+                              return (
+                                <motion.div
+                                  key={badge.id}
+                                  initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: 0.05 * index }}
+                                  whileHover={{ scale: 1.03 }}
+                                  className="p-4 bg-gray-500/10 backdrop-blur-sm border border-gray-200/30 rounded-2xl text-center"
+                                >
+                                  <div className="text-3xl mb-2 opacity-80">{badge.icon}</div>
+                                  <h3 className="font-semibold text-gray-900 dark:text-white mb-1">{badge.name}</h3>
+                                  <p className="text-sm text-gray-600 dark:text-gray-300 mb-3">{badge.description}</p>
+                                  <div className="space-y-2">
+                                    <div className="flex justify-between text-sm">
+                                      <span>진행률</span>
+                                      <span>{badge.progress}/{badge.target}</span>
+                                    </div>
+                                    <Progress value={pct} className="h-2" />
+                                  </div>
+                                </motion.div>
+                              )
+                            })}
+                          </div>
+                        )}
                       </CardContent>
                     </Card>
                   </motion.div>
@@ -1114,7 +1303,7 @@ useEffect(() => {
       </div>
 
       {/* ───────── 스탬프 사용 다이얼로그 ───────── */}
-      <Dialog open={stampDialog.open} onOpenChange={(open) => setStampDialog(open ? stampDialog : { open: false })}>
+      <Dialog open={(stampDialog as any).open} onOpenChange={(open) => setStampDialog(open ? stampDialog : { open: false })}>
         <DialogContent className="sm:max-w-md">
           {stampDialog.open && stampDialog.step === "choose" && (
             <>
@@ -1198,13 +1387,42 @@ useEffect(() => {
           )}
         </DialogContent>
       </Dialog>
+
+      {/* ───────── 스탬프 사용/적립 내역 ───────── */}
+      <Dialog open={historyOpen} onOpenChange={setHistoryOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>스탬프 사용/적립 내역</DialogTitle>
+            <DialogDescription>최신순으로 표시합니다.</DialogDescription>
+          </DialogHeader>
+
+          {historyLoading ? (
+            <div className="flex items-center justify-center py-8">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-500" />
+            </div>
+          ) : (
+            <div className="max-h-[60vh] overflow-auto space-y-2">
+              {stampHistory.length === 0 ? (
+                <div className="text-center text-gray-500 py-8">내역이 없습니다.</div>
+              ) : (
+                stampHistory.map((h) => (
+                  <div key={String(h.id)} className="flex items-start justify-between gap-3 p-3 rounded-xl border bg-white/60 dark:bg-gray-800/60">
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium text-gray-900 dark:text-white truncate">{h.restaurantName}</div>
+                      <div className="text-xs text-gray-600 dark:text-gray-300">{h.type === "use" ? "사용" : "적립"} • {h.count}개</div>
+                    </div>
+                    <div className="text-xs text-gray-500 flex-shrink-0">{h.created_at ? formatDate(h.created_at) : "-"}</div>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+
+          <DialogFooter className="flex justify-end">
+            <Button variant="outline" onClick={() => setHistoryOpen(false)}>닫기</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
-
-/* 참고: apiClient에 아래 메서드가 없으면 폴백 QR로 동작합니다.
-   - getUserStamps()
-   - getRestaurantDetail(id:number)
-   - removeFavorite(restaurantId:number)
-   - createStampUseIntent({ restaurantId:number, count:number })
-*/
