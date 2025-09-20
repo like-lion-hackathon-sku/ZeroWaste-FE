@@ -45,6 +45,7 @@ type UploadedImage = {
   fileName: string;
   url: string;     // 절대 URL
   preview: string; // 절대 URL
+
   shotType: ShotType;
   ai?: {
     score: number; // 0~5
@@ -224,6 +225,7 @@ export default function ReviewWritePage() {
     });
   };
 
+
   /* -------- AI 분석 (이미지 URL → 우리 BE → Gradio) -------- */
   const analyzeImage = async (imageId: string) => {
     const target = uploadedImages.find((img) => img.id === imageId);
@@ -237,6 +239,7 @@ export default function ReviewWritePage() {
     try {
       setShowAILoadingModal(true);
       setIsAnalyzing(true);
+
 
       // 클라이언트 헬퍼 (내부에서 절대 URL 보정 + 에러 정규화)
       const resp = await apiClient.analyzeWasteByPublicUrl(target.url);
