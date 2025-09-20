@@ -1,4 +1,5 @@
 "use client"
+
 import { useRouter } from "next/navigation"
 import type React from "react"
 import { useRef, useState, useTransition, useEffect } from "react"
@@ -8,22 +9,22 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Separator } from "@/components/ui/separator"
 import { Leaf, Mail, Lock, Eye, EyeOff, Image as ImageIcon, Trash2, CheckCircle2 } from "lucide-react"
 import { apiClient } from "@/lib/api/client"
 import { useUserStore } from "@/lib/state/user"
 import type { User } from "@/lib/state/user"
 
 export default function LoginPage() {
-  // 로그인 폼
   const router = useRouter()
+
+  // 폼 상태
   const [showPassword, setShowPassword] = useState(false)
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
   const [error, setError] = useState<string | null>(null)
   const [isPending, startTransition] = useTransition()
 
-  // 최초 프로필 설정 모달
+  // 최초 프로필 설정 모달 상태
   const [needProfile, setNeedProfile] = useState(false)
   const [nickname, setNickname] = useState("")
   const [saving, setSaving] = useState(false)
@@ -46,7 +47,7 @@ export default function LoginPage() {
     setSaving(false)
   }
 
-  /** 서버 응답 객체를 전역 User 타입으로 매핑 */
+  /** 서버 응답 → 전역 User 타입 매핑 */
   const mapToUser = (u: any): User => ({
     id: Number(u?.id ?? 0),
     email: String(u?.email ?? ""),
@@ -56,7 +57,7 @@ export default function LoginPage() {
     role: u?.role === "BIZ" ? "BIZ" : "USER",
   })
 
-  /* -------------------- 로그인 -------------------- */
+  /* ───────── 로그인 ───────── */
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault()
     setError(null)
@@ -69,7 +70,6 @@ export default function LoginPage() {
 
       const rawUser = (res as any).data
       setUser(mapToUser(rawUser))
-
       if (rawUser?.id) {
         try { localStorage.setItem("userId", String(rawUser.id)) } catch {}
       }
@@ -78,12 +78,12 @@ export default function LoginPage() {
       if (incomplete) {
         setNeedProfile(true)
       } else {
-        router.push("/map")           // ✅ 여기
+        router.push("/map")
       }
     })
   }
 
-  /* -------------------- 프로필 최초 설정 (multipart/form-data) -------------------- */
+  /* ───────── 프로필 최초 설정 (multipart/form-data) ───────── */
   const onChangeFile: React.ChangeEventHandler<HTMLInputElement> = (e) => {
     const f = e.target.files?.[0]
     if (!f) return
@@ -103,7 +103,6 @@ export default function LoginPage() {
     setPreview(url)
   }
 
-  // 미리보기 URL 정리
   useEffect(() => {
     return () => {
       if (preview) URL.revokeObjectURL(preview)
@@ -143,12 +142,12 @@ export default function LoginPage() {
 
       if (!res?.success) throw new Error(res?.error || "프로필 저장에 실패했어요.")
 
-      // 최신 사용자 정보로 전역 동기화
+      // 최신 사용자 정보로 동기화
       const me = await apiClient.getProfile().catch(() => null)
       if (me?.success && me.data) {
         setUser(mapToUser(me.data))
         try {
-          const id = (me.data as any)?.id // ← 로컬 변수로 꺼내 타입 단언
+          const id = (me.data as any)?.id
           if (id != null) localStorage.setItem("userId", String(id))
         } catch {}
       }
@@ -161,16 +160,13 @@ export default function LoginPage() {
     }
   }
 
-  /* -------------------- 기타 -------------------- */
-  const handleGoogleLogin = () => {
-    alert("Google 로그인은 준비 중입니다.")
-  }
+  /* ───────── 기타 ───────── */
   const handleGuestMode = () => {
     router.push("/map")
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-green-50 via-sky-50 to-emerald-50 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900 flex items-center justify-center p-4">
+    <div className="min-h-screen bg-gradient-to-br from-green-50 via-sky-50 to-emerald-50 dark:from-gray-950 dark:via-gray-900 dark:to-gray-950 flex items-center justify-center p-4">
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
@@ -187,7 +183,7 @@ export default function LoginPage() {
             >
               <Leaf className="h-8 w-8 text-white" />
             </motion.div>
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.4 }}>
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.35 }}>
               <CardTitle className="text-3xl font-bold bg-gradient-to-r from-green-600 to-sky-600 bg-clip-text text-transparent">
                 로그인
               </CardTitle>
@@ -198,11 +194,16 @@ export default function LoginPage() {
           </CardHeader>
 
           <CardContent className="space-y-6">
-            <motion.form initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.6 }} onSubmit={handleLogin} className="space-y-4">
+            {/* 로그인 폼 */}
+            <motion.form
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ delay: 0.5 }}
+              onSubmit={handleLogin}
+              className="space-y-4"
+            >
               <div className="space-y-2">
-                <Label htmlFor="email" className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                  이메일
-                </Label>
+                <Label htmlFor="email" className="text-sm font-medium text-gray-700 dark:text-gray-300">이메일</Label>
                 <div className="relative group">
                   <Mail className="absolute left-3 top-3 h-4 w-4 text-gray-400 group-focus-within:text-green-500 transition-colors" />
                   <Input
@@ -218,9 +219,7 @@ export default function LoginPage() {
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="password" className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                  비밀번호
-                </Label>
+                <Label htmlFor="password" className="text-sm font-medium text-gray-700 dark:text-gray-300">비밀번호</Label>
                 <div className="relative group">
                   <Lock className="absolute left-3 top-3 h-4 w-4 text-gray-400 group-focus-within:text-green-500 transition-colors" />
                   <Input
@@ -232,52 +231,59 @@ export default function LoginPage() {
                     className="pl-10 pr-10 h-12 bg-white/50 dark:bg-gray-800/50 border-gray-200 dark:border-gray-700 focus:border-green-500 focus:ring-green-500/20 transition-all"
                     required
                   />
-                  <Button type="button" variant="ghost" size="sm" className="absolute right-0 top-0 h-full px-3 py-2 hover:bg-transparent" onClick={() => setShowPassword(!showPassword)}>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="absolute right-0 top-0 h-full px-3 py-2 hover:bg-transparent"
+                    onClick={() => setShowPassword(!showPassword)}
+                    aria-label={showPassword ? "비밀번호 숨기기" : "비밀번호 보기"}
+                  >
                     {showPassword ? <EyeOff className="h-4 w-4 text-gray-400" /> : <Eye className="h-4 w-4 text-gray-400" />}
                   </Button>
                 </div>
               </div>
 
               {error && (
-                <motion.p initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="text-sm text-red-500 bg-red-50 dark:bg-red-900/20 p-3 rounded-lg">
+                <motion.p initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} className="text-sm text-red-500 bg-red-50 dark:bg-red-900/20 p-3 rounded-lg">
                   {error}
                 </motion.p>
               )}
 
-              <Button type="submit" className="w-full h-12 bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white font-medium shadow-lg hover:shadow-xl transition-all duration-300" disabled={isPending}>
+              <Button
+                type="submit"
+                className="w-full h-12 bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white font-medium shadow-lg hover:shadow-xl transition-all duration-300"
+                disabled={isPending}
+              >
                 {isPending ? (
-                  <motion.div animate={{ rotate: 360 }} transition={{ duration: 1, repeat: Number.POSITIVE_INFINITY, ease: "linear" }} className="w-5 h-5 border-2 border-white border-t-transparent rounded-full" />
+                  <motion.div
+                    animate={{ rotate: 360 }}
+                    transition={{ duration: 1, repeat: Number.POSITIVE_INFINITY, ease: "linear" }}
+                    className="w-5 h-5 border-2 border-white border-t-transparent rounded-full"
+                  />
                 ) : (
                   "로그인"
                 )}
               </Button>
             </motion.form>
 
-            <div className="relative">
-              <div className="absolute inset-0 flex items-center">
-                <Separator className="w-full bg-gray-200 dark:bg-gray-700" />
-              </div>
-              <div className="relative flex justify-center text-xs uppercase">
-                <span className="bg-white dark:bg-gray-900 px-2 text-gray-500">또는</span>
-              </div>
-            </div>
-
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.8 }} className="space-y-3">
-              <Button variant="outline" className="w-full h-12 bg-white/50 dark:bg-gray-800/50 border-gray-200 dark:border-gray-700 hover:bg-white dark:hover:bg-gray-800 transition-all" onClick={handleGoogleLogin}>
-                Google로 로그인
-              </Button>
-
-              <Button variant="ghost" className="w-full h-12 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-all" onClick={handleGuestMode}>
+            {/* 하단 액션: 게스트 모드 / 회원가입 */}
+            <div className="space-y-3 pt-2">
+              <Button
+                variant="ghost"
+                className="w-full h-12 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-all"
+                onClick={handleGuestMode}
+              >
                 게스트 모드로 둘러보기
               </Button>
-            </motion.div>
 
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 1 }} className="text-center text-sm">
-              <span className="text-gray-500">계정이 없으신가요? </span>
-              <Link href="/auth/signup" className="text-green-600 hover:text-green-700 font-medium hover:underline transition-colors">
-                회원가입
-              </Link>
-            </motion.div>
+              <div className="text-center text-sm">
+                <span className="text-gray-500">계정이 없으신가요? </span>
+                <Link href="/auth/signup" className="text-green-600 hover:text-green-700 font-medium hover:underline transition-colors">
+                  회원가입
+                </Link>
+              </div>
+            </div>
           </CardContent>
         </Card>
       </motion.div>
@@ -292,7 +298,12 @@ export default function LoginPage() {
             {/* 닉네임 */}
             <div className="space-y-2">
               <Label className="text-sm">닉네임</Label>
-              <Input placeholder="닉네임" value={nickname} onChange={(e) => setNickname(e.target.value)} className="h-11 bg-white/60 dark:bg-gray-800/60 border-gray-200 dark:border-gray-700" />
+              <Input
+                placeholder="닉네임"
+                value={nickname}
+                onChange={(e) => setNickname(e.target.value)}
+                className="h-11 bg-white/60 dark:bg-gray-800/60 border-gray-200 dark:border-gray-700"
+              />
             </div>
 
             {/* 이미지 선택 방식 */}
