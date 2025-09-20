@@ -57,12 +57,16 @@ type StampHistoryItem = {
 /* ─────────────────────────────────────────────────────────
    스탬프 훅들 (API/ERD 포맷 모두 지원 + 폴백 포함)
 ────────────────────────────────────────────────────────── */
+/* ─────────────────────────────────────────────────────────
+   스탬프 훅 (Swagger 응답: { success: { stamps: [] } } 대응)
+────────────────────────────────────────────────────────── */
 const useUserStampsData = () => {
   const [stamps, setStamps] = useState<RestaurantStamp[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [isUsingFallback, setIsUsingFallback] = useState(false)
 
+  // 폴백(목업)
   const MOCK: RestaurantStamp[] = [
     { restaurantId: 101, restaurantName: "그린 비스트로", totalStamps: 7, maxStamps: 5 },
     { restaurantId: 202, restaurantName: "제로웨이스트 키친", totalStamps: 3, maxStamps: 5 },
@@ -77,37 +81,41 @@ const useUserStampsData = () => {
         const res = await apiClient.getUserStamps()
         if (!res?.success) throw new Error(res?.error || "failed")
 
-        const raw = Array.isArray(res.data) ? res.data : (res.data as any)?.items ?? []
-        let out: RestaurantStamp[] = []
+        // ✅ Swagger 구조를 우선 반영: res.data.success.stamps
+        // (백엔드에 따라 res.data 또는 res.data.items 형태도 유연하게 처리)
+        const raw = Array.isArray((res.data as any)?.stamps)
+          ? (res.data as any).stamps
+          : Array.isArray((res.data as any)?.success?.stamps)
+          ? (res.data as any).success.stamps
+          : Array.isArray(res.data)
+          ? (res.data as any)
+          : Array.isArray((res.data as any)?.items)
+          ? (res.data as any).items
+          : []
 
-        if (raw.length > 0 && raw.some((r: any) => "restaurant_id" in r || "used_at" in r)) {
-          // ✅ ERD rows (used_at == null 만 보유)
-          const map = new Map<number, { name?: string; count: number }>()
-          for (const r of raw) {
-            const rid = Number(r?.restaurant_id ?? r?.restaurantId ?? r?.restaurant?.id)
-            if (!Number.isFinite(rid)) continue
-            const used = r?.used_at ?? r?.usedAt
-            if (used) continue
-            const cur = map.get(rid) ?? { name: r?.restaurant?.name, count: 0 }
-            cur.count += 1
-            cur.name = cur.name || r?.restaurant?.name
-            map.set(rid, cur)
-          }
-          out = Array.from(map.entries()).map(([rid, v]) => ({
-            restaurantId: rid,
-            restaurantName: v.name ?? `식당 ${rid}`,
-            totalStamps: v.count,
+        // ✅ 표준화: 레스토랑별 보유 개수로 변환
+        // - { restaurant: {id,name}, count } 혹은 { stamps: [...] } 등 다양한 경우 대응
+        const out: RestaurantStamp[] = raw.map((row: any) => {
+          const rid =
+            Number(row?.restaurant_id ?? row?.restaurantId ?? row?.restaurant?.id ?? row?.id)
+          const rname =
+            row?.restaurant?.name ??
+            row?.restaurantName ??
+            row?.name ??
+            (Number.isFinite(rid) ? `식당 ${rid}` : "식당")
+
+          // 서버가 count를 주면 우선 사용, 없으면 배열 길이 추정
+          const count =
+            Number(row?.count ?? row?.total ?? row?.totalStamps) ||
+            (Array.isArray(row?.stamps) ? row.stamps.length : 0)
+
+          return {
+            restaurantId: rid || 0,
+            restaurantName: rname,
+            totalStamps: Math.max(0, count),
             maxStamps: 5,
-          }))
-        } else {
-          // ✅ 기존 응답: 레스토랑별 묶음
-          out = raw.map((s: any) => ({
-            restaurantId: s?.restaurant?.id ?? s?.id,
-            restaurantName: s?.restaurant?.name ?? `식당 ${s?.restaurant?.id ?? s?.id}`,
-            totalStamps: s?.stamps?.length ?? 0,
-            maxStamps: 5,
-          }))
-        }
+          } as RestaurantStamp
+        })
 
         if (!ignore) {
           setStamps(out)
@@ -123,11 +131,14 @@ const useUserStampsData = () => {
         if (!ignore) setLoading(false)
       }
     })()
-    return () => { ignore = true }
+    return () => {
+      ignore = true
+    }
   }, [])
 
   return { stamps, loading, error, isUsingFallback }
 }
+
 
 const useUserStampHistory = () => {
   const [items, setItems] = useState<StampHistoryItem[]>([])
@@ -312,7 +323,7 @@ function LoggedInProfileView() {
           ? { id: r.restaurantId, name: "식당 정보 없음" }
           : undefined,
       waste_rating: Number(r?.score ?? r?.waste_rating ?? 0),
-      comment: String(r?.contents ?? r?.comment ?? ""),
+      comment: String(r?.content ?? r?.comment ?? ""),
       created_at: r?.createdAt ?? r?.created_at ?? null,
     }))
     setReviewList(base)
@@ -610,11 +621,7 @@ function LoggedInProfileView() {
   ────────────────────────────────────────────────────────── */
   return (
     <div className="min-h-screen bg-gray-50 pt/[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]">
-      {showFallbackWarning && (
-        <div className="bg-yellow-50 border-l-4 border-yellow-400 px-4 py-3 text-sm">
-          연결되면 실제 데이터가 표시됩니다. 현재는 목업 데이터를 사용 중입니다.
-        </div>
-      )}
+      
 
       {/* 헤더 */}
       <motion.header
