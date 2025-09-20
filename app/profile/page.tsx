@@ -1,3 +1,4 @@
+// app/profile/page.tsx
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
@@ -8,35 +9,27 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Progress } from "@/components/ui/progress"
 import {
-  ArrowLeft,
-  User,
-  Star,
-  Heart,
-  Award,
-  Users,
-  Edit,
-  Loader2,
-  Trash2,
-  MapPin,
-  Phone,
-  Leaf,
-  Store,
-  UserCheck,
-  Plus,
-  Stamp,
-  ChevronLeft,
-  ChevronRight,
+  ArrowLeft, User, Star, Heart, Award, Users, Edit, Loader2, Trash2,
+  MapPin, Phone, Leaf, Store, UserCheck, Plus, Stamp, ChevronLeft, ChevronRight,
+  QrCode, ShieldCheck, TimerReset,
 } from "lucide-react"
 import { useRouter } from "next/navigation"
-import {
-  useUserProfile,
-  useUserBadges,
-  useFavorites,
-  useUserReviews,
-} from "@/lib/hooks/use-api-with-fallback"
+
+// ✅ 프로필 기본 정보는 Zustand에서 읽음
+import { useUserStore } from "@/lib/state/user"
+
+import { useUserBadges, useFavorites, useUserReviews } from "@/lib/hooks/use-api-with-fallback"
 import { apiClient } from "@/lib/api/client"
 import { formatDate } from "@/lib/utils/database-helpers"
 import { UserRole } from "@/lib/types/database"
+
+// ✅ shadcn/ui Dialog & 입력
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog"
+import { Label } from "@/components/ui/label"
+import { Input } from "@/components/ui/input"
+
+// ✅ QR
+import { QRCodeCanvas } from "qrcode.react"
 
 // ---------- 유틸 ----------
 type TabKey = "리뷰" | "즐겨찾기" | "스탬프" | "뱃지" | "restaurant" | "reviews" | "owner-badges"
@@ -104,23 +97,28 @@ export default function ProfilePage() {
   const [activeTab, setActiveTab] = useState<TabKey>("스탬프")
   const [userRole, setUserRole] = useState<UserRole>(UserRole.USER)
 
-  const { data: profile, loading: profileLoading, error: userError, isUsingFallback: profileFallback } = useUserProfile()
+  // ✅ 스토어에서 현재 사용자 (로그인 여부 판별)
+  const me = useUserStore((s) => s.user)
+
+  // 목록 데이터는 기존 훅 사용
   const { data: badges, loading: badgesLoading, isUsingFallback: badgesFallback } = useUserBadges()
   const { data: favorites, loading: favoritesLoading, isUsingFallback: favoritesFallback } = useFavorites()
   const { data: reviews, loading: reviewsLoading, isUsingFallback: reviewsFallback } = useUserReviews()
   const { stamps: restaurantStamps, loading: stampsLoading, isUsingFallback: stampsFallback } = useUserStampsData()
 
-  const isLoading = profileLoading || badgesLoading || favoritesLoading || reviewsLoading || stampsLoading
-  const hasError = userError
+  // 전체 로딩 상태
+  const isLoading = badgesLoading || favoritesLoading || reviewsLoading || stampsLoading
 
-  const earnedBadgesCount = useMemo(() => toArray<any>(badges).filter((b) => !!(b?.badge ?? b?.name)).length, [badges])
+  const earnedBadgesCount = useMemo(
+    () => toArray<any>(badges).filter((b) => !!(b?.badge ?? b?.name)).length,
+    [badges],
+  )
 
+  // 즐겨찾기/리뷰 렌더 준비
   type ValidFavorite = FavoriteItem & { restaurant_id: number; restaurant: RestaurantLite }
   const [favList, setFavList] = useState<ValidFavorite[]>([])
   const [removingId, setRemovingId] = useState<number | null>(null)
-
   const [reviewList, setReviewList] = useState<ReviewVM[]>([])
-  const [deletingReviewId, setDeletingReviewId] = useState<number | string | null>(null) // ✅ 리뷰 삭제 로딩 상태
 
   const [ownerRestaurants] = useState<OwnerRestaurant[]>([
     { id: 1, name: "그린 비스트로", category: "양식", address: "서울시 강남구 테헤란로 123", telephone: "02-1234-5678", rating: 4.7, reviewCount: 24 },
@@ -215,6 +213,154 @@ export default function ProfilePage() {
     }
   }
 
+  // ───────────── 스탬프: ‘개수’ 단위 사용 + 페이징 ─────────────
+  const [pageByRestaurant, setPageByRestaurant] = useState<Record<number, number>>({})
+  const [usedUnitsByRestaurant, setUsedUnitsByRestaurant] = useState<Record<number, number>>({}) // ✅ 핵심: 사용 개수
+
+  const getAvailable = (s: RestaurantStamp) =>
+    Math.max(0, s.totalStamps - (usedUnitsByRestaurant[s.restaurantId] ?? 0))
+
+  const getCurrentPage = (rid: number) => pageByRestaurant[rid] ?? 1
+  const setPage = (rid: number, page: number) =>
+    setPageByRestaurant((p) => ({ ...p, [rid]: Math.max(1, page) }))
+
+  const getTotalPages = (s: RestaurantStamp) =>
+    Math.max(1, Math.ceil(getAvailable(s) / s.maxStamps))
+
+  // 🔶 “사용하기” → 개수 선택 다이얼로그 & QR
+  type StampDialogState =
+    | { open: false }
+    | {
+        open: true
+        step: "choose" | "qr"
+        restaurant: RestaurantStamp
+        maxUsable: number
+        count: number
+        generating: boolean
+        token?: string
+        payload?: string
+        expiresAt?: number   // epoch ms
+        remainSec?: number
+      }
+
+  const [stampDialog, setStampDialog] = useState<StampDialogState>({ open: false })
+
+  const openUseDialog = (s: RestaurantStamp) => {
+    const avail = getAvailable(s)
+    const maxUsable = Math.min(10, avail) // 최대 10
+    if (avail < 3) {
+      alert("스탬프가 3개 이상일 때만 사용할 수 있어요.")
+      return
+    }
+    setStampDialog({
+      open: true,
+      step: "choose",
+      restaurant: s,
+      maxUsable,
+      count: Math.min(3, maxUsable), // 최소 기본 3
+      generating: false,
+    })
+  }
+
+  async function generateUseQR(restaurant: RestaurantStamp, count: number) {
+    try {
+      setStampDialog((s) => ({ ...(s as any), generating: true }))
+      const be = await apiClient.createStampUseIntent?.({
+        restaurantId: restaurant.restaurantId,
+        count,
+      })
+      let token = ""
+      let payload = ""
+      let expiresAt = Date.now() + 2 * 60 * 1000 // 120s 기본
+
+      if (be?.success) {
+        token = be.data?.token ?? ""
+        payload = be.data?.payload ?? ""
+        if (be.data?.expiresAt) expiresAt = new Date(be.data.expiresAt).getTime()
+      } else {
+        // 폴백: 로컬 페이로드
+        const nonce = crypto.getRandomValues(new Uint32Array(4)).join("-")
+        token = `local-${nonce}`
+
+        const userId = (me as any)?.id ?? (me as any)?.userId ?? "me"
+        const now = Date.now()
+        expiresAt = now + 2 * 60 * 1000
+
+        const localPayload = {
+          ver: 1,
+          type: "stamp.use",
+          rid: restaurant.restaurantId,
+          rname: restaurant.restaurantName,
+          uid: userId,
+          count,
+          ts: now,
+          exp: expiresAt,
+          nonce,
+        }
+        payload = JSON.stringify(localPayload)
+      }
+
+      setStampDialog({
+        open: true,
+        step: "qr",
+        restaurant,
+        maxUsable: Math.min(10, getAvailable(restaurant)),
+        count,
+        generating: false,
+        token,
+        payload: payload || token,
+        expiresAt,
+        remainSec: Math.max(0, Math.ceil((expiresAt - Date.now()) / 1000)),
+      })
+    } catch (e) {
+      console.error(e)
+      alert("QR 생성에 실패했어요. 잠시 후 다시 시도해주세요.")
+      setStampDialog((s) => ({ ...(s as any), generating: false }))
+    }
+  }
+
+  // 남은 시간 타이머
+  useEffect(() => {
+    if (!stampDialog.open || stampDialog.step !== "qr" || !stampDialog.expiresAt) return
+    const tick = () => {
+      setStampDialog((s) => {
+        if (!s.open || s.step !== "qr" || !s.expiresAt) return s
+        const remain = Math.max(0, Math.ceil((s.expiresAt - Date.now()) / 1000))
+        return { ...s, remainSec: remain }
+      })
+    }
+    tick()
+    const id = setInterval(tick, 1000)
+    return () => clearInterval(id)
+  }, [stampDialog.open, stampDialog.step, stampDialog.expiresAt])
+
+  // 🔸 사장 처리 후: ‘개수’ 단위로 차감 & 페이지 보정
+  const markUsedLocally = () => {
+    if (!stampDialog.open || stampDialog.step !== "qr") return
+    const s = stampDialog.restaurant
+    const useCount = Math.min(stampDialog.count, getAvailable(s))
+    if (useCount <= 0) {
+      setStampDialog({ open: false })
+      return
+    }
+
+    setUsedUnitsByRestaurant((prev) => {
+      const cur = prev[s.restaurantId] ?? 0
+      return { ...prev, [s.restaurantId]: cur + useCount }
+    })
+
+    const afterAvail = Math.max(0, getAvailable(s) - useCount)
+    const totalPagesAfter = Math.max(1, Math.ceil(afterAvail / s.maxStamps))
+    setPageByRestaurant((prev) => {
+      const next = { ...prev }
+      const curPage = next[s.restaurantId] ?? 1
+      if (curPage > totalPagesAfter) next[s.restaurantId] = totalPagesAfter
+      return next
+    })
+
+    setStampDialog({ open: false })
+  }
+
   const handleRestaurantClick = (restaurantId: number) => router.push(`/restaurant/${restaurantId}`)
   const handleEditProfile = () => router.push("/profile/edit")
 
@@ -232,90 +378,53 @@ export default function ProfilePage() {
     } finally { setRemovingId(null) }
   }
 
-  // ✅ 리뷰 삭제
-  const handleDeleteReview = async (reviewId: number | string) => {
-    if (!confirm("이 리뷰를 삭제할까요?")) return
-    const rid = Number(reviewId)
-    setDeletingReviewId(reviewId)
-
-    const prev = reviewList
-    setReviewList((list) => list.filter((r) => Number(r.id) !== rid))
-    try {
-      const res = await apiClient.deleteReview(rid) // DELETE /api/reviews/{review_id}
-      if (!res.success) throw new Error(res.error || "리뷰 삭제 실패")
-    } catch (err) {
-      console.error(err)
-      setReviewList(prev)
-      alert("리뷰 삭제에 실패했습니다.")
-    } finally {
-      setDeletingReviewId(null)
-    }
-  }
-
-  // 스탬프 페이징/사용
-  const [pageByRestaurant, setPageByRestaurant] = useState<Record<number, number>>({})
-  const [usedBooksByRestaurant, setUsedBooksByRestaurant] = useState<Record<number, number>>({})
-  const getAvailable = (s: RestaurantStamp) => Math.max(0, s.totalStamps - (usedBooksByRestaurant[s.restaurantId] ?? 0) * s.maxStamps)
-  const getCurrentPage = (rid: number) => pageByRestaurant[rid] ?? 1
-  const setPage = (rid: number, page: number) => setPageByRestaurant((p) => ({ ...p, [rid]: page }))
-  const getTotalPages = (s: RestaurantStamp) => Math.max(1, Math.ceil(getAvailable(s) / s.maxStamps))
-  const handleUseStamps = (s: RestaurantStamp) => {
-    const avail = getAvailable(s)
-    if (avail < s.maxStamps) return
-    setUsedBooksByRestaurant((prev) => ({ ...prev, [s.restaurantId]: (prev[s.restaurantId] ?? 0) + 1 }))
-    setPageByRestaurant((prev) => {
-      const next = { ...prev }; const rid = s.restaurantId
-      const afterAvail = avail - s.maxStamps
-      const totalPagesAfter = Math.max(1, Math.ceil(afterAvail / s.maxStamps))
-      if ((next[rid] ?? 1) > totalPagesAfter) next[rid] = totalPagesAfter
-      return next
-    })
-  }
-
-  if (isLoading) {
+  // ---------- 로그인 게이트 ----------
+  if (!me) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center
-                      pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]">
+      <div className="min-h-screen flex items-center justify-center">
         <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-green-600 mx-auto mb-4" />
-          <p className="text-gray-600">프로필 정보를 불러오는 중...</p>
+          <p className="mb-4 text-gray-600">로그인이 필요해요.</p>
+          <Button onClick={() => router.push("/login")} className="bg-green-600 hover:bg-green-700">
+            로그인하기
+          </Button>
         </div>
       </div>
     )
   }
 
-  if (hasError || !profile) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-green-50 via-sky-50 to-emerald-50
-                      dark:from-gray-900 dark:via-gray-800 dark:to-gray-900
-                      flex items-center justify-center
-                      pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]">
-        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="text-center px-4">
-          <div className="text-red-500 mb-4">프로필 정보를 불러올 수 없습니다</div>
-          <Button onClick={() => window.location.reload()} className="bg-gradient-to-r from-green-500 to-emerald-600">
-            다시 시도
-          </Button>
-        </motion.div>
-      </div>
-    )
-  }
+  // ✅ 프로필 표시용 데이터 (Zustand)
+  const p = me as { nickname?: string; email?: string; created_at?: string | null; profile?: string | null }
 
-  const p = profile as { nickname?: string; email?: string; created_at?: string | null; profile?: string | null }
-  const showFallbackWarning = profileFallback || badgesFallback || favoritesFallback || reviewsFallback || stampsFallback
+  // ✅ 아바타 이미지 URL
+  const [avatarSrc, setAvatarSrc] = useState<string>("/placeholder.svg")
+  useEffect(() => {
+    let ignore = false
+    ;(async () => {
+      const fileName = (me as any)?.profile
+      if (!fileName) {
+        setAvatarSrc("/placeholder.svg")
+        return
+      }
+      const url = await apiClient.getImageSignedUrl(0, fileName) // 0 = 프로필
+      if (!ignore && url) setAvatarSrc(url)
+    })()
+    return () => { ignore = true }
+  }, [me])
+  const showFallbackWarning = badgesFallback || favoritesFallback || reviewsFallback || stampsFallback
 
+  // ---------- 본문 렌더 ----------
   return (
-    <div className="min-h-screen bg-gray-50
-                    pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]">
+    <div className="min-h-screen bg-gray-50 pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]">
       {showFallbackWarning && (
-        <div className="bg-yellow-50 border-l-4 border-yellow-400 px-4 py-3 text-sm">연결되면 실제 데이터가 표시됩니다. 현재는 목업 데이터를 사용 중입니다.</div>
+        <div className="bg-yellow-50 border-l-4 border-yellow-400 px-4 py-3 text-sm">
+          연결되면 실제 데이터가 표시됩니다. 현재는 목업 데이터를 사용 중입니다.
+        </div>
       )}
 
       {/* 헤더 */}
       <motion.header
         initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }}
-        className="sticky top-0 z-50
-                   pt-[max(env(safe-area-inset-top),0px)]
-                   backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-b border-white/20 px-3 sm:px-4 py-2 sm:py-3"
+        className="sticky top-0 z-50 pt-[max(env(safe-area-inset-top),0px)] backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-b border-white/20 px-3 sm:px-4 py-2 sm:py-3"
       >
         <div className="flex items-center justify-between">
           <Button variant="ghost" size="sm" onClick={() => router.back()} className="hover:bg-white/20">
@@ -341,7 +450,7 @@ export default function ProfilePage() {
               <div className="flex items-center gap-4 mb-6">
                 <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ delay: 0.3, type: "spring", stiffness: 200 }}>
                   <Avatar className="h-16 w-16 sm:h-20 sm:w-20 ring-4 ring-green-500/20">
-                    <AvatarImage src={p.profile || "/placeholder.svg"} alt={p.nickname || "user"} />
+                    <AvatarImage src={avatarSrc} alt={p.nickname || "user"} />
                     <AvatarFallback className="bg-gradient-to-br from-green-500 to-emerald-600 text-white">
                       <User className="h-7 w-7" />
                     </AvatarFallback>
@@ -358,45 +467,29 @@ export default function ProfilePage() {
                   <motion.p initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.5 }} className="text-gray-600 dark:text-gray-300 mb-1 truncate">
                     {p.email}
                   </motion.p>
-                  <motion.p initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.6 }} className="text-xs text-gray-500 dark:text-gray-400">
-                    가입일: {formatDate(p.created_at ?? "")}
-                  </motion.p>
+                  {p.created_at && (
+                    <motion.p initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.6 }} className="text-xs text-gray-500 dark:text-gray-400">
+                      가입일: {formatDate(p.created_at ?? "")}
+                    </motion.p>
+                  )}
                 </div>
 
-                {/* 우측: 모드 전환 버튼 + (버튼 아래) 사장님/인증됨 */}
-                <motion.div
-                  initial={{ opacity: 0, x: 20 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  transition={{ delay: 0.7 }}
-                  className="flex flex-col items-end gap-2"
-                >
+                {/* 우측: 모드 전환 버튼 */}
+                <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.7 }} className="flex flex-col items-end gap-2">
                   <Button
                     onClick={handleRoleSwitch}
                     variant={userRole === UserRole.OWNER ? "default" : "outline"}
-                    className={`${
-                      userRole === UserRole.OWNER
+                    className={`${userRole === UserRole.OWNER
                         ? "bg-gradient-to-r from-orange-500 to-red-600 hover:from-orange-600 hover:to-red-700"
                         : "border-green-500 text-green-600 hover:bg-green-50 dark:hover:bg-green-900/20"
-                    } transition-all duration-300`}
+                      } transition-all duration-300`}
                   >
-                    {userRole === UserRole.USER ? (
-                      <>
-                        <Store className="h-4 w-4 mr-2" />
-                        사업자 모드 전환
-                      </>
-                    ) : (
-                      <>
-                        <UserCheck className="h-4 w-4 mr-2" />
-                        사용자 모드 전환
-                      </>
-                    )}
+                    {userRole === UserRole.USER ? (<><Store className="h-4 w-4 mr-2" />사업자 모드 전환</>) : (<><UserCheck className="h-4 w-4 mr-2" />사용자 모드 전환</>)}
                   </Button>
 
                   {userRole === UserRole.OWNER && (
                     <div className="flex items-center gap-2">
-                      <div className="px-2.5 py-0.5 rounded-full text-xs font-medium text-white bg-gradient-to-r from-orange-500 to-red-600">
-                        사장님
-                      </div>
+                      <div className="px-2.5 py-0.5 rounded-full text-xs font-medium text-white bg-gradient-to-r from-orange-500 to-red-600">사장님</div>
                       <div className="text-xs text-gray-500 dark:text-gray-400">인증됨</div>
                     </div>
                   )}
@@ -450,7 +543,7 @@ export default function ProfilePage() {
                       <div className="text-2xl font-bold text-green-600 mb-1">{ownerStats.avgOwnerRating}</div>
                       <div className="text-sm text-gray-600 dark:text-gray-300">평균 별점</div>
                     </motion.div>
-                    <motion.div whileHover={{ scale: 1.03 }} className="text-center p-4 bg-gradient-to-br from-purple-500/10 to-pink-500/10 backdrop-blur-sm rounded-2xl border border-purple-200/30">
+                    <motion.div whileHover={{ scale: 1.03 }} className="text-center p-4 bg-gradient-to-br from紫-500/10 to-pink-500/10 backdrop-blur-sm rounded-2xl border border-purple-200/30">
                       <div className="text-2xl font-bold text-purple-600 mb-1">{ownerStats.totalFavorites}</div>
                       <div className="text-sm text-gray-600 dark:text-gray-300">받은 즐겨찾기</div>
                     </motion.div>
@@ -502,58 +595,43 @@ export default function ProfilePage() {
                     <CardContent className="p-4 sm:p-6">
                       <div className="space-y-4 sm:space-y-6">
                         {reviewList.length > 0 ? (
-                          reviewList.map((review, idx) => (
-                            <motion.div
-                              key={review.id}
-                              initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 * idx }}
-                              className="backdrop-blur-sm bg-white/50 dark:bg-gray-800/50 border border-white/20 rounded-2xl p-4 hover:shadow-lg transition-all duration-300"
-                            >
-                              <div className="flex items-start justify-between mb-3 gap-3">
-                                <div className="min-w-0">
-                                  <h3 className="font-semibold text-gray-900 dark:text-white mb-1 truncate">
-                                    {review.restaurant?.name || "식당 정보 없음"}
-                                  </h3>
-                                  <div className="flex items-center gap-4 text-sm text-gray-600 dark:text-gray-300">
-                                    <div className="flex items-center gap-1">
-                                      {Array.from({ length: 5 }).map((_, i) => (
-                                        <Star key={i} className={`h-3 w-3 ${i < Math.round(review.waste_rating || 0) ? "fill-current text-green-500" : "text-gray-300"}`} />
-                                      ))}
-                                      <span>{review.waste_rating.toFixed(1)}</span>
+                          reviewList.map((review, idx) => {
+                            return (
+                              <motion.div
+                                key={review.id}
+                                initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 * idx }}
+                                className="backdrop-blur-sm bg-white/50 dark:bg-gray-800/50 border border-white/20 rounded-2xl p-4 hover:shadow-lg transition-all duration-300"
+                              >
+                                <div className="flex items-start justify-between mb-3 gap-3">
+                                  <div className="min-w-0">
+                                    <h3 className="font-semibold text-gray-900 dark:text-white mb-1 truncate">
+                                      {review.restaurant?.name || "식당 정보 없음"}
+                                    </h3>
+                                    <div className="flex items-center gap-4 text-sm text-gray-600 dark:text-gray-300">
+                                      <div className="flex items-center gap-1">
+                                        {Array.from({ length: 5 }).map((_, i) => (
+                                          <Star key={i} className={`h-3 w-3 ${i < Math.round(review.waste_rating || 0) ? "fill-current text-green-500" : "text-gray-300"}`} />
+                                        ))}
+                                        <span>{review.waste_rating.toFixed(1)}</span>
+                                      </div>
+                                      <span className="truncate">{review.restaurant?.category || "카테고리 없음"}</span>
                                     </div>
-                                    <span className="truncate">{review.restaurant?.category || "카테고리 없음"}</span>
                                   </div>
+                                  <span className="text-xs text-gray-500 flex-shrink-0">
+                                    {review.created_at ? formatDate(review.created_at) : "날짜 없음"}
+                                  </span>
                                 </div>
-                                <span className="text-xs text-gray-500 flex-shrink-0">
-                                  {review.created_at ? formatDate(review.created_at) : "날짜 없음"}
-                                </span>
-                              </div>
 
-                              <p className="text-gray-700 dark:text-gray-300 mb-3 break-words whitespace-pre-wrap leading-relaxed">{review.comment || "댓글 없음"}</p>
+                                <p className="text-gray-700 dark:text-gray-300 mb-3 break-words whitespace-pre-wrap leading-relaxed">{review.comment || "댓글 없음"}</p>
 
-                              <div className="flex justify-end">
-                                <Button
-                                  type="button"
-                                  variant="destructive"
-                                  size="sm"
-                                  onClick={() => handleDeleteReview(review.id)}
-                                  disabled={deletingReviewId === review.id}
-                                  className="bg-red-500/90 hover:bg-red-600"
-                                >
-                                  {deletingReviewId === review.id ? (
-                                    <>
-                                      <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                                      삭제 중…
-                                    </>
-                                  ) : (
-                                    <>
-                                      <Trash2 className="h-4 w-4 mr-2" />
-                                      삭제
-                                    </>
-                                  )}
-                                </Button>
-                              </div>
-                            </motion.div>
-                          ))
+                                <div className="flex justify-end">
+                                  <Button variant="outline" size="sm" onClick={() => router.push(`/review/edit/${review.id}`)} className="bg-white/50 hover:bg白/80 border-white/30">
+                                    수정
+                                  </Button>
+                                </div>
+                              </motion.div>
+                            )
+                          })
                         ) : (
                           <div className="text-center text-gray-500 py-12">
                             <Star className="h-16 w-16 mx-auto mb-4 opacity-30" />
@@ -669,8 +747,8 @@ export default function ProfilePage() {
                               const curPage = getCurrentPage(rid)
                               const startIdx = (curPage - 1) * stamp.maxStamps
                               const filledOnThisPage = Math.max(0, Math.min(stamp.maxStamps, avail - startIdx))
-                              const overflowFirstPage = Math.max(0, avail - stamp.maxStamps)
-                              const usedBooks = usedBooksByRestaurant[rid] ?? 0
+                              const extraBeyondFirst = Math.max(0, avail - stamp.maxStamps)
+                              const booksUsed = Math.floor((usedUnitsByRestaurant[rid] ?? 0) / stamp.maxStamps) // 안내용
 
                               return (
                                 <motion.div
@@ -701,26 +779,27 @@ export default function ProfilePage() {
 
                                   <div className="text-center w-full mx-auto">
                                     <p className="text-sm text-gray-600 dark:text-gray-300">
-                                      4점 이상 리뷰 {avail}개로 획득한 스탬프(사용 반영)
+                                      4점 이상 리뷰 {avail}개 보유 (부분 사용 즉시 반영)
                                     </p>
-                                    {overflowFirstPage > 0 && curPage === 1 && (
+                                    {extraBeyondFirst > 0 && curPage === 1 && (
                                       <div className="mt-2 text-xs text-amber-600 dark:text-amber-400 font-medium">
-                                        +{overflowFirstPage}개 추가 스탬프 보유
+                                        +{extraBeyondFirst}개 추가 보유
                                       </div>
                                     )}
                                   </div>
 
                                   {/* 컨트롤 */}
                                   <div className="mt-3 flex flex-col gap-3 sm:grid sm:grid-cols-[1fr_auto_1fr] sm:items-center">
+                                    {/* 가운데: 사용하기 */}
                                     <div className="order-1 sm:order-2 justify-self-center text-center">
-                                      {avail >= stamp.maxStamps ? (
+                                      {avail >= 3 ? (
                                         <div className="inline-flex items-center gap-2">
                                           <div className="inline-flex items-center gap-1 px-3 py-1 bg-gradient-to-r from-purple-500 to-pink-500 text-white text-xs rounded-full">
-                                            <Award className="h-3 w-3" />
-                                            스탬프 완성!
+                                            <QrCode className="h-3 w-3" />
+                                            스탬프 사용
                                           </div>
                                           <Button
-                                            onClick={() => handleUseStamps(stamp)}
+                                            onClick={() => openUseDialog(stamp)}
                                             className="bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white px-5 py-2 rounded-full text-sm font-medium shadow-lg hover:shadow-xl"
                                           >
                                             사용하기
@@ -728,11 +807,12 @@ export default function ProfilePage() {
                                         </div>
                                       ) : (
                                         <div className="text-xs text-gray-500 dark:text-gray-400">
-                                          {Math.max(0, stamp.maxStamps - (avail - (curPage - 1) * stamp.maxStamps))}개 더 필요
+                                          최소 3개 이상 모이면 사용 가능
                                         </div>
                                       )}
                                     </div>
 
+                                    {/* 왼쪽: 페이지네이션 */}
                                     <div className="order-2 sm:order-1 flex items-center justify-center sm:justify-start gap-2 flex-wrap">
                                       <Button variant="outline" size="sm" onClick={() => setPage(rid, Math.max(1, curPage - 1))} disabled={curPage <= 1} className="h-8 px-2">
                                         <ChevronLeft className="h-4 w-4" />
@@ -755,8 +835,9 @@ export default function ProfilePage() {
                                       </Button>
                                     </div>
 
+                                    {/* 오른쪽: 사용(책) 횟수 안내 */}
                                     <div className="order-3 sm:order-3 text-center sm:text-right">
-                                      {(usedBooksByRestaurant[rid] ?? 0) > 0 && <div className="text-xs text-gray-600 dark:text-gray-300">사용 {usedBooksByRestaurant[rid]}회</div>}
+                                      {booksUsed > 0 && <div className="text-xs text-gray-600 dark:text-gray-300">사용(책) {booksUsed}회</div>}
                                     </div>
                                   </div>
                                 </motion.div>
@@ -978,6 +1059,99 @@ export default function ProfilePage() {
           </Tabs>
         </motion.div>
       </div>
+
+      {/* ───────── 스탬프 사용 다이얼로그 ───────── */}
+      <Dialog open={stampDialog.open} onOpenChange={(open) => setStampDialog(open ? stampDialog : { open: false })}>
+        <DialogContent className="sm:max-w-md">
+          {stampDialog.open && stampDialog.step === "choose" && (
+            <>
+              <DialogHeader>
+                <DialogTitle>스탬프 사용 개수 선택</DialogTitle>
+                <DialogDescription>
+                  {stampDialog.restaurant.restaurantName} — 사용 가능: {stampDialog.maxUsable}개 (최소 3개, 최대 10개)
+                </DialogDescription>
+              </DialogHeader>
+
+              <div className="space-y-3 py-2">
+                <Label htmlFor="use-count">사용할 개수</Label>
+                <Input
+                  id="use-count"
+                  type="number"
+                  min={3}
+                  max={stampDialog.maxUsable}
+                  value={stampDialog.count}
+                  onChange={(e) => {
+                    const v = Number(e.target.value || 0)
+                    const clamped = Math.max(3, Math.min(stampDialog.maxUsable, v))
+                    setStampDialog({ ...stampDialog, count: clamped })
+                  }}
+                />
+                <p className="text-xs text-gray-500">사장님이 QR을 스캔하면 해당 개수만큼 사용 처리됩니다.</p>
+              </div>
+
+              <DialogFooter className="flex gap-2 justify-end">
+                <Button variant="outline" onClick={() => setStampDialog({ open: false })}>취소</Button>
+                <Button
+                  disabled={stampDialog.generating}
+                  onClick={() => generateUseQR(stampDialog.restaurant, stampDialog.count)}
+                  className="bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white"
+                >
+                  {stampDialog.generating ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <QrCode className="h-4 w-4 mr-2" />}
+                  QR 생성
+                </Button>
+              </DialogFooter>
+            </>
+          )}
+
+          {stampDialog.open && stampDialog.step === "qr" && (
+            <>
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2">
+                  <ShieldCheck className="h-5 w-5 text-purple-500" />
+                  사장님 확인용 QR
+                </DialogTitle>
+                <DialogDescription>
+                  {stampDialog.restaurant.restaurantName} • {stampDialog.count}개 사용
+                </DialogDescription>
+              </DialogHeader>
+
+              <div className="w-full flex flex-col items-center gap-3 py-2">
+                <div className="p-3 rounded-2xl bg-white shadow-inner border">
+                  <QRCodeCanvas
+                    value={stampDialog.payload || stampDialog.token || ""}
+                    size={220}
+                    includeMargin
+                  />
+                </div>
+                <div className="flex items-center gap-2 text-sm text-gray-600">
+                  <TimerReset className="h-4 w-4" />
+                  남은 시간 {stampDialog.remainSec ?? 0}s
+                </div>
+                <p className="text-xs text-gray-500 text-center">
+                  • 유효시간 내 스캔해야 합니다. 스캔 후에는 화면을 닫아주세요.
+                </p>
+              </div>
+
+              <DialogFooter className="flex flex-col sm:flex-row gap-2 sm:justify-between">
+                <Button variant="outline" onClick={() => setStampDialog({ open: false })}>닫기</Button>
+                <Button
+                  onClick={markUsedLocally}
+                  className="bg-gradient-to-r from-emerald-500 to-green-600 hover:from-emerald-600 hover:to-green-700 text-white"
+                >
+                  사용 완료로 표시
+                </Button>
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
+
+/* 참고: apiClient에 아래 메서드가 없으면 폴백 QR로 동작합니다.
+   - getUserStamps()
+   - getRestaurantDetail(id:number)
+   - removeFavorite(restaurantId:number)
+   - createStampUseIntent({ restaurantId:number, count:number })
+*/

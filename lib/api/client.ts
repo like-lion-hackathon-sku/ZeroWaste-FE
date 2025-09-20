@@ -20,6 +20,17 @@ class ApiClient {
     return `${this.baseUrl}${path}`
   }
 
+  /** 상대경로를 절대경로로 변환 (이미 절대면 그대로 반환) */
+  toAbsoluteUrl(url: string) {
+    if (!url) return url
+    if (/^https?:\/\//i.test(url)) return url
+    const origin =
+      typeof window !== "undefined"
+        ? window.location.origin
+        : (process.env.NEXT_PUBLIC_SITE_ORIGIN || "")
+    return origin ? `${origin}${url.startsWith("/") ? url : `/${url}`}` : url
+  }
+
   /** 공통 요청 래퍼 */
   private async request<T>(endpoint: string, options: RequestInit = {}, _retrying = false): Promise<ApiResponse<T>> {
     try {
@@ -39,7 +50,7 @@ class ApiClient {
         headers,
       })
 
-      // 401 처리 (refresh 1회 시도)
+      // 401 → refresh 1회 시도
       if (res.status === 401 && !_retrying) {
         const r = await fetch(this.buildUrl("/auth/refresh"), {
           method: "POST",
@@ -94,19 +105,13 @@ class ApiClient {
 
   // ───────────────────────── Auth
   async login(email: string, password: string) {
-    return this.request("/auth/login", {
-      method: "POST",
-      body: JSON.stringify({ email, password }),
-    })
+    return this.request("/auth/login", { method: "POST", body: JSON.stringify({ email, password }) })
   }
   async logout() {
     return this.request("/auth/logout", { method: "POST" })
   }
   async signup(email: string, password: string) {
-    return this.request("/auth/signup", {
-      method: "POST",
-      body: JSON.stringify({ email, password }),
-    })
+    return this.request("/auth/signup", { method: "POST", body: JSON.stringify({ email, password }) })
   }
   async refresh() {
     return this.request("/auth/refresh", { method: "POST" })
@@ -114,18 +119,17 @@ class ApiClient {
   async getProfile() {
     return this.request("/auth/me", { method: "GET" })
   }
-  async updateProfile(data: {
-    name?: string
-    nickname?: string
-    profileImage?: File | null
-    defaultImage?: boolean
-  }) {
+  async updateProfile(data: { name?: string; nickname?: string; profileImage?: File | null; defaultImage?: boolean }) {
     const fd = new FormData()
     if (data.name) fd.append("name", data.name)
     if (data.nickname) fd.append("nickname", data.nickname)
     fd.append("defaultImage", String(!!data.defaultImage))
     if (data.profileImage instanceof File) fd.append("profileImage", data.profileImage)
     return this.request("/auth/profile", { method: "POST", body: fd })
+  }
+  /** multipart 그대로 전달 */
+  async updateProfileMultipart(form: FormData) {
+    return this.request("/auth/profile", { method: "POST", body: form })
   }
 
   // ───────────────────────── Restaurants
@@ -140,26 +144,18 @@ class ApiClient {
     sp.set("cursor", String(cursor))
     return this.request(`/restaurants/nearby?${sp.toString()}`)
   }
-  async getRestaurantsInBounds(bounds: {
-    minLat: number
-    maxLat: number
-    minLng: number
-    maxLng: number
-    category?: string
-    search?: string
-  }) {
+  async getRestaurantsInBounds(bounds: { minLat: number; maxLat: number; minLng: number; maxLng: number; category?: string; search?: string }) {
     const q = (bounds.search ?? "맛집").trim()
     return this.request(`/restaurants/nearby?q=${encodeURIComponent(q)}`)
   }
   async getRestaurantDetail(id: number) {
-    // 식당 상세 + 사진 배열까지 받을 수 있음
     return this.request<{
       id: number
       name: string
       category: string
       address?: string
       telephone?: string
-      photos?: { id: number; photo_name: string }[]   // ✅ 추가
+      photos?: { id: number; photo_name: string }[]
       menus?: { id: number; name: string; photo?: string }[]
     }>(`/restaurants/${id}/detail`, { method: "GET" })
   }
@@ -172,185 +168,89 @@ class ApiClient {
     return this.request("/favorites")
   }
   async addFavorite(restaurantId: number) {
-    return this.request(`/favorites`, {
-      method: "POST", // ✅ 명세서에 맞춤 (PUT → POST)
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ restaurantId }),
-    })
+    return this.request(`/favorites`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ restaurantId }) })
   }
-  async addFavoriteExternal(place: {
-    name: string
-    address: string
-    mapx: number
-    mapy: number
-    category?: string
-    telephone?: string
-  }) {
+  async addFavoriteExternal(place: { name: string; address: string; mapx: number; mapy: number; category?: string; telephone?: string }) {
     const payload = { ...place, mapx: Math.round(place.mapx), mapy: Math.round(place.mapy) }
-    return this.request(`/favorites`, {
-      method: "POST", // ✅ 외부 장소 즐겨찾기도 POST로 통일
-      body: JSON.stringify({ place: payload }),
-    })
+    return this.request(`/favorites`, { method: "POST", body: JSON.stringify({ place: payload }) })
   }
   async removeFavorite(restaurantId: number) {
     return this.request(`/favorites/${restaurantId}`, { method: "DELETE" })
   }
 
-  // ───────────────────────── Badges
-  async getBadges() {
-    return this.request("/badges")
-  }
-  async getUserBadges() {
-    return this.request("/badges/me")
-  }
-
-  // ───────────────────────── Stamps
-  async getUserStamps() {
-    return this.request("/stamps/me")
-  }
-  async getUserStampHistory() {
-    return this.request("/stamps/me/history", { method: "GET" }) // ✅ 누락 보완
-  }
+  // ───────────────────────── Badges & Stamps
+  async getBadges() { return this.request("/badges") }
+  async getUserBadges() { return this.request("/badges/me") }
+  async getUserStamps() { return this.request("/stamps/me") }
+  async getUserStampHistory() { return this.request("/stamps/me/history", { method: "GET" }) }
   async useStamp(restaurantId: number, code: string) {
-    return this.request("/biz/stamps/use", {
-      method: "PATCH",
-      body: JSON.stringify({ restaurantId, code }),
-    })
+    return this.request("/biz/stamps/use", { method: "PATCH", body: JSON.stringify({ restaurantId, code }) })
   }
-  async getStampRewards(restaurantId: number) {
-    return this.request(`/stamps/rewards/${restaurantId}`)
-  }
+  async getStampRewards(restaurantId: number) { return this.request(`/stamps/rewards/${restaurantId}`) }
   async claimStampReward(restaurantId: number, rewardId: number) {
-    return this.request(`/stamps/rewards/claim`, {
-      method: "POST",
-      body: JSON.stringify({ restaurantId, rewardId }),
-    })
+    return this.request(`/stamps/rewards/claim`, { method: "POST", body: JSON.stringify({ restaurantId, rewardId }) })
+  }
+  getAiReviewSummary(restaurantId: number) {
+    return this.request(`/restaurants/${restaurantId}/ai-summary`) as Promise<{ success: boolean; data: any; error?: string }>
   }
 
   // ───────────────────────── Notifications
-  async getNotifications() {
-    return this.request("/notifications")
-  }
-  async markNotificationAsRead(notificationId: number) {
-    return this.request(`/notifications/${notificationId}`, {
-      method: "PATCH",
-    })
-  }
+  async getNotifications() { return this.request("/notifications") }
+  async markNotificationAsRead(notificationId: number) { return this.request(`/notifications/${notificationId}`, { method: "PATCH" }) }
 
   // ───────────────────────── Business APIs
-  async getBusinessRestaurants() {
-    return this.request("/biz/restaurants")
+  async getBusinessRestaurants() { return this.request("/biz/restaurants") }
+  async createBusinessRestaurant(data: { name: string; category: string; address: string; telephone?: string; mapx: number; mapy: number }) {
+    return this.request("/biz/restaurants", { method: "POST", body: JSON.stringify(data) })
   }
-  async createBusinessRestaurant(data: {
-    name: string
-    category: string
-    address: string
-    telephone?: string
-    mapx: number
-    mapy: number
-  }) {
-    return this.request("/biz/restaurants", {
-      method: "POST",
-      body: JSON.stringify(data),
-    })
-  }
-  async updateBusinessRestaurant(
-    restaurantId: number,
-    data: {
-      name?: string
-      category?: string
-      address?: string
-      telephone?: string
-    },
-  ) {
-    return this.request("/biz/restaurants", {
-      method: "PUT",
-      body: JSON.stringify({ restaurantId, ...data }),
-    })
+  async updateBusinessRestaurant(restaurantId: number, data: { name?: string; category?: string; address?: string; telephone?: string }) {
+    return this.request("/biz/restaurants", { method: "PUT", body: JSON.stringify({ restaurantId, ...data }) })
   }
   async deleteBusinessRestaurant(restaurantId: number) {
-    return this.request("/biz/restaurants", {
-      method: "DELETE",
-      body: JSON.stringify({ restaurantId }),
-    })
+    return this.request("/biz/restaurants", { method: "DELETE", body: JSON.stringify({ restaurantId }) })
   }
-  async getBusinessRestaurantDetail(restaurantId: number) {
-    return this.request(`/biz/restaurants/${restaurantId}`)
-  }
+  async getBusinessRestaurantDetail(restaurantId: number) { return this.request(`/biz/restaurants/${restaurantId}`) }
   async uploadBusinessRestaurantPhoto(restaurantId: number, file: File) {
     const fd = new FormData()
     fd.append("file", file)
-    return this.request<{ id: number; fileName: string; url: string }>(
-      `/biz/restaurants/${restaurantId}/photos`,
-      { method: "POST", body: fd },
-    )
+    return this.request<{ id: number; fileName: string; url: string }>(`/biz/restaurants/${restaurantId}/photos`, { method: "POST", body: fd })
   }
-  async deleteBusinessRestaurantPhoto(restaurantId: number, photoId: number) {
-    return this.request(`/biz/restaurants/${restaurantId}/photos/${photoId}`, {
-      method: "DELETE",
-    })
-  }
-  async getBusinessReviews() {
-    return this.request("/biz/reviews")
-  }
-  async getBusinessReviewFeedback(reviewId: number) {
-    return this.request(`/biz/reviews/${reviewId}/feedback`)
-  }
+  async deleteBusinessRestaurantPhoto(restaurantId: number, photoId: number) { return this.request(`/biz/restaurants/${restaurantId}/photos/${photoId}`, { method: "DELETE" }) }
+  async getBusinessReviews() { return this.request("/biz/reviews") }
+  async getBusinessReviewFeedback(reviewId: number) { return this.request(`/biz/reviews/${reviewId}/feedback`) }
   async getBusinessMenu(restaurantId: number) {
-    // ✅ DB 최종 구조 반영: photo 필드 포함
-    return this.request<{ id: number; name: string; photo?: string }[]>(
-      `/biz/restaurants/${restaurantId}/menu`,
-      { method: "GET" },
-    )
+    return this.request<{ id: number; name: string; photo?: string }[]>(`/biz/restaurants/${restaurantId}/menu`, { method: "GET" })
   }
-  async getBusinessStats() {
-    return this.request("/biz/stats")
-  }
+  async getBusinessStats() { return this.request("/biz/stats") }
   async getBusinessAnalytics(period?: string) {
     const params = period ? `?period=${encodeURIComponent(period)}` : ""
     return this.request(`/biz/analytics${params}`)
   }
   async createStampReward(restaurantId: number, data: { condition: number; reward: string }) {
-    return this.request("/biz/stamps/rewards", {
-      method: "POST",
-      body: JSON.stringify({ restaurantId, ...data }),
-    })
+    return this.request("/biz/stamps/rewards", { method: "POST", body: JSON.stringify({ restaurantId, ...data }) })
   }
   async updateStampReward(rewardId: number, data: { condition?: number; reward?: string }) {
-    return this.request(`/biz/stamps/rewards/${rewardId}`, {
-      method: "PUT",
-      body: JSON.stringify(data),
-    })
+    return this.request(`/biz/stamps/rewards/${rewardId}`, { method: "PUT", body: JSON.stringify(data) })
   }
-  async deleteStampReward(rewardId: number) {
-    return this.request(`/biz/stamps/rewards/${rewardId}`, {
-      method: "DELETE",
-    })
-  }
+  async deleteStampReward(rewardId: number) { return this.request(`/biz/stamps/rewards/${rewardId}`, { method: "DELETE" }) }
 
   // ───────────────────────── Reviews
-  async createReviewForRestaurant(restaurantId: number, payload: { contents: string; score: number }) {
-    // ✅ 경로 교정: /reviews/restaurants/... → /restaurants/{id}/reviews
-    return this.request(`/restaurants/${restaurantId}/reviews`, {
-      method: "POST",
-      body: JSON.stringify(payload),
-    })
+  async createReviewForRestaurant(
+    restaurantId: number,
+    payload: { contents: string; score: number; menuId?: number | null; menuName?: string; images?: Array<{ fileName: string; shotType: "after"; score: number | null; summary: string | null }> }
+  ) {
+    return this.request(`/restaurants/${restaurantId}/reviews`, { method: "POST", body: JSON.stringify(payload) })
   }
   async updateReview(id: number, data: { contents?: string; score?: number }) {
     return this.request(`/reviews/${id}`, { method: "PUT", body: JSON.stringify(data) })
   }
-  async deleteReview(id: number) {
-    return this.request(`/reviews/${id}`, { method: "DELETE" })
-  }
-  async getUserReviews() {
-    return this.request("/reviews/me")
-  }
+  async deleteReview(id: number) { return this.request(`/reviews/${id}`, { method: "DELETE" }) }
+  async getUserReviews() { return this.request("/reviews/me") }
   async analyzeReview(id: number, form?: FormData) {
     if (form) return this.request(`/reviews/${id}/analyze`, { method: "POST", body: form })
     return this.request(`/reviews/${id}/analyze`, { method: "POST" })
   }
   async createReview(restaurantId: number, data: { content: string; score?: number; photos?: File[] }) {
-    // 필요시 사진까지 한 번에 보낼 수 있는 변형 (BE에서 허용 시)
     const fd = new FormData()
     fd.append("content", data.content)
     if (data.score != null) fd.append("score", String(data.score))
@@ -358,7 +258,27 @@ class ApiClient {
     return this.request(`/restaurants/${restaurantId}/reviews`, { method: "POST", body: fd })
   }
 
-  // ───────────────────────── Images
+  // ───────────────────────── Images (presigned URL 방식 + 업로드)
+  private async fetchPresignedUrl(fileType: 0 | 1 | 2 | 3, fileName: string): Promise<string | null> {
+    if (!fileName) return null
+    const res = await this.request<{ url: string }>(`/images/${fileType}/${encodeURIComponent(fileName)}`)
+    if (!res?.success) return null
+    const url = (res.data as any)?.url
+    return typeof url === "string" && url.length > 0 ? url : null
+  }
+  async getProfileImageUrl(fileName: string)    { return this.fetchPresignedUrl(0, fileName) }
+  async getReviewImageUrl(fileName: string)     { return this.fetchPresignedUrl(1, fileName) }
+  async getRestaurantImageUrl(fileName: string) { return this.fetchPresignedUrl(2, fileName) }
+  async getMenuImageUrl(fileName: string)       { return this.fetchPresignedUrl(3, fileName) }
+
+  /** (구버전) 경로 문자열만 반환 — 새 코드에선 presigned URL 사용 권장 */
+  getImageUrl(imageType: "profile" | "review" | "restaurant", fileName: string) {
+    return this.buildUrl(`/images/${encodeURIComponent(imageType)}/${encodeURIComponent(fileName)}`)
+  }
+  getImageUrlByType(type: 0 | 1 | 2 | 3, fileName: string) {
+    return this.buildUrl(`/images/${type}/${encodeURIComponent(fileName)}`)
+  }
+
   async uploadImage(imageType: "profile" | "review", file: File) {
     const fd = new FormData()
     fd.append("file", file)
@@ -367,13 +287,29 @@ class ApiClient {
       { method: "POST", body: fd },
     )
   }
-  getImageUrl(imageType: "profile" | "review" | "restaurant", fileName: string) {
-    return this.buildUrl(`/images/${encodeURIComponent(imageType)}/${encodeURIComponent(fileName)}`)
-  }
+
   async analyzeImage(imageType: "profile" | "review", fileName: string) {
-    return this.request(`/images/${encodeURIComponent(imageType)}/${encodeURIComponent(fileName)}/analyze`, {
+    return this.request(`/images/${encodeURIComponent(imageType)}/${encodeURIComponent(fileName)}/analyze`, { method: "POST" })
+  }
+
+  async getImageSignedUrl(type: 0 | 1 | 2 | 3, fileName: string): Promise<string> {
+    const res = await this.request<{ url: string }>(`/images/${type}/${encodeURIComponent(fileName)}`, { method: "GET" })
+    return res?.success ? ((res.data as any)?.url ?? "") : ""
+  }
+
+  /** 우리 Next API(Gradio 프록시)를 통해 공개 이미지 URL 분석 */
+  async analyzeWasteByPublicUrl(imageUrl: string) {
+    const abs = this.toAbsoluteUrl(imageUrl)
+    const res = await fetch("/api/ai/waste/analyze", {
       method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ imageUrl: abs }),
     })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok || !data?.ok) {
+      return { success: false, error: data?.error || `AI analyze failed (${res.status})` } as ApiResponse<any>
+    }
+    return { success: true, data } as ApiResponse<any> // { ok, score5, score100, summary, raw }
   }
 
   // ───────────────────────── Search APIs
@@ -386,12 +322,8 @@ class ApiClient {
   }
 
   // ───────────────────────── User Profile APIs
-  async getUserStats() {
-    return this.request("/auth/stats")
-  }
-  async deleteAccount() {
-    return this.request("/auth/delete", { method: "DELETE" })
-  }
+  async getUserStats() { return this.request("/auth/stats") }
+  async deleteAccount() { return this.request("/auth/delete", { method: "DELETE" }) }
 }
 
 // 싱글턴 인스턴스 export

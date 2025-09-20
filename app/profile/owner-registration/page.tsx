@@ -15,8 +15,11 @@ interface MenuItem {
   name: string
   price: string
   description: string
-  image?: File
-  imagePreview?: string
+  // ✅ 식사 전/후 이미지 분리
+  beforeImage?: File
+  beforeImagePreview?: string
+  afterImage?: File
+  afterImagePreview?: string
 }
 
 export default function OwnerRegistrationPage() {
@@ -39,12 +42,15 @@ export default function OwnerRegistrationPage() {
     address: "",
   })
 
-  const handleImageUpload = (file: File, type: "restaurant" | "license" | "menu", index?: number) => {
+  const handleImageUpload = (
+    file: File,
+    type: "restaurant" | "license" | "menuBefore" | "menuAfter",
+    index?: number
+  ) => {
     if (!file.type.startsWith("image/")) {
       alert("이미지 파일만 업로드 가능합니다.")
       return
     }
-
     if (file.size > 5 * 1024 * 1024) {
       alert("파일 크기는 5MB 이하여야 합니다.")
       return
@@ -60,11 +66,16 @@ export default function OwnerRegistrationPage() {
       } else if (type === "license") {
         setBusinessLicense(file)
         setBusinessLicensePreview(preview)
-      } else if (type === "menu" && index !== undefined) {
-        const newMenuItems = [...menuItems]
-        newMenuItems[index].image = file
-        newMenuItems[index].imagePreview = preview
-        setMenuItems(newMenuItems)
+      } else if (index !== undefined) {
+        const list = [...menuItems]
+        if (type === "menuBefore") {
+          list[index].beforeImage = file
+          list[index].beforeImagePreview = preview
+        } else if (type === "menuAfter") {
+          list[index].afterImage = file
+          list[index].afterImagePreview = preview
+        }
+        setMenuItems(list)
       }
     }
     reader.readAsDataURL(file)
@@ -92,24 +103,20 @@ export default function OwnerRegistrationPage() {
       alert("식당 이름을 입력해주세요.")
       return
     }
-
     if (!restaurantInfo.description.trim()) {
       alert("가게 소개를 입력해주세요.")
       return
     }
-
     if (!restaurantInfo.phone.trim()) {
       alert("전화번호를 입력해주세요.")
       return
     }
-
     if (!restaurantInfo.address.trim()) {
       alert("주소를 입력해주세요.")
       return
     }
 
     const validMenuItems = menuItems.filter((item) => item.name.trim() && item.price.trim() && item.description.trim())
-
     if (validMenuItems.length === 0) {
       alert("최소 하나의 메뉴를 완전히 입력해주세요.")
       return
@@ -118,12 +125,13 @@ export default function OwnerRegistrationPage() {
     setLoading(true)
 
     try {
+      // TODO: 이미지/메뉴 업로드는 BE 스펙에 맞춰 FormData로 확장 가능
       const res = await apiClient.createBusinessRestaurant({
         name: restaurantName,
-        category: "KOREAN", // 기본값, 추후 선택 가능하도록 개선
+        category: "KOREAN", // 기본값, 추후 선택 가능
         address: restaurantInfo.address,
         telephone: restaurantInfo.phone,
-        mapx: 127.0276, // 기본값, 추후 주소 기반 좌표 변환 구현
+        mapx: 127.0276, // TODO: 주소→좌표 변환
         mapy: 37.4979,
       })
 
@@ -161,12 +169,7 @@ export default function OwnerRegistrationPage() {
       </motion.header>
 
       <div className="container mx-auto p-4 max-w-4xl">
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.1 }}
-          className="mb-6"
-        >
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }} className="mb-6">
           <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-2xl">
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
@@ -277,12 +280,7 @@ export default function OwnerRegistrationPage() {
         </motion.div>
 
         {/* 메뉴 정보 */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.2 }}
-          className="mb-6"
-        >
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }} className="mb-6">
           <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-2xl">
             <CardHeader>
               <div className="flex items-center justify-between">
@@ -350,46 +348,94 @@ export default function OwnerRegistrationPage() {
                     />
                   </div>
 
-                  <div>
-                    <Label className="text-sm font-medium text-gray-700 dark:text-gray-300">메뉴 사진</Label>
-                    <div className="mt-2 flex items-center gap-4">
-                      {item.imagePreview && (
-                        <div className="relative">
-                          <img
-                            src={item.imagePreview || "/placeholder.svg"}
-                            alt={`메뉴 ${index + 1} 사진`}
-                            className="w-20 h-20 object-cover rounded-lg border-2 border-gray-200"
-                          />
-                          <Button
-                            variant="destructive"
-                            size="sm"
-                            className="absolute -top-2 -right-2 w-5 h-5 p-0"
-                            onClick={() => {
-                              const newMenuItems = [...menuItems]
-                              delete newMenuItems[index].image
-                              delete newMenuItems[index].imagePreview
-                              setMenuItems(newMenuItems)
-                            }}
-                          >
-                            <Trash2 className="h-2 w-2" />
-                          </Button>
-                        </div>
-                      )}
-                      <Label htmlFor={`menu-image-${index}`} className="cursor-pointer">
-                        <div className="flex items-center justify-center w-20 h-20 border-2 border-dashed border-gray-300 rounded-lg hover:border-green-500 transition-colors">
-                          <Camera className="h-5 w-5 text-gray-400" />
-                        </div>
-                      </Label>
-                      <input
-                        id={`menu-image-${index}`}
-                        type="file"
-                        accept="image/*"
-                        className="hidden"
-                        onChange={(e) => {
-                          const file = e.target.files?.[0]
-                          if (file) handleImageUpload(file, "menu", index)
-                        }}
-                      />
+                  {/* ✅ 식사 전/후 사진 업로드 구역 */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    {/* 식사 전 */}
+                    <div>
+                      <Label className="text-sm font-medium text-gray-700 dark:text-gray-300">식사 전 사진</Label>
+                      <div className="mt-2 flex items-center gap-4">
+                        {item.beforeImagePreview && (
+                          <div className="relative">
+                            <img
+                              src={item.beforeImagePreview || "/placeholder.svg"}
+                              alt={`메뉴 ${index + 1} 식사 전`}
+                              className="w-20 h-20 object-cover rounded-lg border-2 border-gray-200"
+                            />
+                            <Button
+                              variant="destructive"
+                              size="sm"
+                              className="absolute -top-2 -right-2 w-5 h-5 p-0"
+                              onClick={() => {
+                                const list = [...menuItems]
+                                delete list[index].beforeImage
+                                delete list[index].beforeImagePreview
+                                setMenuItems(list)
+                              }}
+                            >
+                              <Trash2 className="h-2 w-2" />
+                            </Button>
+                          </div>
+                        )}
+                        <Label htmlFor={`menu-before-${index}`} className="cursor-pointer">
+                          <div className="flex items-center justify-center w-20 h-20 border-2 border-dashed border-gray-300 rounded-lg hover:border-green-500 transition-colors">
+                            <Camera className="h-5 w-5 text-gray-400" />
+                          </div>
+                        </Label>
+                        <input
+                          id={`menu-before-${index}`}
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          onChange={(e) => {
+                            const file = e.target.files?.[0]
+                            if (file) handleImageUpload(file, "menuBefore", index)
+                          }}
+                        />
+                      </div>
+                    </div>
+
+                    {/* 식사 후 */}
+                    <div>
+                      <Label className="text-sm font-medium text-gray-700 dark:text-gray-300">식사 후 사진</Label>
+                      <div className="mt-2 flex items-center gap-4">
+                        {item.afterImagePreview && (
+                          <div className="relative">
+                            <img
+                              src={item.afterImagePreview || "/placeholder.svg"}
+                              alt={`메뉴 ${index + 1} 식사 후`}
+                              className="w-20 h-20 object-cover rounded-lg border-2 border-gray-200"
+                            />
+                            <Button
+                              variant="destructive"
+                              size="sm"
+                              className="absolute -top-2 -right-2 w-5 h-5 p-0"
+                              onClick={() => {
+                                const list = [...menuItems]
+                                delete list[index].afterImage
+                                delete list[index].afterImagePreview
+                                setMenuItems(list)
+                              }}
+                            >
+                              <Trash2 className="h-2 w-2" />
+                            </Button>
+                          </div>
+                        )}
+                        <Label htmlFor={`menu-after-${index}`} className="cursor-pointer">
+                          <div className="flex items-center justify-center w-20 h-20 border-2 border-dashed border-gray-300 rounded-lg hover:border-green-500 transition-colors">
+                            <Camera className="h-5 w-5 text-gray-400" />
+                          </div>
+                        </Label>
+                        <input
+                          id={`menu-after-${index}`}
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          onChange={(e) => {
+                            const file = e.target.files?.[0]
+                            if (file) handleImageUpload(file, "menuAfter", index)
+                          }}
+                        />
+                      </div>
                     </div>
                   </div>
                 </motion.div>
@@ -399,12 +445,7 @@ export default function OwnerRegistrationPage() {
         </motion.div>
 
         {/* 식당 정보 */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.3 }}
-          className="mb-6"
-        >
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }} className="mb-6">
           <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-2xl">
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
