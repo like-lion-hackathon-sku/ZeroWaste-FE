@@ -301,7 +301,7 @@ export default function ProfilePage() {
             <ArrowLeft className="h-4 w-4 mr-2" />
             뒤로가기
           </Button>
-          <h1 className="font-bold text-[clamp(18px,4vw,24px)] bg-gradient-to-r from-green-600 to-sky-600 bg-clip-text text-transparent">
+        <h1 className="font-bold text-[clamp(18px,4vw,24px)] bg-gradient-to-r from-green-600 to-sky-600 bg-clip-text text-transparent">
             프로필
           </h1>
           <div className="flex items-center gap-2">
@@ -342,29 +342,43 @@ export default function ProfilePage() {
                   </motion.p>
                 </div>
 
-                {userRole === UserRole.OWNER && (
-                  <motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.6 }}>
-                    <div className="flex flex-col items-center gap-2">
-                      <div className="bg-gradient-to-r from-orange-500 to-red-600 text-white px-3 py-1 rounded-full text-sm font-medium">사장님</div>
-                      <div className="text-xs text-gray-500 dark:text-gray-400">인증됨</div>
-                    </div>
-                  </motion.div>
-                )}
-
-                <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.7 }}>
+                {/* 우측: 모드 전환 버튼 + (버튼 아래) 사장님/인증됨 */}
+                <motion.div
+                  initial={{ opacity: 0, x: 20 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ delay: 0.7 }}
+                  className="flex flex-col items-end gap-2"
+                >
                   <Button
                     onClick={handleRoleSwitch}
                     variant={userRole === UserRole.OWNER ? "default" : "outline"}
-                    className={`${userRole === UserRole.OWNER
-                      ? "bg-gradient-to-r from-orange-500 to-red-600 hover:from-orange-600 hover:to-red-700"
-                      : "border-green-500 text-green-600 hover:bg-green-50 dark:hover:bg-green-900/20"} transition-all duration-300`}
+                    className={`${
+                      userRole === UserRole.OWNER
+                        ? "bg-gradient-to-r from-orange-500 to-red-600 hover:from-orange-600 hover:to-red-700"
+                        : "border-green-500 text-green-600 hover:bg-green-50 dark:hover:bg-green-900/20"
+                    } transition-all duration-300`}
                   >
                     {userRole === UserRole.USER ? (
-                      <><Store className="h-4 w-4 mr-2" />사업자 모드 전환</>
+                      <>
+                        <Store className="h-4 w-4 mr-2" />
+                        사업자 모드 전환
+                      </>
                     ) : (
-                      <><UserCheck className="h-4 w-4 mr-2" />사용자 모드 전환</>
+                      <>
+                        <UserCheck className="h-4 w-4 mr-2" />
+                        사용자 모드 전환
+                      </>
                     )}
                   </Button>
+
+                  {userRole === UserRole.OWNER && (
+                    <div className="flex items-center gap-2">
+                      <div className="px-2.5 py-0.5 rounded-full text-xs font-medium text-white bg-gradient-to-r from-orange-500 to-red-600">
+                        사장님
+                      </div>
+                      <div className="text-xs text-gray-500 dark:text-gray-400">인증됨</div>
+                    </div>
+                  )}
                 </motion.div>
               </div>
 
@@ -658,8 +672,32 @@ export default function ProfilePage() {
                                     )}
                                   </div>
 
-                                  <div className="mt-3 grid grid-cols-[1fr_auto_1fr] items-center gap-2">
-                                    <div className="flex items-center gap-2 justify-self-start flex-wrap">
+                                  {/* 컨트롤: 모바일 세로 정렬, 데스크톱 3열 */}
+                                  <div className="mt-3 flex flex-col gap-3 sm:grid sm:grid-cols-[1fr_auto_1fr] sm:items-center">
+                                    {/* 가운데: 완성/사용하기 */}
+                                    <div className="order-1 sm:order-2 justify-self-center text-center">
+                                      {avail >= stamp.maxStamps ? (
+                                        <div className="inline-flex items-center gap-2">
+                                          <div className="inline-flex items-center gap-1 px-3 py-1 bg-gradient-to-r from-purple-500 to-pink-500 text-white text-xs rounded-full">
+                                            <Award className="h-3 w-3" />
+                                            스탬프 완성!
+                                          </div>
+                                          <Button
+                                            onClick={() => handleUseStamps(stamp)}
+                                            className="bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white px-5 py-2 rounded-full text-sm font-medium shadow-lg hover:shadow-xl"
+                                          >
+                                            사용하기
+                                          </Button>
+                                        </div>
+                                      ) : (
+                                        <div className="text-xs text-gray-500 dark:text-gray-400">
+                                          {Math.max(0, stamp.maxStamps - (avail - (curPage - 1) * stamp.maxStamps))}개 더 필요
+                                        </div>
+                                      )}
+                                    </div>
+
+                                    {/* 왼쪽: 페이지네이션 */}
+                                    <div className="order-2 sm:order-1 flex items-center justify-center sm:justify-start gap-2 flex-wrap">
                                       <Button variant="outline" size="sm" onClick={() => setPage(rid, Math.max(1, curPage - 1))} disabled={curPage <= 1} className="h-8 px-2">
                                         <ChevronLeft className="h-4 w-4" />
                                       </Button>
@@ -681,25 +719,8 @@ export default function ProfilePage() {
                                       </Button>
                                     </div>
 
-                                    <div className="justify-self-center">
-                                      {avail >= stamp.maxStamps ? (
-                                        <div className="flex items-center gap-2">
-                                          <div className="inline-flex items-center gap-1 px-3 py-1 bg-gradient-to-r from-purple-500 to-pink-500 text-white text-xs rounded-full">
-                                            <Award className="h-3 w-3" />
-                                            스탬프 완성!
-                                          </div>
-                                          <Button onClick={() => handleUseStamps(stamp)} className="bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white px-5 py-2 rounded-full text-sm font-medium shadow-lg hover:shadow-xl">
-                                            사용하기
-                                          </Button>
-                                        </div>
-                                      ) : (
-                                        <div className="text-xs text-gray-500 dark:text-gray-400 text-center">
-                                          {Math.max(0, stamp.maxStamps - (avail - (curPage - 1) * stamp.maxStamps))}개 더 필요
-                                        </div>
-                                      )}
-                                    </div>
-
-                                    <div className="justify-self-end text-right">
+                                    {/* 오른쪽: 사용 횟수 */}
+                                    <div className="order-3 sm:order-3 text-center sm:text-right">
                                       {usedBooks > 0 && <div className="text-xs text-gray-600 dark:text-gray-300">사용 {usedBooks}회</div>}
                                     </div>
                                   </div>

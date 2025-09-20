@@ -820,15 +820,16 @@ export default function MapWithListPage() {
       </motion.header>
 
       <div className="flex flex-1 min-h-0">
-        {/* ── 왼쪽 사이드 리스트 ── */}
+        {/* ── 왼쪽 사이드 리스트 (데스크탑) ── */}
         <motion.div
           initial={{ opacity: 0, x: -20 }}
           animate={{ opacity: 1, x: 0 }}
           transition={{ delay: 0.05 }}
-          className="hidden md:block bg-white/80 dark:bg-slate-900/80 backdrop-blur-xl border-r border-white/20 dark:border-slate-800/30 overflow-y-auto shadow-2xl md:w-[500px]"
+          className="hidden md:flex flex-col bg-white/80 dark:bg-slate-900/80 backdrop-blur-xl border-r border-white/20 dark:border-slate-800/30 shadow-2xl md:w-[500px] min-h-0"
         >
-          <div className="p-6 pr-7 space-y-6">
-            <div className="space-y-4">
+          {/* 고정 헤더 (타이틀 + 필터) */}
+          <div className="sticky top-0 z-10 bg-white/90 dark:bg-slate-900/90 backdrop-blur-xl border-b border-white/20 dark:border-slate-800/30">
+            <div className="p-6 pr-7 space-y-4">
               <div className="flex items-center justify-between">
                 <h2 className="text-xl font-bold bg-gradient-to-r from-green-600 via-emerald-600 to-teal-600 bg-clip-text text-transparent flex items-center gap-2">
                   <MapPin className="h-5 w-5 text-green-600" />
@@ -933,8 +934,10 @@ export default function MapWithListPage() {
                 </div>
               </div>
             </div>
+          </div>
 
-            {/* Restaurant List */}
+          {/* 스크롤 리스트 */}
+          <div className="flex-1 overflow-y-auto p-6 pr-7">
             {loading ? (
               <div className="flex items-center justify-center py-12 text-muted-foreground">
                 <div className="text-center space-y-4">
@@ -1210,49 +1213,55 @@ export default function MapWithListPage() {
         </div>
       </div>
 
-      {/* 모바일 하단 리스트 */}
+      {/* ── 모바일 하단 리스트 ── */}
       <motion.div
-        className="md:hidden bg-white/90 dark:bg-slate-900/90 backdrop-blur-xl border-t border-white/20 dark:border-slate-800/30 shrink-0 shadow-xl"
+        className="md:hidden flex flex-col bg-white/90 dark:bg-slate-900/90 backdrop-blur-xl border-t border-white/20 dark:border-slate-800/30 shrink-0 shadow-xl max-h-[60vh]"
         initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
       >
-        <div className="p-4 max-h-[50vh] overflow-y-auto">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-bold bg-gradient-to-r from-green-600 via-emerald-600 to-teal-600 bg-clip-text text-transparent flex items-center gap-2">
-              <MapPin className="h-5 w-5 text-green-600" />
-              주변 맛집
-            </h2>
-            <div className="flex items-center gap-2">
-              <select
-                value={tierFilter}
-                onChange={(e) => setTierFilter(e.target.value as any)}
-                className="h-9 rounded-xl border bg-white/95 dark:bg-slate-800/95 text-sm px-3 font-medium shadow-md backdrop-blur-sm"
-              >
-                <option value="ALL">🍽️ 전체</option>
-                <option value="UNRANK">🥢 젓가락</option>
-                <option value="브론즈">🥄 나무수저</option>
-                <option value="실버">🥄 은수저</option>
-                <option value="골드">🍴 금수저</option>
-                <option value="플래티넘">🍽️ 다이아수저</option>
-                <option value="다이아">👑 왕관수저</option>
-              </select>
-              <select
-                value={sortKey}
-                onChange={(e) => setSortKey(e.target.value as any)}
-                className="h-9 rounded-xl border bg-white/95 dark:bg-slate-800/95 text-sm px-3 font-medium shadow-md backdrop-blur-sm"
-              >
-                <option value="rating">⭐ 별점 순</option>
-                <option value="reviews">💬 리뷰 수 순</option>
-              </select>
-              <Badge
-                variant="secondary"
-                className="bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 font-semibold px-3 py-1 rounded-full shadow-sm"
-              >
-                {filteredRestaurants.length}곳
-              </Badge>
+        {/* 고정 헤더 (타이틀 + 필터) */}
+        <div className="sticky top-0 z-10 bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl border-b border-white/20 dark:border-slate-800/30">
+          <div className="p-4">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-bold bg-gradient-to-r from-green-600 via-emerald-600 to-teal-600 bg-clip-text text-transparent flex items-center gap-2">
+                <MapPin className="h-5 w-5 text-green-600" />
+                주변 맛집
+              </h2>
+              <div className="flex items-center gap-2">
+                <select
+                  value={tierFilter}
+                  onChange={(e) => setTierFilter(e.target.value as any)}
+                  className="h-9 rounded-xl border bg-white/95 dark:bg-slate-800/95 text-sm px-3 font-medium shadow-md backdrop-blur-sm"
+                >
+                  <option value="ALL">🍽️ 전체</option>
+                  <option value="UNRANK">🥢 젓가락</option>
+                  <option value="브론즈">🥄 나무수저</option>
+                  <option value="실버">🥄 은수저</option>
+                  <option value="골드">🍴 금수저</option>
+                  <option value="플래티넘">🍽️ 다이아수저</option>
+                  <option value="다이아">👑 왕관수저</option>
+                </select>
+                <select
+                  value={sortKey}
+                  onChange={(e) => setSortKey(e.target.value as any)}
+                  className="h-9 rounded-xl border bg-white/95 dark:bg-slate-800/95 text-sm px-3 font-medium shadow-md backdrop-blur-sm"
+                >
+                  <option value="rating">⭐ 별점 순</option>
+                  <option value="reviews">💬 리뷰 수 순</option>
+                </select>
+                <Badge
+                  variant="secondary"
+                  className="bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 font-semibold px-3 py-1 rounded-full shadow-sm"
+                >
+                  {filteredRestaurants.length}곳
+                </Badge>
+              </div>
             </div>
           </div>
+        </div>
 
+        {/* 스크롤 리스트 */}
+        <div className="flex-1 overflow-y-auto p-4">
           <div className="space-y-3">
             {filteredRestaurants.slice(0, 10).map((r) => (
               <motion.div
@@ -1305,7 +1314,7 @@ export default function MapWithListPage() {
 
                         <div className="flex items-center gap-1.5 bg-blue-50 dark:bg-blue-900/25 px-2.5 py-1.5 rounded-full border border-blue-200/60 dark:border-blue-800/60">
                           <MessageCircle className="h-3.5 w-3.5 text-blue-700 dark:text-blue-300" />
-                          <span className="text-blue-700 dark:text-blue-300 font-semibold text-xs">
+                          <span className="text-blue-700 dark:text-blue-300 text-xs font-semibold">
                             리뷰 {Math.max(0, Number(r.reviewCount ?? 0))}개
                           </span>
                         </div>
