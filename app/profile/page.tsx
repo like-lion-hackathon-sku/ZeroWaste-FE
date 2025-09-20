@@ -38,7 +38,14 @@ import { apiClient } from "@/lib/api/client"
 import { formatDate } from "@/lib/utils/database-helpers"
 import { UserRole } from "@/lib/types/database"
 
-type TabKey = "리뷰" | "즐겨찾기" | "스탬프" | "뱃지" | "restaurant" | "reviews"
+type TabKey =
+  | "리뷰"
+  | "즐겨찾기"
+  | "스탬프"
+  | "뱃지"
+  | "restaurant"
+  | "reviews"
+  | "owner-badges"
 
 const toArray = <T,>(v: any): T[] =>
   Array.isArray(v) ? v : (v?.items ?? v?.success?.items ?? [])
@@ -86,12 +93,12 @@ type OwnerRestaurant = {
 type RestaurantStamp = {
   restaurantId: number
   restaurantName: string
-  totalStamps: number   // 서버 기준 총 스탬프 수
-  maxStamps: number     // 한 권 완성에 필요한 개수(예: 5)
+  totalStamps: number
+  maxStamps: number
 }
 
 /* ────────────────────────────────────────────────────────────
-   API Hooks
+   API Hooks (스탬프)
 ──────────────────────────────────────────────────────────── */
 const useUserStampsData = () => {
   const [stamps, setStamps] = useState<RestaurantStamp[]>([])
@@ -99,7 +106,6 @@ const useUserStampsData = () => {
   const [error, setError] = useState<string | null>(null)
   const [isUsingFallback, setIsUsingFallback] = useState(false)
 
-  // ✅ 기본 목업 (API 실패/없을 때 보여줄 값)
   const MOCK: RestaurantStamp[] = [
     { restaurantId: 101, restaurantName: "그린 비스트로", totalStamps: 7, maxStamps: 5 },
     { restaurantId: 202, restaurantName: "제로웨이스트 키친", totalStamps: 3, maxStamps: 5 },
@@ -111,13 +117,9 @@ const useUserStampsData = () => {
       setLoading(true)
       setError(null)
       try {
-        // 서버에 쿠키가 없어도 클라에서만 호출되게 되어 있으니 안전하지만
-        // 혹시 에러나 빈 응답이면 목업으로 폴백
         const res = await apiClient.getUserStamps()
         if (!ignore && res?.success) {
-          const raw = Array.isArray(res.data)
-            ? res.data
-            : (res.data as any)?.items ?? []
+          const raw = Array.isArray(res.data) ? res.data : (res.data as any)?.items ?? []
           const normalized: RestaurantStamp[] = raw.map((stamp: any) => ({
             restaurantId: stamp?.restaurant?.id ?? stamp?.id,
             restaurantName: stamp?.restaurant?.name ?? `식당 ${stamp?.restaurant?.id ?? stamp?.id}`,
@@ -163,12 +165,16 @@ export default function ProfilePage() {
   const { data: badges, loading: badgesLoading, isUsingFallback: badgesFallback } = useUserBadges()
   const { data: favorites, loading: favoritesLoading, isUsingFallback: favoritesFallback } = useFavorites()
   const { data: reviews, loading: reviewsLoading, isUsingFallback: reviewsFallback } = useUserReviews()
-
   const { stamps: restaurantStamps, loading: stampsLoading, isUsingFallback: stampsFallback } = useUserStampsData()
 
-  // 로딩/에러
   const isLoading = profileLoading || badgesLoading || favoritesLoading || reviewsLoading || stampsLoading
   const hasError = userError
+
+  // 공용: 획득 뱃지 수
+  const earnedBadgesCount = useMemo(
+    () => toArray<any>(badges).filter((b) => !!(b?.badge ?? b?.name)).length,
+    [badges]
+  )
 
   // 즐겨찾기
   type ValidFavorite = FavoriteItem & { restaurant_id: number; restaurant: RestaurantLite }
@@ -178,7 +184,7 @@ export default function ProfilePage() {
   // 리뷰
   const [reviewList, setReviewList] = useState<ReviewVM[]>([])
 
-  // ── 사장님 목업
+  // 사장님 목업
   const [ownerRestaurants] = useState<OwnerRestaurant[]>([
     {
       id: 1,
@@ -205,9 +211,7 @@ export default function ProfilePage() {
     }
   }, [ownerRestaurants])
 
-  /* ──────────────────────────────────────────────────────────
-     즐겨찾기 정규화
-  ─────────────────────────────────────────────────────────── */
+  /* 즐겨찾기 정규화 */
   function toFavoriteItem(f: any): FavoriteItem {
     const restaurant_id = f?.restaurant_id ?? f?.restaurantId ?? f?.restaurant?.id ?? null
     const restaurant: RestaurantLite | undefined =
@@ -230,9 +234,7 @@ export default function ProfilePage() {
     setFavList(raw.map(toFavoriteItem).filter(isValid))
   }, [favorites])
 
-  /* ──────────────────────────────────────────────────────────
-     리뷰 정규화 + 식당명 패치
-  ─────────────────────────────────────────────────────────── */
+  /* 리뷰 정규화 + 식당명 패치 */
   useEffect(() => {
     const raw = toArray<any>(reviews)
     const base: ReviewVM[] = raw.map((r: any) => ({
@@ -300,39 +302,43 @@ export default function ProfilePage() {
       setActiveTab("restaurant")
     } else {
       setUserRole(UserRole.USER)
-      setActiveTab("reviews")
+      setActiveTab("리뷰")
     }
   }
 
   const handleRestaurantClick = (restaurantId: number) => router.push(`/restaurant/${restaurantId}`)
   const handleEditProfile = () => router.push("/profile/edit")
 
-  const handleRemoveFavorite = async (restaurantId: number) => {
+  /* 즐겨찾기 삭제: 전파 차단 + 낙관적 업데이트 */
+  const handleRemoveFavorite = async (
+    e: React.MouseEvent<HTMLButtonElement>,
+    restaurantId: number
+  ) => {
+    e.preventDefault()
+    e.stopPropagation()
+
     if (removingId) return
     setRemovingId(restaurantId)
+
     const prev = favList
     setFavList((list) => list.filter((f) => f.restaurant_id !== restaurantId))
+
     try {
       const res = await apiClient.removeFavorite(restaurantId)
       if (!res.success) throw new Error(res.error || "즐겨찾기 삭제 실패")
-    } catch (e) {
+    } catch (err) {
       setFavList(prev)
+      console.error(err)
       alert("즐겨찾기 삭제에 실패했습니다.")
-      console.error(e)
     } finally {
       setRemovingId(null)
     }
   }
 
-  /* ──────────────────────────────────────────────────────────
-     스탬프: 식당별 페이지네이션 & 사용 상태
-  ─────────────────────────────────────────────────────────── */
-  // 식당별 현재 페이지(1-base)
+  /* 스탬프: 페이징 & 사용 상태 */
   const [pageByRestaurant, setPageByRestaurant] = useState<Record<number, number>>({})
-  // 식당별 사용(교환) 횟수. 1회 = maxStamps개 사용
   const [usedBooksByRestaurant, setUsedBooksByRestaurant] = useState<Record<number, number>>({})
 
-  // 남은 스탬프(사용 반영)
   const getAvailable = (stamp: RestaurantStamp) => {
     const usedBooks = usedBooksByRestaurant[stamp.restaurantId] ?? 0
     const usedStamps = usedBooks * stamp.maxStamps
@@ -349,12 +355,10 @@ export default function ProfilePage() {
   const handleUseStamps = (stamp: RestaurantStamp) => {
     const avail = getAvailable(stamp)
     if (avail < stamp.maxStamps) return
-    // 로컬 사용 증가
     setUsedBooksByRestaurant((prev) => {
       const cur = prev[stamp.restaurantId] ?? 0
       return { ...prev, [stamp.restaurantId]: cur + 1 }
     })
-    // 사용 후 페이지 보정
     setPageByRestaurant((prev) => {
       const next = { ...prev }
       const rid = stamp.restaurantId
@@ -364,9 +368,6 @@ export default function ProfilePage() {
       if (curPage > totalPagesAfter) next[rid] = totalPagesAfter
       return next
     })
-
-    // TODO: 서버와 동기화 필요 시 여기에서 실제 사용 API 호출
-    // await apiClient.useStampBook({ restaurantId: stamp.restaurantId })
   }
 
   // 로딩/에러 뷰
@@ -499,12 +500,12 @@ export default function ProfilePage() {
                     {userRole === UserRole.USER ? (
                       <>
                         <Store className="h-4 w-4 mr-2" />
-                        사장 전환
+                        사업자 모드 전환
                       </>
                     ) : (
                       <>
                         <UserCheck className="h-4 w-4 mr-2" />
-                        사용자 전환
+                        사용자 모드 전환 
                       </>
                     )}
                   </Button>
@@ -544,7 +545,7 @@ export default function ProfilePage() {
                     </motion.div>
 
                     <motion.div whileHover={{ scale: 1.05 }} className="text-center p-4 bg-gradient-to-br from-orange-500/10 to-yellow-500/10 backdrop-blur-sm rounded-2xl border border-orange-200/30">
-                      <div className="text-2xl font-bold text-orange-600 mb-1">{toArray<any>(badges).filter((b) => !!(b?.badge ?? b?.name)).length}</div>
+                      <div className="text-2xl font-bold text-orange-600 mb-1">{earnedBadgesCount}</div>
                       <div className="text-sm text-gray-600 dark:text-gray-300">획득 뱃지</div>
                     </motion.div>
                   </>
@@ -565,9 +566,10 @@ export default function ProfilePage() {
                       <div className="text-sm text-gray-600 dark:text-gray-300">받은 즐겨찾기</div>
                     </motion.div>
 
-                    <motion.div whileHover={{ scale: 1.05 }} className="text-center p-4 bg-gradient-to-br from-gray-500/10 to-slate-500/10 backdrop-blur-sm rounded-2xl border border-gray-200/30">
-                      <div className="text-2xl font-bold text-gray-600 mb-1">4.2</div>
-                      <div className="text-sm text-gray-600 dark:text-gray-300">서비스 점수</div>
+                    {/* ★ 서비스 점수 → 획득 뱃지 수로 교체 */}
+                    <motion.div whileHover={{ scale: 1.05 }} className="text-center p-4 bg-gradient-to-br from-orange-500/10 to-yellow-500/10 backdrop-blur-sm rounded-2xl border border-orange-200/30">
+                      <div className="text-2xl font-bold text-orange-600 mb-1">{earnedBadgesCount}</div>
+                      <div className="text-sm text-gray-600 dark:text-gray-300">획득 뱃지</div>
                     </motion.div>
                   </>
                 )}
@@ -579,7 +581,11 @@ export default function ProfilePage() {
         {/* 탭 */}
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}>
           <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as TabKey)} className="w-full">
-            <TabsList className={`grid w-full ${userRole === UserRole.USER ? "grid-cols-4" : "grid-cols-2"} backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 h-12`}>
+            <TabsList
+              className={`grid w-full ${
+                userRole === UserRole.USER ? "grid-cols-4" : "grid-cols-3"
+              } backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 h-12`}
+            >
               {userRole === UserRole.USER ? (
                 <>
                   <TabsTrigger value="리뷰" className="data-[state=active]:bg-green-500/20 data-[state=active]:text-green-700 dark:data-[state=active]:text-green-400">
@@ -602,6 +608,10 @@ export default function ProfilePage() {
                   </TabsTrigger>
                   <TabsTrigger value="reviews" className="data-[state=active]:bg-green-500/20 data-[state=active]:text-green-700 dark:data-[state=active]:text-green-400">
                     받은 리뷰
+                  </TabsTrigger>
+                  {/* ★ 사장 뱃지 탭 */}
+                  <TabsTrigger value="owner-badges" className="data-[state=active]:bg-orange-500/20 data-[state=active]:text-orange-700 dark:data-[state=active]:text-orange-400">
+                    뱃지 ({earnedBadgesCount})
                   </TabsTrigger>
                 </>
               )}
@@ -698,13 +708,23 @@ export default function ProfilePage() {
                                   transition={{ delay: 0.05 * index }}
                                   className="relative backdrop-blur-sm bg-white/50 dark:bg-gray-800/50 border border-white/20 rounded-2xl p-4 hover:shadow-lg transition-all duration-300 cursor-pointer"
                                   onClick={() => handleRestaurantClick(favorite.restaurant!.id)}
+                                  role="button"
+                                  tabIndex={0}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter" || e.key === " ") {
+                                      e.preventDefault()
+                                      handleRestaurantClick(favorite.restaurant!.id)
+                                    }
+                                  }}
                                 >
                                   <div className="absolute right-3 top-3">
                                     <Button
+                                      type="button"
                                       variant="destructive"
                                       size="sm"
                                       className="gap-2 bg-red-500/90 hover:bg-red-600"
-                                      onClick={() => handleRemoveFavorite(favorite.restaurant_id)}
+                                      onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                                      onClick={(e) => handleRemoveFavorite(e, favorite.restaurant_id!)}
                                       disabled={removingId === favorite.restaurant_id}
                                       title="즐겨찾기 삭제"
                                     >
@@ -719,7 +739,7 @@ export default function ProfilePage() {
                                     </Button>
                                   </div>
 
-                                  <div role="button" tabIndex={0}>
+                                  <div>
                                     <h3 className="font-semibold text-gray-900 dark:text-white mb-1">
                                       {favorite.restaurant.name}
                                     </h3>
@@ -762,7 +782,7 @@ export default function ProfilePage() {
                   </motion.div>
                 </TabsContent>
 
-                {/* 스탬프 (식당별 페이징 + 사용횟수) */}
+                {/* 스탬프 */}
                 <TabsContent value="스탬프" className="mt-6">
                   <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }}>
                     <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-xl">
@@ -799,14 +819,12 @@ export default function ProfilePage() {
                                     transition={{ delay: 0.1 * index }}
                                     className="relative backdrop-blur-sm bg-white/50 dark:bg-gray-800/50 border border-white/20 rounded-2xl p-6 hover:shadow-lg transition-all duration-300"
                                   >
-                                    {/* 오른쪽 위: 남은/권당 */}
                                     <div className="absolute right-6 top-6 text-sm text-gray-600 dark:text-gray-300">
                                       {avail}/{stamp.maxStamps} 스탬프
                                     </div>
 
                                     <h3 className="font-semibold text-gray-900 dark:text-white text-lg mb-4">{stamp.restaurantName}</h3>
 
-                                    {/* 현재 페이지의 스탬프 슬롯 */}
                                     <div className="flex items-center justify-center gap-2 mb-3">
                                       {Array.from({ length: stamp.maxStamps }).map((_, i) => (
                                         <motion.div
@@ -825,7 +843,7 @@ export default function ProfilePage() {
                                       ))}
                                     </div>
 
-                                    <div className="text-center">
+                                    <div className="text-center w-full mx-auto">
                                       <p className="text-sm text-gray-600 dark:text-gray-300">
                                         4점 이상 리뷰 {avail}개로 획득한 스탬프(사용 반영)
                                       </p>
@@ -836,10 +854,8 @@ export default function ProfilePage() {
                                       )}
                                     </div>
 
-                                    {/* 하단 바: 좌 – 페이지네이션 / 중 – 사용하기 / 우 – 사용횟수 */}
-                                    <div className="mt-4 flex items-center justify-between">
-                                      {/* 식당별 페이지네이션 */}
-                                      <div className="flex items-center gap-2">
+                                    <div className="mt-4 grid grid-cols-[1fr_auto_1fr] items-center">
+                                      <div className="flex items-center gap-2 justify-self-start">
                                         <Button
                                           variant="outline"
                                           size="sm"
@@ -877,28 +893,28 @@ export default function ProfilePage() {
                                         </Button>
                                       </div>
 
-                                      {/* 가운데: 사용하기 버튼/완성 표시 */}
-                                      {avail >= stamp.maxStamps ? (
-                                        <div className="flex items-center gap-2">
-                                          <div className="inline-flex items-center gap-1 px-3 py-1 bg-gradient-to-r from-purple-500 to-pink-500 text-white text-xs rounded-full">
-                                            <Award className="h-3 w-3" />
-                                            스탬프 완성!
+                                      <div className="justify-self-center">
+                                        {avail >= stamp.maxStamps ? (
+                                          <div className="flex items-center gap-2">
+                                            <div className="inline-flex items-center gap-1 px-3 py-1 bg-gradient-to-r from-purple-500 to-pink-500 text-white text-xs rounded-full">
+                                              <Award className="h-3 w-3" />
+                                              스탬프 완성!
+                                            </div>
+                                            <Button
+                                              onClick={() => handleUseStamps(stamp)}
+                                              className="bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white px-6 py-2 rounded-full text-sm font-medium shadow-lg hover:shadow-xl transition-all duration-300"
+                                            >
+                                              사용하기
+                                            </Button>
                                           </div>
-                                          <Button
-                                            onClick={() => handleUseStamps(stamp)}
-                                            className="bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white px-6 py-2 rounded-full text-sm font-medium shadow-lg hover:shadow-xl transition-all duration-300"
-                                          >
-                                            사용하기
-                                          </Button>
-                                        </div>
-                                      ) : (
-                                        <div className="text-xs text-gray-500 dark:text-gray-400">
-                                          {Math.max(0, stamp.maxStamps - (avail - (curPage - 1) * stamp.maxStamps))}개 더 필요
-                                        </div>
-                                      )}
+                                        ) : (
+                                          <div className="text-xs text-gray-500 dark:text-gray-400 text-center">
+                                            {Math.max(0, stamp.maxStamps - (avail - (curPage - 1) * stamp.maxStamps))}개 더 필요
+                                          </div>
+                                        )}
+                                      </div>
 
-                                      {/* 오른쪽: 사용 횟수 */}
-                                      <div className="text-right">
+                                      <div className="justify-self-end text-right">
                                         {usedBooks > 0 && (
                                           <div className="text-xs text-gray-600 dark:text-gray-300">사용 {usedBooks}회</div>
                                         )}
@@ -921,14 +937,14 @@ export default function ProfilePage() {
                   </motion.div>
                 </TabsContent>
 
-                {/* 뱃지 */}
+                {/* 뱃지 (USER) */}
                 <TabsContent value="뱃지" className="mt-6">
                   <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }} className="space-y-6">
                     <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-xl">
                       <CardHeader>
                         <CardTitle className="flex items-center gap-2">
                           <Award className="h-5 w-5 text-orange-500" />
-                          획득한 뱃지 ({toArray<any>(badges).filter((b) => !!(b?.badge ?? b?.name)).length})
+                          획득한 뱃지 ({earnedBadgesCount})
                         </CardTitle>
                       </CardHeader>
                       <CardContent>{/* 필요 시 상세 UI 추가 */}</CardContent>
@@ -942,7 +958,6 @@ export default function ProfilePage() {
                         </CardTitle>
                       </CardHeader>
                       <CardContent>
-                        {/* 예시 진행중 뱃지 */}
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                           {[
                             { id: "good_customer_3", name: "착한 손님 Lv.3", icon: "🍃", description: "누적 리뷰 50개", progress: reviewList.length || 0, target: 50 },
@@ -1068,6 +1083,68 @@ export default function ProfilePage() {
                           <Star className="h-16 w-16 mx-auto mb-4 opacity-30" />
                           <h3 className="text-lg font-medium mb-2">받은 리뷰 관리 기능</h3>
                           <p>고객들의 소중한 리뷰를 확인하고 관리할 수 있습니다</p>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </motion.div>
+                </TabsContent>
+
+                {/* ★ 사장 뱃지 탭 */}
+                <TabsContent value="owner-badges" className="mt-6">
+                  <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }} className="space-y-6">
+                    <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-xl">
+                      <CardHeader>
+                        <CardTitle className="flex items-center gap-2">
+                          <Award className="h-5 w-5 text-orange-500" />
+                          획득한 뱃지 ({earnedBadgesCount})
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        {earnedBadgesCount > 0 ? (
+                          <div className="text-sm text-gray-600 dark:text-gray-300">
+                            뱃지 목록은 추후 상세 화면에서 관리할 수 있어요.
+                          </div>
+                        ) : (
+                          <div className="text-center text-gray-500 py-8">
+                            아직 획득한 뱃지가 없습니다.
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+
+                    <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-xl">
+                      <CardHeader>
+                        <CardTitle className="flex items-center gap-2">
+                          <Users className="h-5 w-5 text-gray-500" />
+                          진행 중인 뱃지 (2)
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                          {[
+                            { id: "good_owner", name: "친절한 사장님", icon: "🧡", description: "리뷰 50개 이상, 평균 4.5+", progress: 24, target: 50 },
+                            { id: "eco_master", name: "에코 마스터", icon: "🌿", description: "에코 캠페인 10회 참여", progress: 6, target: 10 },
+                          ].map((badge, idx) => (
+                            <motion.div
+                              key={badge.id}
+                              initial={{ opacity: 0, scale: 0.9 }}
+                              animate={{ opacity: 1, scale: 1 }}
+                              transition={{ delay: 0.1 * idx }}
+                              whileHover={{ scale: 1.05 }}
+                              className="p-4 bg-gray-500/10 backdrop-blur-sm border border-gray-200/30 rounded-2xl text-center"
+                            >
+                              <div className="text-3xl mb-2 opacity-50">{badge.icon}</div>
+                              <h3 className="font-semibold text-gray-900 dark:text-white mb-1">{badge.name}</h3>
+                              <p className="text-sm text-gray-600 dark:text-gray-300 mb-3">{badge.description}</p>
+                              <div className="space-y-2">
+                                <div className="flex justify-between text-sm">
+                                  <span>진행률</span>
+                                  <span>{badge.progress}/{badge.target}</span>
+                                </div>
+                                <Progress value={(badge.progress / badge.target) * 100} className="h-2" />
+                              </div>
+                            </motion.div>
+                          ))}
                         </div>
                       </CardContent>
                     </Card>

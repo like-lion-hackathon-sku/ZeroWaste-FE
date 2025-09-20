@@ -25,6 +25,9 @@ import {
   Loader2,
   Award,
   Sparkles,
+  Bot,
+  QrCode,
+  RefreshCw,
 } from "lucide-react"
 
 import { apiClient } from "@/lib/api/client"
@@ -213,7 +216,7 @@ function normalizeRestaurant(raw: any): UIRestaurant {
       badge: h.badge ?? null,
       wasteScore: typeof h.ecoScore === "number" ? h.ecoScore : null,
       totalReviews: typeof h.reviewCount === "number" ? h.reviewCount : 0,
-      category: toCategoryLabel(raw) ?? h.category ?? null, // 지도 포맷
+      category: toCategoryLabel(raw) ?? h.category ?? null,
       distance: null,
       address: t.info?.address ?? h.address ?? null,
       telephone: t.info?.telephone ?? h.telephone ?? null,
@@ -288,6 +291,11 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
   const [reviewsError, setReviewsError] = useState<string | null>(null)
   const [reviewsFetched, setReviewsFetched] = useState(false)
 
+  // ── NEW: AI 요약 상태
+  const [aiSummary, setAiSummary] = useState<string | null>(null)
+  const [aiLoading, setAiLoading] = useState(false)
+  const [aiError, setAiError] = useState<string | null>(null)
+
   async function loadReviewsOnce(id: number) {
     if (!id || reviewsFetched) return
     setReviewsLoading(true)
@@ -303,7 +311,8 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
           : Array.isArray(res.data)
             ? (res.data as any)
             : []
-        setReviews(list.map((r: any) => normalizeReview(r)))
+        const norm = list.map((r: any) => normalizeReview(r))
+        setReviews(norm)
       }
     } catch (e: any) {
       setReviews([])
@@ -314,6 +323,57 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
     }
   }
 
+  // ── NEW: AI 요약 로더 (API → 폴백)
+  const summarizeWithFallback = async (id: number, reviewData: UIReview[]) => {
+    setAiLoading(true)
+    setAiError(null)
+    try {
+      // 1) 서버 AI 요약 시도
+      const res = await apiClient.getAiReviewSummary?.(id)
+      if (res?.success && res.data) {
+        const text =
+          typeof res.data === "string"
+            ? res.data
+            : (res.data as any)?.summary || (res.data as any)?.text || null
+        if (text) {
+          setAiSummary(String(text))
+          return
+        }
+      }
+
+      // 2) 폴백: 클라에서 간단 요약 생성
+      const positives = reviewData.filter((r) => (r.wasteRating ?? 0) >= 4)
+      const neutrals = reviewData.filter((r) => (r.wasteRating ?? 0) >= 3 && (r.wasteRating ?? 0) < 4)
+      const negatives = reviewData.filter((r) => (r.wasteRating ?? 0) < 3)
+
+      const topPhrases = (arr: UIReview[], limit = 3) =>
+        arr
+          .map((r) => (r.comment || "").trim())
+          .filter(Boolean)
+          .slice(0, limit)
+
+      const bullets: string[] = [
+        `긍정 리뷰 ${positives.length}건 · 보통 ${neutrals.length}건 · 아쉬움 ${negatives.length}건.`,
+      ]
+
+      const add = (title: string, items: string[]) => {
+        if (!items.length) return
+        bullets.push(`${title}`)
+        items.forEach((t) => bullets.push(`- ${t.slice(0, 120)}`))
+      }
+
+      add("좋았던 점", topPhrases(positives))
+      add("보통이었던 점", topPhrases(neutrals))
+      add("아쉬웠던 점", topPhrases(negatives))
+
+      setAiSummary(bullets.join("\n"))
+    } catch (e: any) {
+      setAiError(e?.message || "AI 요약 생성에 실패했어요.")
+    } finally {
+      setAiLoading(false)
+    }
+  }
+
   // 상세 + 선로딩
   useEffect(() => {
     let mounted = true
@@ -321,6 +381,7 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
       setLoading(true)
       setError(null)
       setReviewsFetched(false)
+      setAiSummary(null)
       try {
         const res = await apiClient.getRestaurantDetail(restaurantId)
         if (!mounted) return
@@ -329,7 +390,8 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
           setRaw(null)
         } else {
           setRaw(res.data)
-          loadReviewsOnce(restaurantId) // 선로딩
+          // 리뷰/요약 선로딩
+          await loadReviewsOnce(restaurantId)
         }
       } catch (e: any) {
         if (!mounted) return
@@ -343,6 +405,13 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
       mounted = false
     }
   }, [restaurantId])
+
+  // 리뷰 로딩 끝나면 AI 요약 실행(한 번만)
+  useEffect(() => {
+    if (!reviewsFetched || aiSummary || aiLoading) return
+    summarizeWithFallback(restaurantId, reviews)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reviewsFetched])
 
   // 리뷰 탭 진입 시(미로드면 1회)
   useEffect(() => {
@@ -432,6 +501,11 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
     router.push(`/restaurant/edit/${restaurantId}`)
   }
 
+  // ── NEW: 스탬프 사용(QR 스캔 화면 이동)
+  const handleUseStamp = () => {
+    router.push(`/scan?type=stamp&restaurantId=${restaurantId}`)
+  }
+
   // 리뷰 평균(있으면 사용)
   const reviewsAvg = useMemo(() => {
     if (!reviews.length) return null
@@ -508,6 +582,19 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
             </Button>
           </motion.div>
           <div className="flex items-center gap-2">
+            {/* NEW: 스탬프 사용(QR 스캔 이동) */}
+            <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleUseStamp}
+                title="스탬프 사용 (QR 스캔)"
+                className="h-10 w-10 rounded-2xl bg-white/50 dark:bg-slate-800/50 backdrop-blur-sm hover:bg-purple-50 dark:hover:bg-purple-900/30 shadow-lg transition-all duration-200"
+              >
+                <QrCode className="h-4 w-4 text-purple-600" />
+              </Button>
+            </motion.div>
+
             {isOwnerMode && (
               <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}>
                 <Button
@@ -521,6 +608,7 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
                 </Button>
               </motion.div>
             )}
+
             <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}>
               <Button
                 variant="ghost"
@@ -903,6 +991,48 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
                           <div className="text-sm text-muted-foreground font-medium">평균 잔반 별점</div>
                         </div>
                       </div>
+                    </CardContent>
+                  </Card>
+
+                  {/* NEW: AI 리뷰 요약 */}
+                  <Card className="bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm border-white/20 dark:border-slate-700/50 shadow-xl rounded-3xl overflow-hidden">
+                    <CardHeader className="bg-gradient-to-r from-purple-500/10 to-pink-500/10 border-b border-white/20 dark:border-slate-700/50">
+                      <CardTitle className="flex items-center justify-between text-xl">
+                        <span className="flex items-center gap-3">
+                          <div className="p-2 rounded-xl bg-gradient-to-br from-purple-500 to-pink-600 shadow-lg">
+                            <Bot className="h-5 w-5 text-white" />
+                          </div>
+                          AI 리뷰 요약
+                        </span>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => summarizeWithFallback(restaurantId, reviews)}
+                          className="rounded-xl hover:bg-white/60 dark:hover:bg-slate-700/50"
+                          title="다시 분석"
+                        >
+                          <RefreshCw className={`h-4 w-4 ${aiLoading ? "animate-spin" : ""}`} />
+                        </Button>
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="p-6">
+                      {aiLoading ? (
+                        <div className="flex items-center justify-center py-10 text-muted-foreground">
+                          <Loader2 className="h-5 w-5 animate-spin mr-2" /> 분석 중…
+                        </div>
+                      ) : aiError ? (
+                        <div className="text-center text-red-500 py-8 bg-red-50 dark:bg-red-900/20 rounded-xl">
+                          {aiError}
+                        </div>
+                      ) : aiSummary ? (
+                        <div className="prose prose-sm dark:prose-invert max-w-none whitespace-pre-wrap leading-relaxed">
+                          {aiSummary}
+                        </div>
+                      ) : (
+                        <div className="text-center text-muted-foreground py-8">
+                          아직 보여줄 요약이 없어요.
+                        </div>
+                      )}
                     </CardContent>
                   </Card>
 
