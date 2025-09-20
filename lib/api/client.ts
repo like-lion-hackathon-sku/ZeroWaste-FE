@@ -8,9 +8,11 @@ import type { ApiResponse } from "@/lib/types/database"
  * - FormData 전송 시 Content-Type 수동 세팅 금지
  * - BE 응답(resultType/success/error) → FE 표준(success/data|error)로 정규화
  */
+let refreshPromise: Promise<Response> | null = null;
 class ApiClient {
+  
   private baseUrl: string
-
+  
   constructor(baseUrl = process.env.NEXT_PUBLIC_API_URL || "/_be") {
     this.baseUrl = (baseUrl || "/_be").replace(/\/$/, "")
   }
@@ -52,13 +54,24 @@ class ApiClient {
 
       // 401 → refresh 1회 시도
       if (res.status === 401 && !_retrying) {
-        const r = await fetch(this.buildUrl("/auth/refresh"), {
-          method: "POST",
-          credentials: "include",
-          cache: "no-store",
-          headers: { Accept: "application/json" },
-        })
-        if (r.ok) return this.request<T>(endpoint, options, true)
+        if (!refreshPromise) {
+          refreshPromise = fetch(this.buildUrl("/auth/refresh"), {
+            method: "POST",
+            credentials: "include",
+            cache: "no-store",
+            headers: { Accept: "application/json" },
+          }).finally(() => {
+            // 한 번 끝나면 다음 401 때 새로 시도할 수 있게 초기화
+            refreshPromise = null
+          })
+        }
+      
+        const rr = await refreshPromise
+        if (rr?.ok) {
+          // 토큰 갱신 성공 → 원요청 재시도
+          return this.request<T>(endpoint, options, true)
+        }
+        // 갱신 실패 → 그대로 401 처리
       }
 
       if (!res.ok) {
@@ -163,6 +176,15 @@ class ApiClient {
     return this.request(`/restaurants/${id}/reviews`)
   }
 
+  /** ✅ (추가) 일반 사용자 메뉴 목록 */
+  async getRestaurantMenus(id: number) {
+    // BE에 /restaurants/{id}/menu가 있다면 그대로 사용
+    return this.request<{ id: number; name: string; price?: number | null }[]>(
+      `/restaurants/${id}/menu`,
+      { method: "GET" }
+    )
+  }
+
   // ───────────────────────── Favorites
   async getFavorites() {
     return this.request("/favorites")
@@ -217,10 +239,10 @@ class ApiClient {
     if (!signed.success || !signed.data?.url) {
       return { success: false, error: "서명 URL 발급 실패" } as ApiResponse<any>;
     }
-  
+
     // ⛳️ 헤더를 넣지 말고 그대로 PUT (서명에 Content-Type이 없을 때)
     const putRes = await fetch(signed.data.url, { method: "PUT", body: file })
-  
+
     if (!putRes.ok) {
       return { success: false, error: `스토리지 업로드 실패 (${putRes.status})` } as ApiResponse<any>;
     }
@@ -251,28 +273,45 @@ class ApiClient {
   }
   async deleteStampReward(rewardId: number) { return this.request(`/biz/stamps/rewards/${rewardId}`, { method: "DELETE" }) }
 
-  // ───────────────────────── Reviews
+  // ───────────────────────── Reviews (명세 준수)
+  /**
+   * 리뷰 생성(식당별)
+   * BE 명세: POST /api/reviews/restaurants/{id}
+   * - body: { content: string, score: number, images?: string[] }
+   */
   async createReviewForRestaurant(
     restaurantId: number,
-    payload: { contents: string; score: number; menuId?: number | null; menuName?: string; images?: Array<{ fileName: string; shotType: "after"; score: number | null; summary: string | null }> }
+    payload: {
+      content: string;
+      score: number;
+      images?: string[];
+    }
   ) {
-    return this.request(`/restaurants/${restaurantId}/reviews`, { method: "POST", body: JSON.stringify(payload) })
+    const body: any = {
+      content: payload.content,
+      score: payload.score,
+      images: Array.isArray(payload.images) ? payload.images : [],
+    }
+    return this.request(`/reviews/restaurants/${restaurantId}`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    })
   }
+
   async updateReview(id: number, data: { contents?: string; score?: number }) {
     return this.request(`/reviews/${id}`, { method: "PUT", body: JSON.stringify(data) })
   }
+
+  /** BE 명세: DELETE /api/reviews/{reviewId} */
   async deleteReview(id: number) { return this.request(`/reviews/${id}`, { method: "DELETE" }) }
+
+  /** BE 명세: GET /api/reviews/me */
   async getUserReviews() { return this.request("/reviews/me") }
+
+  /** (옵션) 분석 라우트가 존재할 때만 사용 */
   async analyzeReview(id: number, form?: FormData) {
     if (form) return this.request(`/reviews/${id}/analyze`, { method: "POST", body: form })
     return this.request(`/reviews/${id}/analyze`, { method: "POST" })
-  }
-  async createReview(restaurantId: number, data: { content: string; score?: number; photos?: File[] }) {
-    const fd = new FormData()
-    fd.append("content", data.content)
-    if (data.score != null) fd.append("score", String(data.score))
-    if (data.photos) data.photos.forEach((photo, i) => fd.append(`photos[${i}]`, photo))
-    return this.request(`/restaurants/${restaurantId}/reviews`, { method: "POST", body: fd })
   }
 
   // ───────────────────────── Images (presigned URL 방식 + 업로드)
@@ -326,7 +365,7 @@ class ApiClient {
     if (!res.ok || !data?.ok) {
       return { success: false, error: data?.error || `AI analyze failed (${res.status})` } as ApiResponse<any>
     }
-    return { success: true, data } as ApiResponse<any> // { ok, score5, score100, summary, raw }
+    return { success: true, data } as ApiResponse<any>
   }
 
   // ───────────────────────── Search APIs
@@ -345,12 +384,3 @@ class ApiClient {
 
 // 싱글턴 인스턴스 export
 export const apiClient = new ApiClient()
-
-export const showApiWarning = (message: string) => {
-  if (typeof window !== "undefined") {
-    console.warn("[v0] API Warning:", message)
-    if (message.includes("연결되면 실제 데이터가 표시됩니다")) {
-      setTimeout(() => alert(message), 1000)
-    }
-  }
-}

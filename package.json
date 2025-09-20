@@ -58,6 +58,7 @@
     "react": "^18",
     "react-day-picker": "latest",
     "react-dom": "^18",
+    "react-easy-crop": "^5.5.1",
     "react-hook-form": "latest",
     "react-resizable-panels": "latest",
     "recharts": "latest",
