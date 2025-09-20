@@ -7,8 +7,8 @@
 
 
 [[redirects]]
-  from = "/_be/*"
-  to = "https://zerowaste-be-skthon.onrender.com/api/:splat"
+  from = "/api/*"
+  to = "https://bobple-be.onrender.com/api/:splat"
   status = 200
   force = true
   # (선택) 백엔드가 Host체크하면 도움됨

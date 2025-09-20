@@ -1,137 +1,169 @@
 // app/api/reviews/[id]/analyze/route.ts
 import { NextResponse, type NextRequest } from "next/server";
-import { Client } from "@gradio/client"; // 실서비스 모드에서만 사용
+import { Client } from "@gradio/client";
+import { Buffer } from "node:buffer";
 
-export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
-/* ─────────────────────────────────────────────────────────
-   공통 유틸
-────────────────────────────────────────────────────────── */
-function clampScore(n: number) {
-  if (!Number.isFinite(n)) return 0;
-  return Math.max(0, Math.min(5, Math.round(n * 10) / 10));
+const GRADIO_HOST = process.env.GRADIO_HOST ?? "https://c3abdff47bad24a110.gradio.live";
+const GRADIO_API = "/predict";
+
+async function toNodeFile(src: Blob | File, name = "upload.jpg", type?: string) {
+  const ab = await src.arrayBuffer();
+  const buf = Buffer.from(ab);
+  return new File([buf], name, { type: type || (src as any).type || "image/jpeg" });
 }
 
-// 해시 기반 의사난수(목업 점수 고정 재현성)
-function hashSeed(s: string) {
-  let h = 2166136261 >>> 0;
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return (h >>> 0) / 2 ** 32;
-}
+type GradioFileData = { data: File | Blob; path: string; meta?: any };
 
-// 점수에 따라 자연스러운 요약 문구 생성
-function summaryFor(score: number) {
-  if (score >= 4.5) return "잔반이 거의 없습니다. 훌륭합니다!";
-  if (score >= 3.5) return "대체로 잘 드셨습니다. 소량의 잔반만 남았어요.";
-  if (score >= 2.5) return "잔반이 조금 있어요. 다음엔 양 조절을 추천합니다.";
-  if (score >= 1.5) return "잔반이 꽤 남았습니다. 양/구성 조정이 필요해요.";
-  return "잔반이 많이 남았습니다. 더 작은 양을 시도해보세요.";
-}
-
-/* ─────────────────────────────────────────────────────────
-   목업 생성기
-────────────────────────────────────────────────────────── */
-function buildMock(id: string) {
-  // review id, 시간, 파일명 등을 섞어서 0~5 점수 생성
-  const seed = hashSeed(id + ":" + new Date().toDateString());
-  const raw = 4.8 * seed + 0.2; // 0.2 ~ 5.0 사이
-  const score = clampScore(raw);
-  const summary = summaryFor(score);
-  return { score, summary };
-}
-
-/* ─────────────────────────────────────────────────────────
-   메인 핸들러
-────────────────────────────────────────────────────────── */
-export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
-  const reviewId = Number(params.id);
-
+/** 헬스 체크: gradio host가 살아있는지 빠르게 확인 */
+async function ensureGradioAlive(base: string) {
   try {
-    const form = await req.formData();
-    const file = form.get("file");
+    const u = base.replace(/\/+$/, "");
+    // gradio는 /config 또는 /info가 보통 열려 있음
+    const res = await fetch(`${u}/config`, { method: "GET", cache: "no-store" });
+    if (!res.ok) throw new Error(`config ${res.status}`);
+    return true;
+  } catch (e: any) {
+    throw new Error(`Gradio 호스트(${base})에 연결할 수 없습니다: ${e?.message || "unknown"}`);
+  }
+}
 
-    // 파일 유효성(실서비스 고려). 목업이라도 형식은 맞춰 두자.
-    if (!(file instanceof File)) {
-      return NextResponse.json({ success: false, error: "NO_FILE" }, { status: 400 });
+/** 상대경로라면 절대 URL로 바꾸고, 필요시 쿠키/헤더를 넘겨 fetch */
+async function fetchImageAsBlob(req: NextRequest, urlOrPath: string): Promise<{ blob: Blob; name: string; type: string }> {
+  let imgUrl = urlOrPath.trim();
+  const isAbsolute = /^https?:\/\//i.test(imgUrl);
+  if (!isAbsolute) {
+    // 같은 호스트 절대 URL로 변환
+    imgUrl = `${req.nextUrl.origin}${imgUrl.startsWith("/") ? imgUrl : `/${imgUrl}`}`;
+  }
+
+  const headers: HeadersInit = {};
+  // BE 프록시(/_be) 등 인증이 걸린 경우 쿠키 전달
+  // (쿠키가 없어도 무해)
+  const cookie = req.headers.get("cookie");
+  if (cookie) (headers as any).cookie = cookie;
+
+  const res = await fetch(imgUrl, { headers, cache: "no-store" });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(`이미지 URL 요청 실패 (${res.status}) ${txt.slice(0, 200)}`);
+  }
+  const blob = await res.blob();
+  const type = blob.type || "image/jpeg";
+  // 파일명 추정
+  const name = imgUrl.split("/").slice(-1)[0] || "image.jpg";
+  return { blob, name, type };
+}
+
+export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
+  try {
+    const ct = req.headers.get("content-type") || "";
+
+    let file: File | null = null;
+    let imageUrl: string | null = null;
+    let menuName: string | null = null;
+
+    if (ct.includes("multipart/form-data")) {
+      const form = await req.formData();
+      const f = form.get("image");
+      if (f instanceof File) file = f as File;
+
+      const url = form.get("imageUrl");
+      if (typeof url === "string" && url.trim()) imageUrl = url.trim();
+
+      const mn = form.get("menuName");
+      if (typeof mn === "string" && mn.trim()) menuName = mn.trim();
+    } else {
+      const json = await req.json().catch(() => ({}));
+      if (json?.imageUrl && typeof json.imageUrl === "string") imageUrl = json.imageUrl.trim();
+      if (json?.menuName && typeof json.menuName === "string") menuName = json.menuName.trim();
     }
 
-    const useMock =
-      process.env.USE_MOCK_AI === "1" ||
-      !process.env.GRADIO_BASE_URL; // Gradio 설정이 없으면 자동 목업
-
-    /* ── 목업 모드 ─────────────────────────────────────── */
-    if (useMock) {
-      const { score, summary } = buildMock(String(reviewId));
-      return NextResponse.json({
-        success: true,
-        data: {
-          review_id: reviewId,
-          score,
-          summary,
-          analyzed_at: new Date().toISOString(),
-        },
-      });
+    if (!file && !imageUrl) {
+      return NextResponse.json(
+        { ok: false, error: "image 또는 imageUrl이 필요합니다." },
+        { status: 400 },
+      );
     }
 
-    /* ── 실서비스(Gradio) 모드 ─────────────────────────── */
-    const client = await Client.connect(process.env.GRADIO_BASE_URL!);
-    const route = process.env.GRADIO_PREDICT_ROUTE || "/predict";
-    const gr = await client.predict(route, { pil_image: file });
+    // 1) Gradio 헬스 체크 (죽은 호스트면 여기서 명확한 메시지로 실패)
+    await ensureGradioAlive(GRADIO_HOST);
 
-    // 문자열 배열 파싱
-    const arr = (gr as any)?.data as unknown;
-    let score = 0;
-    let summary = "";
+    // 2) Gradio 연결
+    const client = await Client.connect(GRADIO_HOST);
+    const rootUrl =
+      (client as any).config?.root ??
+      (client as any).api_url ??
+      GRADIO_HOST;
 
-    if (Array.isArray(arr)) {
-      for (const item of arr) {
-        if (typeof item !== "string") continue;
+    // 3) 업로드 준비 (반드시 Node File 로 포맷 맞추기)
+    let input: Record<string, any> = {};
 
-        // "점수: 5점" → 숫자
-        const m = item.match(/점수\s*[:：]\s*([0-9]+(?:\.[0-9]+)?)\s*점?/);
-        if (m) {
-          score = clampScore(Number(m[1]));
-          continue;
-        }
+    if (file) {
+      const nodeFile = await toNodeFile(
+        file,
+        (file as any).name || "upload.jpg",
+        (file as any).type || "image/jpeg",
+      );
+      const files: GradioFileData[] = [{ data: nodeFile, path: nodeFile.name }];
+      const uploadedArr = (await (client as any).upload(files, rootUrl)) as any[];
+      const uploaded = Array.isArray(uploadedArr) ? uploadedArr[0] : uploadedArr;
+      input = { pil_image: uploaded };
+    } else if (imageUrl) {
+      // 내부 프록시(/_be) 등 상대경로를 절대 URL로 변환 + 쿠키 전달
+      const { blob, name, type } = await fetchImageAsBlob(req, imageUrl);
+      const nodeFile = await toNodeFile(blob, name, type);
+      const files: GradioFileData[] = [{ data: nodeFile, path: name }];
+      const uploadedArr = (await (client as any).upload(files, rootUrl)) as any[];
+      const uploaded = Array.isArray(uploadedArr) ? uploadedArr[0] : uploadedArr;
+      input = { pil_image: uploaded };
+    }
 
-        // "한줄평: ..." → 본문
-        if (/한줄평\s*[:：]/.test(item)) {
-          summary = item.replace(/^.*?[:：]\s*/, "").trim();
-          continue;
-        }
+    // (옵션) 모델이 메뉴명을 받으면 여기에 넣으세요.
+    // input.menu_name = menuName;
+
+    // 4) 예측 호출
+    const result = await client.predict(GRADIO_API, input);
+
+    // 5) 응답 파싱
+    let score: number | null = null;
+    let summary: string | null = null;
+
+    if (result && typeof result === "object" && "score" in (result as any) && "summary" in (result as any)) {
+      score = Number((result as any).score);
+      summary = String((result as any).summary ?? "");
+    } else if (Array.isArray((result as any)?.data)) {
+      const data = (result as any).data;
+      if (data.length === 2 && typeof data[0] === "number" && typeof data[1] === "string") {
+        score = Number(data[0]);
+        summary = String(data[1]);
+      } else if (data.length >= 1 && typeof data[0] === "object") {
+        const obj = data[0] as any;
+        if ("score" in obj) score = Number(obj.score);
+        if ("summary" in obj) summary = String(obj.summary ?? "");
       }
     }
 
-    // 폴백
-    if (!summary) summary = summaryFor(score);
+    if (score == null) {
+      return NextResponse.json(
+        { ok: false, error: "Gradio 응답 파싱 실패", raw: result },
+        { status: 502 },
+      );
+    }
 
     return NextResponse.json({
-      success: true,
-      data: {
-        review_id: reviewId,
-        score,
-        summary,
-        analyzed_at: new Date().toISOString(),
-      },
+      ok: true,
+      reviewId: params.id,
+      score,   // 0~5 가정
+      summary, // 문자열
     });
-  } catch (e) {
-    console.error("[/api/reviews/[id]/analyze] error:", e);
-
-    // 에러 시에도 서비스 끊기지 않게 목업으로 폴백
-    const { score, summary } = buildMock(String(params.id));
-    return NextResponse.json({
-      success: true,
-      warning: "AI 연결 실패로 목업 결과를 반환합니다.",
-      data: {
-        review_id: Number(params.id),
-        score,
-        summary,
-        analyzed_at: new Date().toISOString(),
-      },
-    });
+  } catch (e: any) {
+    console.error("[analyze:error]", e);
+    return NextResponse.json(
+      { ok: false, error: e?.message ?? "Unknown error" },
+      { status: 500 },
+    );
   }
 }

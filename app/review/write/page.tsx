@@ -43,8 +43,9 @@ type MenuItem = {
 type UploadedImage = {
   id: string;
   fileName: string;
-  url: string;
-  preview: string;
+  url: string;     // 절대 URL
+  preview: string; // 절대 URL
+
   shotType: ShotType;
   ai?: {
     score: number; // 0~5
@@ -178,15 +179,17 @@ export default function ReviewWritePage() {
         if (!up.success) throw new Error(up.error || "이미지 업로드 실패");
 
         const { fileName } = up.data!;
-        const previewUrl = apiClient.getImageUrl("review", fileName);
+        // 절대 URL로 저장 (분석 호출 안정성)
+        const rel = apiClient.getImageUrl("review", fileName);
+        const previewUrl = apiClient.toAbsoluteUrl(rel);
 
         setUploadedImages((prev) => [
           ...prev,
           {
             id: Date.now().toString() + Math.random().toString(36).slice(2, 10),
             fileName,
-            url: previewUrl,
-            preview: previewUrl,
+            url: previewUrl,     // 절대 URL
+            preview: previewUrl, // 절대 URL
             shotType: "after",
           },
         ]);
@@ -222,7 +225,8 @@ export default function ReviewWritePage() {
     });
   };
 
-  /* -------- AI 분석 -------- */
+
+  /* -------- AI 분석 (이미지 URL → 우리 BE → Gradio) -------- */
   const analyzeImage = async (imageId: string) => {
     const target = uploadedImages.find((img) => img.id === imageId);
     if (!target) return alert("이미지를 찾을 수 없어요.");
@@ -236,13 +240,15 @@ export default function ReviewWritePage() {
       setShowAILoadingModal(true);
       setIsAnalyzing(true);
 
-      const res = await (apiClient as any).analyzeImage("review", target.fileName);
-      if (!res.success) throw new Error(res.error || "AI 분석 실패");
 
-      const payload: any = res.data;
-      const scoreNum = Number(payload?.score ?? payload?.data?.score ?? 0);
-      const summaryStr = String(payload?.summary ?? payload?.data?.summary ?? "");
-      const safeScore = Math.max(0, Math.min(5, Number.isFinite(scoreNum) ? scoreNum : 0));
+      // 클라이언트 헬퍼 (내부에서 절대 URL 보정 + 에러 정규화)
+      const resp = await apiClient.analyzeWasteByPublicUrl(target.url);
+      if (!resp.success) throw new Error(resp.error || "AI 분석 실패");
+
+      const payload: any = resp.data ?? {};
+      const scoreNum = Number(payload?.score5 ?? payload?.score ?? 0);
+      const summaryStr = String(payload?.summary ?? "");
+      const safeScore = Math.max(0, Math.min(5, Number.isFinite(scoreNum) ? Math.round(scoreNum * 10) / 10 : 0));
 
       setUploadedImages((prev) => {
         const next = prev.map((img) =>
@@ -386,9 +392,7 @@ export default function ReviewWritePage() {
             <ArrowLeft className="h-4 w-4 mr-2" />
             뒤로가기
           </Button>
-          <h1 className="font-bold text-xl bg-gradient-to-r from-green-600 to-sky-600 bg-clip-text text-transparent">
-            리뷰 작성
-          </h1>
+          <h1 className="font-bold text-xl bg-gradient-to-r from-green-600 to-sky-600 bg-clip-text text-transparent">리뷰 작성</h1>
           <div className="w-16" />
         </div>
       </motion.header>
