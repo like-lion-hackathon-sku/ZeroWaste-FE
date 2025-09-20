@@ -6,45 +6,63 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Textarea } from "@/components/ui/textarea"
-import { ArrowLeft, Upload, Plus, Trash2, Camera, FileText, Store, MapPin } from "lucide-react"
+import {
+  ArrowLeft,
+  Upload,
+  Plus,
+  Trash2,
+  Camera,
+  Store,
+  MapPin,
+  Search,
+} from "lucide-react"
 import { useRouter } from "next/navigation"
-import { apiClient } from "@/lib/api/client"
 
-interface MenuItem {
+// ---------------- Types ----------------
+type MenuItem = {
   name: string
-  price: string
-  description: string
-  // ✅ 식사 전/후 이미지 분리
   beforeImage?: File
   beforeImagePreview?: string
-  afterImage?: File
-  afterImagePreview?: string
+}
+
+type NaverPlaceRaw = {
+  title: string
+  link: string
+  category: string
+  description: string
+  telephone: string
+  address: string
+  roadAddress: string
+  mapx: string // 네이버는 문자열
+  mapy: string
 }
 
 export default function OwnerRegistrationPage() {
   const router = useRouter()
   const [loading, setLoading] = useState(false)
 
+  // 🔎 네이버 검색
+  const [searchQuery, setSearchQuery] = useState("")
+  const [searching, setSearching] = useState(false)
+  const [searchResults, setSearchResults] = useState<NaverPlaceRaw[]>([])
+  const [naverRaw, setNaverRaw] = useState<NaverPlaceRaw | null>(null) // 선택된 원본
+
   // Form state
   const [restaurantName, setRestaurantName] = useState("")
   const [restaurantImage, setRestaurantImage] = useState<File | null>(null)
   const [restaurantImagePreview, setRestaurantImagePreview] = useState("")
-  const [businessLicense, setBusinessLicense] = useState<File | null>(null)
-  const [businessLicensePreview, setBusinessLicensePreview] = useState("")
 
-  const [menuItems, setMenuItems] = useState<MenuItem[]>([{ name: "", price: "", description: "" }])
+  const [menuItems, setMenuItems] = useState<MenuItem[]>([{ name: "" }])
 
   const [restaurantInfo, setRestaurantInfo] = useState({
-    description: "",
-    directions: "",
     phone: "",
     address: "",
   })
 
+  // ───────────────────────── 이미지 업로드 공통
   const handleImageUpload = (
     file: File,
-    type: "restaurant" | "license" | "menuBefore" | "menuAfter",
+    type: "restaurant" | "menuBefore",
     index?: number
   ) => {
     if (!file.type.startsWith("image/")) {
@@ -63,101 +81,151 @@ export default function OwnerRegistrationPage() {
       if (type === "restaurant") {
         setRestaurantImage(file)
         setRestaurantImagePreview(preview)
-      } else if (type === "license") {
-        setBusinessLicense(file)
-        setBusinessLicensePreview(preview)
-      } else if (index !== undefined) {
+      } else if (type === "menuBefore" && index !== undefined) {
         const list = [...menuItems]
-        if (type === "menuBefore") {
-          list[index].beforeImage = file
-          list[index].beforeImagePreview = preview
-        } else if (type === "menuAfter") {
-          list[index].afterImage = file
-          list[index].afterImagePreview = preview
-        }
+        list[index].beforeImage = file
+        list[index].beforeImagePreview = preview
         setMenuItems(list)
       }
     }
     reader.readAsDataURL(file)
   }
 
-  const addMenuItem = () => {
-    setMenuItems([...menuItems, { name: "", price: "", description: "" }])
-  }
+  // ───────────────────────── 메뉴 조작
+  const addMenuItem = () => setMenuItems([...menuItems, { name: "" }])
 
   const removeMenuItem = (index: number) => {
-    if (menuItems.length > 1) {
-      setMenuItems(menuItems.filter((_, i) => i !== index))
-    }
+    if (menuItems.length > 1) setMenuItems(menuItems.filter((_, i) => i !== index))
   }
 
   const updateMenuItem = (index: number, field: keyof MenuItem, value: string) => {
-    const newMenuItems = [...menuItems]
-    newMenuItems[index] = { ...newMenuItems[index], [field]: value }
-    setMenuItems(newMenuItems)
+    const next = [...menuItems]
+    next[index] = { ...next[index], [field]: value }
+    setMenuItems(next)
   }
 
+  // ───────────────────────── 네이버 API 검색
+  const handleSearch = async () => {
+    if (!searchQuery.trim()) return
+    setSearching(true)
+    try {
+      const res = await fetch(`/api/naver-search?query=${encodeURIComponent(searchQuery)}`)
+      const data = await res.json()
+      setSearchResults((data?.items ?? []) as NaverPlaceRaw[])
+    } catch (e) {
+      console.error(e)
+      alert("검색 중 오류가 발생했습니다.")
+    } finally {
+      setSearching(false)
+    }
+  }
+
+  // 결과 선택 → 폼 채우기
+  const pickPlace = (place: NaverPlaceRaw) => {
+    setNaverRaw(place)
+    const cleanTitle = place.title.replace(/<\/?b>/g, "")
+    setRestaurantName(cleanTitle)
+    setRestaurantInfo((prev) => ({
+      ...prev,
+      address: place.roadAddress || place.address || prev.address,
+      phone: place.telephone || prev.phone,
+    }))
+    setSearchResults([]) // 목록 닫기
+    setSearchQuery("")   // 검색창 초기화
+  }
+
+  // ───────────────────────── 제출 (multipart/form-data)
   const handleSubmit = async () => {
-    // Validation
     if (!restaurantName.trim()) {
       alert("식당 이름을 입력해주세요.")
       return
     }
-    if (!restaurantInfo.description.trim()) {
-      alert("가게 소개를 입력해주세요.")
+    if (!restaurantInfo.address.trim() && !naverRaw?.address) {
+      alert("주소를 입력(또는 네이버에서 선택)해주세요.")
       return
     }
-    if (!restaurantInfo.phone.trim()) {
-      alert("전화번호를 입력해주세요.")
-      return
-    }
-    if (!restaurantInfo.address.trim()) {
-      alert("주소를 입력해주세요.")
-      return
-    }
-
-    const validMenuItems = menuItems.filter((item) => item.name.trim() && item.price.trim() && item.description.trim())
-    if (validMenuItems.length === 0) {
-      alert("최소 하나의 메뉴를 완전히 입력해주세요.")
-      return
-    }
-
+  
     setLoading(true)
-
     try {
-      const mapx = Math.round(127.0276)   // TODO: 실제 주소→좌표 변환 붙이면 교체
-const mapy = Math.round(37.4979)
-      // TODO: 이미지/메뉴 업로드는 BE 스펙에 맞춰 FormData로 확장 가능
-      const res = await apiClient.createBusinessRestaurant({
-        name: restaurantName,
-        category: "KOREAN",
-        address: restaurantInfo.address,
-        telephone: restaurantInfo.phone,
-        mapx,
-        mapy,
+      const name = restaurantName.trim()
+      const address = (naverRaw?.address || restaurantInfo.address || "").trim()
+      const telephone = (naverRaw?.telephone || restaurantInfo.phone || "").trim()
+      const mapx = (naverRaw?.mapx || "0").toString()
+      const mapy = (naverRaw?.mapy || "0").toString()
+  
+      const fd = new FormData()
+      // 스칼라 필드
+      fd.append("name", name)
+      fd.append("category", "ETC")
+      fd.append("address", address)
+      fd.append("telephone", telephone)
+      fd.append("mapx", mapx)
+      fd.append("mapy", mapy)
+      fd.append("benefits", "[]") // 옵션: 없으면 빈 배열 문자열
+  
+      // 대표/가게 이미지
+      if (restaurantImage) {
+        fd.append("images", restaurantImage, restaurantImage.name)
+      }
+  
+      // 메뉴 이미지들(있으면)
+      menuItems.forEach(m => {
+        if (m.beforeImage) {
+          fd.append("menuImages", m.beforeImage, m.beforeImage.name)
+        }
       })
-
-      if (!res.success) throw new Error(res.error || "식당 등록에 실패했습니다.")
-        const rid = (res.data as any)?.restaurantId
-        alert("사장님 등록이 완료되었습니다!")
-        router.push(rid ? `/restaurant/${rid}?isOwnerMode=true` : "/profile")
-    } catch (error: any) {
-      alert(error?.message || "등록 중 오류가 발생했습니다. 다시 시도해주세요.")
-      console.error("Owner registration error:", error)
+  
+      // ✅ 메뉴 이름들을 콤마로 이어붙인 단일 문자열로
+      const menuNames = menuItems.map(m => (m.name || "").trim()).filter(Boolean)
+      const safeMenuNames = menuNames.map(n => n.replace(/,/g, "，")) // 콤마가 포함되면 전각 콤마로
+      const menuMetadatasStr = menuItems
+  .map(m => (m.name || "").trim())       // 공백 정리
+  .filter(Boolean)                       // 빈 값 제거
+  .map(name => `"${name}"`)              // 따옴표 감싸기
+  .join(","); 
+  if (menuMetadatasStr) {
+    fd.append("menuMetadatas", menuMetadatasStr);
+  }
+  
+      const baseUrl = (process.env.NEXT_PUBLIC_API_URL as string) || "/_be"
+      const resp = await fetch(`${baseUrl}/biz/restaurants/`, {
+        method: "POST",
+        body: fd, // Content-Type 자동 설정 (multipart/form-data; boundary=…)
+      })
+  
+      if (!resp.ok) {
+        const errText = await resp.text().catch(() => "")
+        throw new Error(errText || `업로드 실패 (status ${resp.status})`)
+      }
+  
+      const resJson = await resp.json().catch(() => ({}))
+      const rid = (resJson?.data as any)?.restaurantId
+      alert("사장님 등록이 완료되었습니다!")
+      router.push(rid ? `/restaurant/${rid}?isOwnerMode=true` : "/profile")
+    } catch (err: any) {
+      console.error(err)
+      alert(err?.message || "등록 중 오류가 발생했습니다.")
     } finally {
       setLoading(false)
     }
   }
 
+  // ───────────────────────── UI
   return (
     <div className="min-h-screen bg-gradient-to-br from-green-50 via-sky-50 to-emerald-50 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900">
+      {/* 헤더 */}
       <motion.header
         initial={{ opacity: 0, y: -20 }}
         animate={{ opacity: 1, y: 0 }}
         className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-b border-white/20 p-4 sticky top-0 z-10"
       >
         <div className="flex items-center justify-between">
-          <Button variant="ghost" size="sm" onClick={() => router.back()} className="hover:bg-white/20">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => router.back()}
+            className="hover:bg-white/20"
+          >
             <ArrowLeft className="h-4 w-4 mr-2" />
             뒤로가기
           </Button>
@@ -169,7 +237,73 @@ const mapy = Math.round(37.4979)
       </motion.header>
 
       <div className="container mx-auto p-4 max-w-4xl">
-        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }} className="mb-6">
+        {/* 🔎 네이버 식당 검색 */}
+        <motion.div
+          initial={{ opacity: 0, y: 16 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="mb-6"
+        >
+          <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-2xl">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Search className="h-5 w-5 text-green-500" />
+                네이버 식당 검색
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="flex gap-2">
+                <Input
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="식당 이름으로 검색"
+                  onKeyDown={(e) => e.key === "Enter" && handleSearch()}
+                />
+                <Button onClick={handleSearch} disabled={searching}>
+                  <Search className="w-4 h-4 mr-1" />
+                  {searching ? "검색중…" : "검색"}
+                </Button>
+              </div>
+
+              {searchResults.length > 0 && (
+                <ul className="mt-3 border rounded-md divide-y max-h-60 overflow-y-auto bg-white dark:bg-gray-800">
+                  {searchResults.map((p, i) => (
+                    <li
+                      key={`${p.link}_${i}`}
+                      className="p-2 cursor-pointer hover:bg-green-50 dark:hover:bg-gray-700"
+                      onClick={() => pickPlace(p)}
+                    >
+                      <p
+                        className="font-medium text-gray-900 dark:text-gray-100"
+                        // 네이버가 <b> 태그로 하이라이트를 줌
+                        dangerouslySetInnerHTML={{ __html: p.title }}
+                      />
+                      <p className="text-sm text-gray-500">
+                        {p.roadAddress || p.address}
+                      </p>
+                      {p.telephone && (
+                        <p className="text-xs text-gray-400">{p.telephone}</p>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              {naverRaw && (
+                <div className="mt-3 text-xs text-emerald-700 dark:text-emerald-300">
+                  선택됨: <b>{restaurantName}</b> · 제출 시 category는 <b>ETC</b>로 전송
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </motion.div>
+
+        {/* 식당 기본 정보 */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.05 }}
+          className="mb-6"
+        >
           <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-2xl">
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
@@ -180,7 +314,10 @@ const mapy = Math.round(37.4979)
             <CardContent className="space-y-6">
               {/* 식당 이름 */}
               <div>
-                <Label htmlFor="restaurant-name" className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                <Label
+                  htmlFor="restaurant-name"
+                  className="text-sm font-medium text-gray-700 dark:text-gray-300"
+                >
                   식당 이름 *
                 </Label>
                 <Input
@@ -194,7 +331,9 @@ const mapy = Math.round(37.4979)
 
               {/* 식당 사진 */}
               <div>
-                <Label className="text-sm font-medium text-gray-700 dark:text-gray-300">식당 사진</Label>
+                <Label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                  식당 사진
+                </Label>
                 <div className="mt-2 flex items-center gap-4">
                   {restaurantImagePreview && (
                     <div className="relative">
@@ -233,54 +372,17 @@ const mapy = Math.round(37.4979)
                   />
                 </div>
               </div>
-
-              {/* 사업자 등록증 */}
-              <div>
-                <Label className="text-sm font-medium text-gray-700 dark:text-gray-300">사업자 등록증</Label>
-                <div className="mt-2 flex items-center gap-4">
-                  {businessLicensePreview && (
-                    <div className="relative">
-                      <img
-                        src={businessLicensePreview || "/placeholder.svg"}
-                        alt="사업자 등록증"
-                        className="w-24 h-24 object-cover rounded-lg border-2 border-gray-200"
-                      />
-                      <Button
-                        variant="destructive"
-                        size="sm"
-                        className="absolute -top-2 -right-2 w-6 h-6 p-0"
-                        onClick={() => {
-                          setBusinessLicense(null)
-                          setBusinessLicensePreview("")
-                        }}
-                      >
-                        <Trash2 className="h-3 w-3" />
-                      </Button>
-                    </div>
-                  )}
-                  <Label htmlFor="business-license" className="cursor-pointer">
-                    <div className="flex items-center justify-center w-24 h-24 border-2 border-dashed border-gray-300 rounded-lg hover:border-green-500 transition-colors">
-                      <FileText className="h-6 w-6 text-gray-400" />
-                    </div>
-                  </Label>
-                  <input
-                    id="business-license"
-                    type="file"
-                    accept="image/*"
-                    className="hidden"
-                    onChange={(e) => {
-                      const file = e.target.files?.[0]
-                      if (file) handleImageUpload(file, "license")
-                    }}
-                  />
-                </div>
-              </div>
             </CardContent>
           </Card>
         </motion.div>
 
         {/* 메뉴 정보 */}
-        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }} className="mb-6">
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.1 }}
+          className="mb-6"
+        >
           <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-2xl">
             <CardHeader>
               <div className="flex items-center justify-between">
@@ -303,7 +405,9 @@ const mapy = Math.round(37.4979)
                   className="p-4 border border-gray-200 dark:border-gray-700 rounded-lg space-y-4"
                 >
                   <div className="flex items-center justify-between">
-                    <h4 className="font-medium text-gray-900 dark:text-white">메뉴 {index + 1}</h4>
+                    <h4 className="font-medium text-gray-900 dark:text-white">
+                      메뉴 {index + 1}
+                    </h4>
                     {menuItems.length > 1 && (
                       <Button
                         variant="ghost"
@@ -318,41 +422,26 @@ const mapy = Math.round(37.4979)
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
-                      <Label className="text-sm font-medium text-gray-700 dark:text-gray-300">메뉴 이름 *</Label>
+                      <Label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                        메뉴 이름 *
+                      </Label>
                       <Input
                         value={item.name}
-                        onChange={(e) => updateMenuItem(index, "name", e.target.value)}
+                        onChange={(e) =>
+                          updateMenuItem(index, "name", e.target.value)
+                        }
                         placeholder="메뉴 이름"
                         className="mt-1 bg-white/50 dark:bg-gray-800/50"
                       />
                     </div>
-                    <div>
-                      <Label className="text-sm font-medium text-gray-700 dark:text-gray-300">가격 *</Label>
-                      <Input
-                        value={item.price}
-                        onChange={(e) => updateMenuItem(index, "price", e.target.value)}
-                        placeholder="예: 12,000원"
-                        className="mt-1 bg-white/50 dark:bg-gray-800/50"
-                      />
-                    </div>
                   </div>
 
-                  <div>
-                    <Label className="text-sm font-medium text-gray-700 dark:text-gray-300">메뉴 설명 *</Label>
-                    <Textarea
-                      value={item.description}
-                      onChange={(e) => updateMenuItem(index, "description", e.target.value)}
-                      placeholder="메뉴에 대한 설명을 입력하세요"
-                      className="mt-1 bg-white/50 dark:bg-gray-800/50"
-                      rows={2}
-                    />
-                  </div>
-
-                  {/* ✅ 식사 전/후 사진 업로드 구역 */}
+                  {/* 식사 전 사진만 남김 */}
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    {/* 식사 전 */}
                     <div>
-                      <Label className="text-sm font-medium text-gray-700 dark:text-gray-300">식사 전 사진</Label>
+                      <Label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                        식사 전 사진
+                      </Label>
                       <div className="mt-2 flex items-center gap-4">
                         {item.beforeImagePreview && (
                           <div className="relative">
@@ -376,7 +465,10 @@ const mapy = Math.round(37.4979)
                             </Button>
                           </div>
                         )}
-                        <Label htmlFor={`menu-before-${index}`} className="cursor-pointer">
+                        <Label
+                          htmlFor={`menu-before-${index}`}
+                          className="cursor-pointer"
+                        >
                           <div className="flex items-center justify-center w-20 h-20 border-2 border-dashed border-gray-300 rounded-lg hover:border-green-500 transition-colors">
                             <Camera className="h-5 w-5 text-gray-400" />
                           </div>
@@ -393,50 +485,6 @@ const mapy = Math.round(37.4979)
                         />
                       </div>
                     </div>
-
-                    {/* 식사 후 */}
-                    <div>
-                      <Label className="text-sm font-medium text-gray-700 dark:text-gray-300">식사 후 사진</Label>
-                      <div className="mt-2 flex items-center gap-4">
-                        {item.afterImagePreview && (
-                          <div className="relative">
-                            <img
-                              src={item.afterImagePreview || "/placeholder.svg"}
-                              alt={`메뉴 ${index + 1} 식사 후`}
-                              className="w-20 h-20 object-cover rounded-lg border-2 border-gray-200"
-                            />
-                            <Button
-                              variant="destructive"
-                              size="sm"
-                              className="absolute -top-2 -right-2 w-5 h-5 p-0"
-                              onClick={() => {
-                                const list = [...menuItems]
-                                delete list[index].afterImage
-                                delete list[index].afterImagePreview
-                                setMenuItems(list)
-                              }}
-                            >
-                              <Trash2 className="h-2 w-2" />
-                            </Button>
-                          </div>
-                        )}
-                        <Label htmlFor={`menu-after-${index}`} className="cursor-pointer">
-                          <div className="flex items-center justify-center w-20 h-20 border-2 border-dashed border-gray-300 rounded-lg hover:border-green-500 transition-colors">
-                            <Camera className="h-5 w-5 text-gray-400" />
-                          </div>
-                        </Label>
-                        <input
-                          id={`menu-after-${index}`}
-                          type="file"
-                          accept="image/*"
-                          className="hidden"
-                          onChange={(e) => {
-                            const file = e.target.files?.[0]
-                            if (file) handleImageUpload(file, "menuAfter", index)
-                          }}
-                        />
-                      </div>
-                    </div>
                   </div>
                 </motion.div>
               ))}
@@ -444,8 +492,13 @@ const mapy = Math.round(37.4979)
           </Card>
         </motion.div>
 
-        {/* 식당 정보 */}
-        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }} className="mb-6">
+        {/* 식당 연락처/주소 */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.15 }}
+          className="mb-6"
+        >
           <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-2xl">
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
@@ -454,43 +507,29 @@ const mapy = Math.round(37.4979)
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-6">
-              <div>
-                <Label className="text-sm font-medium text-gray-700 dark:text-gray-300">가게 소개 *</Label>
-                <Textarea
-                  value={restaurantInfo.description}
-                  onChange={(e) => setRestaurantInfo({ ...restaurantInfo, description: e.target.value })}
-                  placeholder="가게의 특징, 분위기, 추천 메뉴 등을 소개해주세요"
-                  className="mt-1 bg-white/50 dark:bg-gray-800/50"
-                  rows={4}
-                />
-              </div>
-
-              <div>
-                <Label className="text-sm font-medium text-gray-700 dark:text-gray-300">오시는 길 *</Label>
-                <Textarea
-                  value={restaurantInfo.directions}
-                  onChange={(e) => setRestaurantInfo({ ...restaurantInfo, directions: e.target.value })}
-                  placeholder="대중교통 이용 방법, 주차 정보, 주요 랜드마크 등을 안내해주세요"
-                  className="mt-1 bg-white/50 dark:bg-gray-800/50"
-                  rows={3}
-                />
-              </div>
-
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                  <Label className="text-sm font-medium text-gray-700 dark:text-gray-300">전화번호 *</Label>
+                  <Label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                    전화번호
+                  </Label>
                   <Input
                     value={restaurantInfo.phone}
-                    onChange={(e) => setRestaurantInfo({ ...restaurantInfo, phone: e.target.value })}
+                    onChange={(e) =>
+                      setRestaurantInfo({ ...restaurantInfo, phone: e.target.value })
+                    }
                     placeholder="02-1234-5678"
                     className="mt-1 bg-white/50 dark:bg-gray-800/50"
                   />
                 </div>
                 <div>
-                  <Label className="text-sm font-medium text-gray-700 dark:text-gray-300">주소 *</Label>
+                  <Label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                    주소 *
+                  </Label>
                   <Input
                     value={restaurantInfo.address}
-                    onChange={(e) => setRestaurantInfo({ ...restaurantInfo, address: e.target.value })}
+                    onChange={(e) =>
+                      setRestaurantInfo({ ...restaurantInfo, address: e.target.value })
+                    }
                     placeholder="서울시 강남구 테헤란로 123"
                     className="mt-1 bg-white/50 dark:bg-gray-800/50"
                   />
@@ -501,7 +540,11 @@ const mapy = Math.round(37.4979)
         </motion.div>
 
         {/* 등록 버튼 */}
-        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4 }}>
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.2 }}
+        >
           <Button
             onClick={handleSubmit}
             disabled={loading}
@@ -512,7 +555,11 @@ const mapy = Math.round(37.4979)
               <>
                 <motion.div
                   animate={{ rotate: 360 }}
-                  transition={{ duration: 1, repeat: Number.POSITIVE_INFINITY, ease: "linear" }}
+                  transition={{
+                    duration: 1,
+                    repeat: Number.POSITIVE_INFINITY,
+                    ease: "linear",
+                  }}
                   className="w-5 h-5 border-2 border-white border-t-transparent rounded-full mr-2"
                 />
                 등록 중...
