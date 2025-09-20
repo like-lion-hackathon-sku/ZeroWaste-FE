@@ -35,13 +35,22 @@ declare global {
     naver: any
   }
 }
-
+const toSignedRestaurantUrl = async (fn?: string | null): Promise<string | null> => {
+  if (!fn || typeof fn !== "string") return null
+  try {
+    return await apiClient.getImageSignedUrl(2, fn)           // ← 상세와 동일
+  } catch {
+    // 공개로 서빙되는 경우가 있다면 폴백
+    return (apiClient as any)?.getImageUrlByType?.(2, fn) ?? null
+  }
+}
 /* ─── 카테고리/이미지 유틸 ─── */
 const normalizeImage = (v: any): string | null => {
   if (typeof v !== "string") return null
   const s = v.trim()
   if (!s) return null
-  if (s.startsWith("http://") || s.startsWith("https://") || s.startsWith("/")) return s
+  // http, https, / 시작 뿐 아니라 uploads 같은 상대경로도 허용
+  if (s.startsWith("http") || s.startsWith("/") || s.startsWith("uploads")) return s
   return null
 }
 const CATEGORY_SYNONYM: Record<string, string[]> = {
@@ -65,7 +74,6 @@ function getImageForRestaurant(category?: string | null, name?: string | null) {
 }
 const pickImage = (rawImg?: string | null, category?: string | null, name?: string | null) =>
   normalizeImage(rawImg) ?? getImageForRestaurant(category, name)
-
 /* ─── 타입/상수 ─── */
 type WasteTier = "UNRANK" | "브론즈" | "실버" | "골드" | "플래티넘" | "다이아"
 
@@ -90,7 +98,7 @@ type RestaurantItem = {
   mapy?: number | null
 }
 
-const STORAGE_KEY = "ecoEats.mapState.v1"
+const STORAGE_KEY = "ecoEats.mapState.v2"
 
 /* ─── 별점 정규화 ─── */
 const clamp05 = (v: any): number => {
@@ -346,42 +354,91 @@ export default function MapWithListPage() {
   }
   const avgFromReviews05 = (reviews: any[]): number | null => {
     if (!Array.isArray(reviews) || reviews.length === 0) return null
+  
+    const pick = (r: any): number | null => {
+      // 흔한 케이스부터: 납작/중첩/문자숫자 모두 커버
+      const candidates = [
+        r?.waste_rating, r?.wasteRating, r?.wasteScore, r?.waste_score,
+        r?.ecoScore, r?.score, r?.rating, r?.stars, r?.star, r?.value,
+        r?.rating?.value, r?.rating?.score, r?.scores?.waste, r?.scores?.overall,
+      ]
+      for (const c of candidates) {
+        const n = Number(c)
+        if (Number.isFinite(n)) {
+          // 100점제면 5점제로 변환
+          return n > 5 ? toDisplay5(n) : clamp05(n)
+        }
+      }
+      return null
+    }
+  
     const nums: number[] = []
     for (const r of reviews) {
-      const cand = r?.waste_rating ?? r?.wasteRating ?? r?.wasteScore ?? r?.rating ?? r?.score ?? null
-      const n = Number(cand)
-      if (Number.isFinite(n)) nums.push(n)
+      const v = pick(r)
+      if (v != null) nums.push(v)
     }
     if (nums.length === 0) return null
-    return clamp05(nums.reduce((a, b) => a + b, 0) / nums.length)
+    const avg = nums.reduce((a, b) => a + b, 0) / nums.length
+    return clamp05(avg)
   }
 
   // 상세/리뷰 → 점수/리뷰수/티어 보강
   const enrichWithDbScores = async (items: RestaurantItem[]): Promise<RestaurantItem[]> => {
-    const toId = (it: any) =>
-      Number(it.restaurantId ?? it.restaurant_id ?? it.id ?? it._id ?? it.restId ?? it.rest_id ?? 0) || 0
-    const targets = items.map((it) => ({ id: toId(it), it })).filter((x) => Number.isInteger(x.id) && x.id > 0)
+    const toId = (it: any) => Number(it.id ?? 0) || 0
+  
+    const targets = items.map((it) => ({ id: toId(it), it })).filter((x) => x.id > 0)
     if (!targets.length) return items
+  
+    // 상세
+    const detailResults = await Promise.allSettled(
+      targets.map(({ id }) => fetchJson(`/restaurants/${id}/detail`))
+    )
+  
+    const idTo = new Map<number, { hero?: string | null; ai100?: number; display5?: number }>()
+await Promise.all(detailResults.map(async (pr, i) => {
+  if (pr.status !== "fulfilled") return
+  const dwrap = (pr.value as any)?.data ?? (pr.value as any)?.success ?? pr.value ?? {}
 
-    const detailResults = await Promise.allSettled(targets.map(({ id }) => fetchJson(`/restaurants/${id}/detail`)))
-    const idTo = new Map<number, { ai100?: number; display5?: number }>()
-    detailResults.forEach((pr, i) => {
-      if (pr.status !== "fulfilled") return
-      const data = (pr.value as any)?.data ?? (pr.value as any)?.success ?? pr.value ?? {}
-      const ecoRaw =
-        data?.stats?.ecoScore ??
-        data?.ecoScore ??
-        data?.averageWasteScore ??
-        data?.avgWasteScore ??
-        data?.wasteScore ??
-        null
-      if (ecoRaw != null) {
-        const ai100 = Number(ecoRaw) || 0
-        idTo.set(targets[i].id, { ai100, display5: toDisplay5(ai100) })
-      }
-    })
+  // hero 이미지
+  let hero: string | null = null
+  if (Array.isArray(dwrap?.photos) && dwrap.photos.length > 0) {
+    const fn = typeof dwrap.photos[0] === "string"
+      ? dwrap.photos[0]
+      : dwrap.photos[0]?.photo_name || dwrap.photos[0]?.fileName
+    hero = await toSignedRestaurantUrl(fn)
+  }
 
-    const reviewResults = await Promise.allSettled(targets.map(({ id }) => fetchJson(`/restaurants/${id}/reviews`)))
+  // 평점 원천들: 100점제/5점제 혼재 가능
+  const eco100 = Number(
+    dwrap?.ecoScore ??
+    dwrap?.stats?.ecoScore ??
+    dwrap?.score ??
+    dwrap?.scores?.eco
+  )
+
+  const avg05 = Number(
+    dwrap?.avgRating ??
+    dwrap?.rating ??
+    dwrap?.stats?.avgRating ??
+    dwrap?.stats?.avgWasteRating ??
+    dwrap?.ratings?.avg
+  )
+
+  let display5: number | undefined
+  if (Number.isFinite(avg05)) display5 = clamp05(avg05)
+  else if (Number.isFinite(eco100)) display5 = toDisplay5(eco100)
+
+  idTo.set(targets[i].id, {
+    hero,
+    ai100: Number.isFinite(eco100) ? eco100 : undefined,
+    display5,
+  })
+}))
+  
+    // ✅ 리뷰
+    const reviewResults = await Promise.allSettled(
+      targets.map(({ id }) => fetchJson(`/restaurants/${id}/reviews`))
+    )
     const idToReview = new Map<number, { count: number; avg05: number | null }>()
     reviewResults.forEach((pr, i) => {
       if (pr.status !== "fulfilled") return
@@ -389,16 +446,30 @@ export default function MapWithListPage() {
       const list = Array.isArray(payload) ? payload : (payload?.items ?? [])
       idToReview.set(targets[i].id, { count: list.length, avg05: avgFromReviews05(list) })
     })
-
+  
+    // 머지
     return items.map((r) => {
-      const id = Number(r.restaurantId ?? (r as any).restaurant_id ?? r.id ?? (r as any)._id ?? 0) || 0
+      const id = Number(r.restaurantId ?? r.id ?? 0) || 0
       const d = idTo.get(id)
       const rr = idToReview.get(id)
+  
       const display5 =
-        r.displayScore != null ? clamp05(r.displayScore) : d?.display5 != null ? clamp05(d.display5) : (rr?.avg05 ?? 0)
+        r.displayScore != null ? clamp05(r.displayScore)
+        : d?.display5 != null ? clamp05(d.display5)
+        : (rr?.avg05 ?? 0)
+  
       const ai100 = d?.ai100 ?? r.aiWaste100 ?? null
       const rcnt = rr?.count ?? r.reviewCount ?? null
-      return { ...r, displayScore: display5, aiWaste100: ai100, reviewCount: rcnt, wasteTier: calcTier(rcnt, ai100) }
+  
+      const imageFromDetail = d?.hero ?? null
+      return {
+        ...r,
+        image: imageFromDetail ?? r.image ?? pickImage(r.image, r.category, r.name),
+        displayScore: display5,
+        aiWaste100: ai100,
+        reviewCount: rcnt,
+        wasteTier: calcTier(rcnt, ai100),
+      }
     })
   }
 
@@ -493,31 +564,40 @@ export default function MapWithListPage() {
       setLoadingMapRestaurants(true)
       const qs = await buildQueriesFromBounds(kw.trim())
       const raw = await fetchNearbyForQueries(qs)
-      const mapped: RestaurantItem[] = raw.map((r: any) => {
-        const rawId = r.restaurantId ?? r.restaurant_id ?? r.id ?? r._id ?? r.restId ?? r.rest_id
-        const idNum = Number(rawId) || undefined
-        const isFavByServer = !!r.favorited
-        const isFavByMe = idNum != null && favoriteIds.has(Number(idNum))
-        const rawScore = r.wasteScore ?? r.waste_score ?? r.score ?? r.ecoScore ?? null
-        const displayScore = rawScore != null ? toDisplay5(rawScore) : null
-        return {
-          id: idNum,
-          restaurantId: idNum,
-          name: r.name,
-          image: pickImage(r.image, r.category, r.name),
-          category: r.category ?? null,
-          badge: r.badge ?? null,
-          address: r.address ?? null,
-          telephone: r.telephone ?? null,
-          description: r.address ?? r.description ?? null,
-          distance: r.distance ?? null,
-          favorited: isFavByServer || isFavByMe,
-          wasteScore: Number(rawScore) || null,
-          displayScore,
-          mapx: fixCoord(r.lng ?? r.mapx),
-          mapy: fixCoord(r.lat ?? r.mapy),
-        }
-      })
+      const mapped: RestaurantItem[] = await Promise.all(
+        raw.map(async (r: any) => {
+          const fn =
+            Array.isArray(r.photos) && r.photos.length > 0
+              ? (typeof r.photos[0] === "string" ? r.photos[0] : r.photos[0]?.photo_name || r.photos[0]?.fileName)
+              : null
+          const photoUrl = fn ? await toSignedRestaurantUrl(fn) : null
+      
+          const rawId = r.restaurantId ?? r.restaurant_id ?? r.id ?? r._id ?? r.restId ?? r.rest_id
+const idNum = Number(r.id) || undefined
+          const isFavByServer = !!r.favorited
+          const isFavByMe = idNum != null && favoriteIds.has(Number(idNum))
+          const rawScore = r.wasteScore ?? r.waste_score ?? r.score ?? r.ecoScore ?? null
+const displayScore = rawScore != null ? toDisplay5(rawScore) : null
+      
+          return {
+            id: idNum,
+            restaurantId: idNum,
+            name: r.name,
+            image: photoUrl ?? r.image ?? pickImage(r.image, r.category, r.name),
+            category: r.category ?? null,
+            badge: r.badge ?? null,
+            address: r.address ?? null,
+            telephone: r.telephone ?? null,
+            description: r.address ?? r.description ?? null,
+            distance: r.distance ?? null,
+            favorited: isFavByServer || isFavByMe,
+            wasteScore: Number(rawScore) || null,
+            displayScore,
+            mapx: fixCoord(r.lng ?? r.mapx),
+            mapy: fixCoord(r.lat ?? r.mapy),
+          }
+        })
+      )
       let filtered = filterInBounds(mapped)
       if (!filtered.length) filtered = mapped
       const enriched = await enrichWithDbScores(filtered)
@@ -537,7 +617,7 @@ export default function MapWithListPage() {
   const restaurants: RestaurantItem[] = useMemo(() => {
     const src = useMapList ? mapRestaurants : ((rawRestaurants as any[]) ?? [])
     if (!Array.isArray(src)) return []
-    return [...src].map((r: any) => {
+    return src.map((r: any) => {
       const rawId = r.restaurantId ?? r.restaurant_id ?? r.id ?? r._id ?? r.restId ?? r.rest_id
       const idNum = Number(rawId) || undefined
       const lng = fixCoord(r.lng ?? r.mapx)
@@ -545,10 +625,12 @@ export default function MapWithListPage() {
       const fav = r.favorited || (idNum != null && favoriteIds.has(Number(idNum)))
       const displayScore =
         r.displayScore != null ? clamp05(r.displayScore) : r.wasteScore != null ? toDisplay5(r.wasteScore) : 0
+  
       return {
         ...r,
         id: idNum,
-        image: pickImage(r.image, r.category, r.name),
+        // ✅ 여기서는 비동기 호출 불가 → 이미 세팅된 r.image 사용, 없으면 카테고리 기본
+        image: r.image ?? pickImage(r.image, r.category, r.name),
         displayScore,
         mapx: lng,
         mapy: lat,
