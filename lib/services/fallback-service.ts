@@ -26,7 +26,13 @@ export class FallbackService {
     return FallbackService.instance
   }
 
-  
+  /** ✅ 무음 모드 경고: alert/confirm 없이 콘솔에만 출력 */
+  private showWarning() {
+    if (!this.warningShown && typeof window !== "undefined") {
+      this.warningShown = true
+      console.warn("[v0] Using fallback data - 연결되면 실제 데이터가 표시됩니다")
+    }
+  }
 
   async getRestaurants(params?: { category?: string; search?: string }): Promise<ApiResponse<RestaurantWithDetails[]>> {
     this.showWarning()
