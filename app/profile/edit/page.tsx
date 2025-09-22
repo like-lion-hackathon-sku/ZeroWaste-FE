@@ -9,60 +9,106 @@ import { Label } from "@/components/ui/label"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { ArrowLeft, User, Camera, Trash2 } from "lucide-react"
 import { useRouter } from "next/navigation"
-import { useUserProfile } from "@/lib/hooks/use-api-with-fallback"
+
+import { useUserStore } from "@/lib/state/user"
 import { apiClient } from "@/lib/api/client"
 import { formatDate } from "@/lib/utils/database-helpers"
 
-/** 훅에서 온 프로필 데이터를 화면에서 안전하게 쓰기 위한 로컬 타입 */
 type SafeProfile = {
+  id?: number | string | null
+  userId?: number | string | null
   nickname?: string | null
   email?: string | null
-  profile?: string | null // 서버에 저장된 파일명
+  profile?: string | null
+  profileImage?: string | null
   created_at?: string | null
 }
 
 export default function EditProfilePage() {
   const router = useRouter()
 
-  // 훅 원본
-  const {
-    data: rawUser,
-    loading,
-    error,
-    isUsingFallback,
-  } = useUserProfile()
+  // ✅ 스토어 우선 사용
+  const me = useUserStore((s) => s.user) as SafeProfile | undefined
+  const setUser = useUserStore((s) => s.setUser)
 
-  // 화면에서 쓸 안전한 프로필 객체
-  const p = useMemo(() => (rawUser ?? {}) as SafeProfile, [rawUser])
+  // 로컬 로딩/에러 상태 (fallback 훅 제거)
+  const [loading, setLoading] = useState(!me)
+  const [error, setError] = useState<string | null>(null)
 
-  const [formData, setFormData] = useState<{ nickname: string; email: string }>({
-    nickname: "",
-    email: "",
-  })
-  const [preview, setPreview] = useState<string>("") // 화면 미리보기 URL
-  const [file, setFile] = useState<File | null>(null) // 업로드 파일
-  const [useDefault, setUseDefault] = useState(false) // 기본 이미지로 되돌리기
+  // 스토어가 비어 있으면 한 번만 BE에서 직접 받아와 스토어 채움
+  useEffect(() => {
+    if (me) {
+      setLoading(false)
+      return
+    }
+    let ignore = false
+    ;(async () => {
+      try {
+        setLoading(true)
+        const res = await apiClient.getProfile()
+        if (!res?.success) throw new Error(res?.error || "프로필을 불러오지 못했습니다")
+        if (!ignore) {
+          setUser(res.data as any)
+          setLoading(false)
+        }
+      } catch (e: any) {
+        if (!ignore) {
+          setError(e?.message || "프로필 로드 오류")
+          setLoading(false)
+        }
+      }
+    })()
+    return () => { ignore = true }
+  }, [me, setUser])
+
+  // 화면에 쓸 원천 사용자
+  const sourceUser = (me ?? null) as SafeProfile | null
+  const p = useMemo(() => (sourceUser ?? {}) as SafeProfile, [sourceUser])
+
+  // 폼 상태
+  const [formData, setFormData] = useState<{ nickname: string; email: string }>({ nickname: "", email: "" })
+  const [preview, setPreview] = useState<string>("")
+  const [file, setFile] = useState<File | null>(null)
+  const [useDefault, setUseDefault] = useState(false)
   const [saving, setSaving] = useState(false)
 
-  /* 초기 로드: 유저 정보/이미지 세팅 */
+  // 초기 세팅: sourceUser 변할 때만 한 번 반영
   useEffect(() => {
-    if (!rawUser) return
-    // 닉네임/이메일 기본값
+    if (!sourceUser) return
+
     setFormData({
-      nickname: p.nickname ?? "",
-      email: p.email ?? "",
+      nickname: sourceUser.nickname ?? "",
+      email: sourceUser.email ?? "",
     })
 
-    // 서버에 저장된 파일명이 있을 때 GET URL 생성
-    if (p.profile) {
-      const url = apiClient.getImageUrl?.("profile", p.profile) ?? ""
-      setPreview(url)
-    } else {
+    const raw = (sourceUser.profile ?? sourceUser.profileImage) || ""
+    if (!raw) {
       setPreview("")
+      setFile(null)
+      setUseDefault(false)
+      return
     }
-    setFile(null)
-    setUseDefault(false)
-  }, [rawUser, p.nickname, p.email, p.profile])
+
+    if (/^https?:\/\//i.test(raw)) {
+      setPreview(raw)
+      setFile(null)
+      setUseDefault(false)
+      return
+    }
+
+    ;(async () => {
+      try {
+        const signed = await apiClient.getImageSignedUrl(0, raw)
+        const fallback = apiClient.getImageUrlByType(0, raw)
+        setPreview(signed || fallback || "")
+      } catch {
+        setPreview(apiClient.getImageUrlByType(0, raw) || "")
+      } finally {
+        setFile(null)
+        setUseDefault(false)
+      }
+    })()
+  }, [sourceUser])
 
   const handleInputChange = (k: "nickname" | "email", v: string) =>
     setFormData((prev) => ({ ...prev, [k]: v }))
@@ -93,28 +139,39 @@ export default function EditProfilePage() {
   }
 
   const handleSave = async () => {
-    if (!rawUser) return
+    if (!sourceUser) return
     setSaving(true)
     try {
-      const payload: {
-        nickname?: string
-        profileImage?: File | null
-        defaultImage?: boolean
-      } = {
-        nickname: formData.nickname,
+      let res: any
+      if (file || useDefault) {
+        const fd = new FormData()
+        fd.append("nickname", formData.nickname ?? "")
+        if (file) fd.append("profileImage", file)
+        if (useDefault) fd.append("defaultImage", "true")
+        res = await apiClient.updateProfile(fd)
+      } else {
+        res = await apiClient.updateProfile({
+          nickname: formData.nickname,
+          defaultImage: false,
+        })
       }
 
-      if (file) {
-        payload.profileImage = file
-      } else if (useDefault) {
-        payload.defaultImage = true
-      }
-
-      // api 타입 선언이 없으면 any로 호출
-      const res: any = await apiClient.updateProfile(payload)
       if (!res?.success) {
         throw new Error(typeof res?.error === "string" ? res.error : "프로필 업데이트 실패")
       }
+
+      // 서버 응답을 스토어에 병합
+      const updated = (res.data?.user ?? res.data ?? {}) as SafeProfile
+      const merged: SafeProfile = {
+        ...(sourceUser || {}),
+        ...updated,
+        nickname: updated.nickname ?? formData.nickname ?? sourceUser?.nickname ?? null,
+        profile:
+          updated.profile ??
+          updated.profileImage ??
+          (useDefault ? null : (sourceUser?.profile ?? sourceUser?.profileImage ?? null)),
+      }
+      setUser(merged as any)
 
       router.back()
     } catch (e: any) {
@@ -126,7 +183,8 @@ export default function EditProfilePage() {
 
   const createdAtText = useMemo(() => formatDate(p.created_at ?? ""), [p.created_at])
 
-  if (loading) {
+  // 로딩/에러 처리
+  if (loading && !sourceUser) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-green-50 via-sky-50 to-emerald-50 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900 flex items-center justify-center">
         <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} className="text-center">
@@ -141,7 +199,7 @@ export default function EditProfilePage() {
     )
   }
 
-  if (error || !rawUser) {
+  if ((error || !sourceUser) && !loading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-green-50 via-sky-50 to-emerald-50 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900 flex items-center justify-center">
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="text-center">
@@ -156,13 +214,7 @@ export default function EditProfilePage() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-green-50 via-sky-50 to-emerald-50 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900">
-      {isUsingFallback && (
-        <motion.div initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} className="bg-yellow-500/20 border-b border-yellow-200/30 p-3">
-          <div className="container mx-auto text-center text-sm text-yellow-800 dark:text-yellow-200">
-            ⚠️ 연결되면 실제 데이터가 표시됩니다
-          </div>
-        </motion.div>
-      )}
+      {/* ✅ fallback 배너 제거: 이제 isUsingFallback 안 씀 */}
 
       <motion.header
         initial={{ opacity: 0, y: -20 }}
@@ -174,7 +226,7 @@ export default function EditProfilePage() {
             <ArrowLeft className="h-4 w-4 mr-2" />
             뒤로가기
           </Button>
-          <h1 className="font-bold text-xl bg-gradient-to-r from-green-600 to-sky-600 bg-clip-text text-transparent">프로필 수정</h1>
+        <h1 className="font-bold text-xl bg-gradient-to-r from-green-600 to-sky-600 bg-clip-text text-transparent">프로필 수정</h1>
           <div className="w-8" />
         </div>
       </motion.header>
