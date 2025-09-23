@@ -1,21 +1,16 @@
 // lib/api/client.ts
 import type { ApiResponse } from "@/lib/types/database"
+
 type UpdateProfileJson = {
   nickname?: string;
   defaultImage?: boolean;
 };
-/**
- * 공통 API 클라이언트 (BE 프록시: /_be → {BE_ORIGIN}/api)
- * - baseUrl 기본: "/_be"
- * - credentials: "include" (HttpOnly 쿠키 사용)
- * - FormData 전송 시 Content-Type 수동 세팅 금지
- * - BE 응답(resultType/success/error) → FE 표준(success/data|error)로 정규화
- */
+
 let refreshPromise: Promise<Response> | null = null;
+
 class ApiClient {
-  
   private baseUrl: string
-  
+
   constructor(baseUrl = process.env.NEXT_PUBLIC_API_URL || "/_be") {
     this.baseUrl = (baseUrl || "/_be").replace(/\/$/, "")
   }
@@ -64,17 +59,13 @@ class ApiClient {
             cache: "no-store",
             headers: { Accept: "application/json" },
           }).finally(() => {
-            // 한 번 끝나면 다음 401 때 새로 시도할 수 있게 초기화
             refreshPromise = null
           })
         }
-      
         const rr = await refreshPromise
         if (rr?.ok) {
-          // 토큰 갱신 성공 → 원요청 재시도
           return this.request<T>(endpoint, options, true)
         }
-        // 갱신 실패 → 그대로 401 처리
       }
 
       if (!res.ok) {
@@ -135,33 +126,29 @@ class ApiClient {
   async getProfile() {
     return this.request("/auth/me", { method: "GET" })
   }
-  
+
   async updateProfile(payload: FormData | UpdateProfileJson) {
-    // FormData인 경우: Content-Type을 지정하지 않고 body에 그대로 넣는다.
     if (payload instanceof FormData) {
-      return this.request("/auth/profile", {
-        method: "POST",
-        body: payload,
-      })
+      return this.request("/auth/profile", { method: "POST", body: payload })
     }
-  
-    // JSON인 경우
-    return this.request("/auth/profile", {
-      method: "POST",
-      body: JSON.stringify(payload),
-    })
+    const body: UpdateProfileJson = {}
+    if (typeof payload.nickname === "string" && payload.nickname.trim()) {
+      body.nickname = payload.nickname.trim();
+    }
+    if (payload.defaultImage === true) body.defaultImage = true;
+    return this.request("/auth/profile", { method: "POST", body: JSON.stringify(body) })
   }
   /** multipart 그대로 전달 */
   async updateProfileMultipart(form: FormData) {
     return this.request("/auth/profile", { method: "POST", body: form })
   }
 
-  // ───────────────────────── Restaurants
+  // ───────────────────────── Restaurants (Consumer)
   async getRestaurants(params?: { search?: string }) {
     const q = (params?.search ?? "맛집").trim()
     return this.request(`/restaurants/nearby?q=${encodeURIComponent(q)}`)
   }
-  
+
   async getRestaurantsNearby(bbox: string, limit = 20, cursor = 0) {
     const sp = new URLSearchParams()
     sp.set("bbox", bbox)
@@ -169,11 +156,12 @@ class ApiClient {
     sp.set("cursor", String(cursor))
     return this.request(`/restaurants/nearby?${sp.toString()}`)
   }
-  
+
   async getRestaurantsInBounds(bounds: { minLat: number; maxLat: number; minLng: number; maxLng: number; category?: string; search?: string }) {
     const q = (bounds.search ?? "맛집").trim()
     return this.request(`/restaurants/nearby?q=${encodeURIComponent(q)}`)
   }
+
   async getRestaurantDetail(id: number) {
     return this.request<{
       id: number; name: string; category: string;
@@ -187,9 +175,8 @@ class ApiClient {
     return this.request(`/restaurants/${id}/reviews`);
   }
 
-  /** ✅ (추가) 일반 사용자 메뉴 목록 */
+  /** (옵션) 일반 사용자 메뉴 목록: BE 라우트 존재 시 */
   async getRestaurantMenus(id: number) {
-    // BE에 /restaurants/{id}/menu가 있다면 그대로 사용
     return this.request<{ id: number; name: string; price?: number | null }[]>(
       `/restaurants/${id}/menu`,
       { method: "GET" }
@@ -201,7 +188,7 @@ class ApiClient {
     return this.request("/favorites")
   }
   async addFavorite(restaurantId: number) {
-    return this.request(`/favorites`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ restaurantId }) })
+    return this.request(`/favorites`, { method: "POST", body: JSON.stringify({ restaurantId }) })
   }
   async addFavoriteExternal(place: { name: string; address: string; mapx: number; mapy: number; category?: string; telephone?: string }) {
     const payload = { ...place, mapx: Math.round(place.mapx), mapy: Math.round(place.mapy) }
@@ -211,85 +198,118 @@ class ApiClient {
     return this.request(`/favorites/${restaurantId}`, { method: "DELETE" })
   }
 
-  // ───────────────────────── Badges & Stamps
-  async getBadges() { return this.request("/badges") }
-  async getUserBadges() { return this.request("/badges/me") }
-  async getUserStamps() { return this.request("/stamps/me") }
+  // ─────────── Stamps
+  async getUserStamps() { return this.request("/stamps/me", { method: "GET" }) }
   async getUserStampHistory() { return this.request("/stamps/me/history", { method: "GET" }) }
-  async useStamp(restaurantId: number, code: string) {
-    return this.request("/biz/stamps/use", { method: "PATCH", body: JSON.stringify({ restaurantId, code }) })
+  async requestUseStamp(restaurantId: number, condition: number) {
+    return this.request<{ code: string }>(
+      "/stamps/me/use",
+      { method: "POST", body: JSON.stringify({ restaurantId, condition }) }
+    )
   }
-  async getStampRewards(restaurantId: number) { return this.request(`/stamps/rewards/${restaurantId}`) }
-  async claimStampReward(restaurantId: number, rewardId: number) {
-    return this.request(`/stamps/rewards/claim`, { method: "POST", body: JSON.stringify({ restaurantId, rewardId }) })
-  }
-  getAiReviewSummary(restaurantId: number) {
-    return this.request(`/restaurants/${restaurantId}/ai-summary`) as Promise<{ success: boolean; data: any; error?: string }>
+  async bizUseStamp(restaurantId: number, code: string) {
+    return this.request("/biz/stamps/use", { method: "POST", body: JSON.stringify({ code }) })
   }
 
   // ───────────────────────── Notifications
   async getNotifications() { return this.request("/notifications") }
   async markNotificationAsRead(notificationId: number) { return this.request(`/notifications/${notificationId}`, { method: "PATCH" }) }
 
-  // ───────────────────────── Business APIs
+  // ───────────────────────── Business (Owner)
   async getBusinessRestaurants() { return this.request("/biz/restaurants") }
-  async createBusinessRestaurant(data: { name: string; category: string; address: string; telephone?: string; mapx: number; mapy: number }) {
-    return this.request("/biz/restaurants", { method: "POST", body: JSON.stringify(data) })
+
+  /** ✅ 사업자 식당 생성: 멀티파트 전송 (이미지/메뉴/benefits 포함) */
+  async createBusinessRestaurantMultipart(payload: {
+    name: string;
+    category: string;
+    address: string;
+    telephone?: string;
+    mapx: number;
+    mapy: number;
+    images?: File[];          // 식당 사진들
+    menuImages?: File[];      // 메뉴 사진들
+    menuMetadatas?: string[]; // 메뉴 이름들 (예: ["치즈버거","감자튀김"])
+    benefits?: { condition: number; reward: string }[]; // 스탬프 혜택
+  }) {
+    const fd = new FormData();
+    fd.set("name", payload.name);
+    fd.set("category", payload.category);
+    fd.set("address", payload.address);
+    if (payload.telephone) fd.set("telephone", payload.telephone);
+    fd.set("mapx", String(Math.round(payload.mapx)));
+    fd.set("mapy", String(Math.round(payload.mapy)));
+
+    for (const f of payload.images ?? []) fd.append("images", f);
+    for (const f of payload.menuImages ?? []) fd.append("menuImages", f);
+
+    // BE DTO가 JSON.parse(`[${body.menuMetadatas}]`) 형태라 안전한 문자열화 적용
+    // 예: '"치즈버거","감자튀김"'
+    const metaJoined = (payload.menuMetadatas ?? [])
+      .map(s => JSON.stringify(s))
+      .join(",");
+    if (metaJoined.length) fd.set("menuMetadatas", metaJoined);
+
+    // benefits는 배열 JSON 문자열로 전달
+    fd.set("benefits", JSON.stringify(payload.benefits ?? []));
+
+    return this.request("/biz/restaurants", { method: "POST", body: fd });
   }
+
+  /** ✅ 수정: PUT /biz/restaurants/:id (BE 구현에 맞춰 선택) */
   async updateBusinessRestaurant(id: number, data: { name?: string; category?: string; address?: string; telephone?: string }) {
-    return this.request("/biz/restaurants", { method: "PUT", body: JSON.stringify({ id, ...data }) })
+    return this.request(`/biz/restaurants/${id}`, {
+      method: "PUT", 
+      body: JSON.stringify(data),
+    });
   }
+
+  /** ✅ 삭제: DELETE /biz/restaurants/:id */
   async deleteBusinessRestaurant(restaurantId: number) {
-    return this.request("/biz/restaurants", { method: "DELETE", body: JSON.stringify({ restaurantId }) })
+    return this.request(`/biz/restaurants/${restaurantId}`, { method: "DELETE" })
   }
-  async uploadViaSignedUrl(type: 0|1|2|3, file: File) {
-    const safeName = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}_${file.name}`;
-    const signed = await apiClient.request<{ url: string }>(
-      `/images/${type}/${encodeURIComponent(safeName)}`
-    )
-    if (!signed.success || !signed.data?.url) {
-      return { success: false, error: "서명 URL 발급 실패" } as ApiResponse<any>;
-    }
 
-    // ⛳️ 헤더를 넣지 말고 그대로 PUT (서명에 Content-Type이 없을 때)
-    const putRes = await fetch(signed.data.url, { method: "PUT", body: file })
-
-    if (!putRes.ok) {
-      return { success: false, error: `스토리지 업로드 실패 (${putRes.status})` } as ApiResponse<any>;
-    }
-    return { success: true, data: { fileName: safeName } };
+  async getBusinessRestaurantDetail(restaurantId: number) {
+    return this.request(`/biz/restaurants/${restaurantId}`)
   }
-  async getBusinessRestaurantDetail(restaurantId: number) { return this.request(`/biz/restaurants/${restaurantId}`) }
+
   async uploadBusinessRestaurantPhoto(restaurantId: number, file: File) {
     const fd = new FormData()
     fd.append("file", file)
-    return this.request<{ id: number; fileName: string; url: string }>(`/biz/restaurants/${restaurantId}/photos`, { method: "POST", body: fd })
+    return this.request<{ id: number; fileName: string; url: string }>(
+      `/biz/restaurants/${restaurantId}/photos`,
+      { method: "POST", body: fd }
+    )
   }
-  async deleteBusinessRestaurantPhoto(restaurantId: number, photoId: number) { return this.request(`/biz/restaurants/${restaurantId}/photos/${photoId}`, { method: "DELETE" }) }
+  async deleteBusinessRestaurantPhoto(restaurantId: number, photoId: number) {
+    return this.request(`/biz/restaurants/${restaurantId}/photos/${photoId}`, { method: "DELETE" })
+  }
+  async getBusinessMenu(restaurantId: number) {
+    return this.request<{ id: number; name: string; photo?: string }[]>(
+      `/biz/restaurants/${restaurantId}/menu`,
+      { method: "GET" }
+    )
+  }
   async getBusinessReviews() { return this.request("/biz/reviews") }
   async getBusinessReviewFeedback(reviewId: number) { return this.request(`/biz/reviews/${reviewId}/feedback`) }
-  async getBusinessMenu(restaurantId: number) {
-    return this.request<{ id: number; name: string; photo?: string }[]>(`/biz/restaurants/${restaurantId}/menu`, { method: "GET" })
-  }
   async getBusinessStats() { return this.request("/biz/stats") }
   async getBusinessAnalytics(period?: string) {
     const params = period ? `?period=${encodeURIComponent(period)}` : ""
     return this.request(`/biz/analytics${params}`)
   }
+
+  /** ⛔️ 주의: 아래 3개는 BE에 개별 CRUD 라우트가 있을 때만 사용 */
   async createStampReward(restaurantId: number, data: { condition: number; reward: string }) {
     return this.request("/biz/stamps/rewards", { method: "POST", body: JSON.stringify({ restaurantId, ...data }) })
   }
   async updateStampReward(rewardId: number, data: { condition?: number; reward?: string }) {
     return this.request(`/biz/stamps/rewards/${rewardId}`, { method: "PUT", body: JSON.stringify(data) })
   }
-  async deleteStampReward(rewardId: number) { return this.request(`/biz/stamps/rewards/${rewardId}`, { method: "DELETE" }) }
+  async deleteStampReward(rewardId: number) {
+    return this.request(`/biz/stamps/rewards/${rewardId}`, { method: "DELETE" })
+  }
 
-  // ───────────────────────── Reviews (명세 준수)
-  /**
-   * 리뷰 생성(식당별)
-   * BE 명세: POST /api/reviews/restaurants/{id}
-   * - body: { content: string, score: number, images?: string[] }
-   */
+  // ───────────────────────── Reviews
+  /** 리뷰 생성(식당별) — POST /api/reviews/restaurants/{id} */
   async createReviewForRestaurant(
     restaurantId: number,
     payload: {
@@ -301,14 +321,14 @@ class ApiClient {
   ) {
     const norm = (v?: string | null) =>
       typeof v === "string" && v.trim().length > 0 ? v.trim() : undefined;
-  
+
     const body: any = {
       content: payload.content,
       score: payload.score,
       imageKeys: Array.isArray(payload.images) ? payload.images : [],
       detailFeedback: norm(payload.detailFeedback) ?? null,
     };
-  
+
     return this.request(`/reviews/restaurants/${restaurantId}`, {
       method: "POST",
       body: JSON.stringify(body),
@@ -319,10 +339,10 @@ class ApiClient {
     return this.request(`/reviews/${id}`, { method: "PUT", body: JSON.stringify(data) })
   }
 
-  /** BE 명세: DELETE /api/reviews/{reviewId} */
+  /** DELETE /api/reviews/{reviewId} */
   async deleteReview(id: number) { return this.request(`/reviews/${id}`, { method: "DELETE" }) }
 
-  /** BE 명세: GET /api/reviews/me */
+  /** GET /api/reviews/me */
   async getUserReviews() { return this.request("/reviews/me") }
 
   /** (옵션) 분석 라우트가 존재할 때만 사용 */
@@ -330,25 +350,24 @@ class ApiClient {
     if (form) return this.request(`/reviews/${id}/analyze`, { method: "POST", body: form })
     return this.request(`/reviews/${id}/analyze`, { method: "POST" })
   }
+
   async analyzeWasteBatch(payload: any) {
     // 내부 Next 라우트이므로 baseUrl('/_be')를 타지 말고 직접 호출
     const res = await fetch("/api/ai/waste/analyze-batch", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      // 쿠키가 필요하면 아래 주석 해제:
-      // credentials: "include",
       body: JSON.stringify(payload),
     });
-  
+
     const data = await res.json().catch(() => ({}));
-  
+
     if (!res.ok || !data?.ok) {
       return { success: false, error: data?.error || `HTTP ${res.status}` } as ApiResponse<any>;
     }
-    // data.result(= { per_menu, overall })를 그대로 넘겨주기
     return { success: true, data: data.result } as ApiResponse<any>;
   }
-  // ───────────────────────── Images (presigned URL 방식 + 업로드)
+
+  // ───────────────────────── Images (presigned URL)
   private async fetchPresignedUrl(fileType: 0 | 1 | 2 | 3, fileName: string): Promise<string | null> {
     if (!fileName) return null
     const res = await this.request<{ url: string }>(`/images/${fileType}/${encodeURIComponent(fileName)}`)
@@ -402,20 +421,19 @@ class ApiClient {
     return { success: true, data } as ApiResponse<any>
   }
 
-  // ───────────────────────── Search APIs
+  // ───────────────────────── Search
   async searchRestaurants(query: string, filters?: { category?: string; location?: string }) {
     const params = new URLSearchParams()
     params.set("q", query)
     if (filters?.category) params.set("category", filters.category)
     if (filters?.location) params.set("location", filters.location)
     return this.request(`/restaurants/search?${params.toString()}`)
-  } 
+  }
 
-  // ───────────────────────── User Profile APIs
+  // ───────────────────────── User Profile Extras
   async getUserStats() { return this.request("/auth/stats") }
   async deleteAccount() { return this.request("/auth/delete", { method: "DELETE" }) }
 }
 
 // 싱글턴 인스턴스 export
 export const apiClient = new ApiClient()
-
