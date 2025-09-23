@@ -384,7 +384,10 @@ export default function MapWithListPage() {
 
   // 상세/리뷰 → 점수/리뷰수/티어 보강
   const enrichWithDbScores = async (items: RestaurantItem[]): Promise<RestaurantItem[]> => {
-    const toId = (it: any) => Number(it.id ?? 0) || 0
+    const toId = (it: any) =>
+   Number(
+     it.restaurantId ?? it.restaurant_id ?? it.id ?? it._id ?? it.restId ?? it.rest_id ?? 0
+ ) || 0
   
     const targets = items.map((it) => ({ id: toId(it), it })).filter((x) => x.id > 0)
     if (!targets.length) return items
