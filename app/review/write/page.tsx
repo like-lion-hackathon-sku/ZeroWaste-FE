@@ -1,8 +1,6 @@
 // app/review/write/page.tsx
-// 리뷰 작성 - 기존 UI 유지 + "메뉴 선택 후" AI 분석 로딩 모달 추가, 별색: 초록
-
 "use client";
-import { getWasteScore} from "@/lib/ai/gradio"
+
 import type React from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -15,43 +13,197 @@ import { Textarea } from "@/components/ui/textarea";
 import { Progress } from "@/components/ui/progress";
 import {
   ArrowLeft,
-  Camera,
   Upload,
   Sparkles,
   CheckCircle,
   AlertCircle,
   Star,
-  UtensilsCrossed,
-  Shuffle,
+  Stamp as StampIcon,
+  Crop as CropIcon,
+  Trash2,
 } from "lucide-react";
+import Cropper from "react-easy-crop";
 import { apiClient } from "@/lib/api/client";
 import AnalyzingModal from "@/components/ai/AnalyzingModal";
 
 /* ---------------- Types ---------------- */
 type RestaurantInfo = { id: number; name: string; category?: string | null };
 
-type ShotType = "before" | "after";
-
-type MenuItem = {
-  id: number;
-  name: string;
-  price?: number | null;
-  // 필요 시: calories?: number | null;
+type CropAI = {
+  score: number;
+  summary: string;
+  analyzed_at?: string;
+  ownerAnalysis?: string;
+  userComment?: string;
+  scoreLabel?: string;
 };
 
 type UploadedImage = {
   id: string;
-  fileName: string; // 서버 파일명
-  url: string;      // 프록시 표시 URL(/_be/images/..)
-  preview: string;  // = url
-  shotType: ShotType; // 식사 전/후
-  ai?: {
-    score: number;  // 0~5
-    summary: string;
-    analyzed_at?: string;
-  };
+  fileName: string;
+  url: string;
+  preview: string;
+  shotType: "after";
+  file?: File;
+  ai?: CropAI;
+  multiCrops?: Array<{
+    id: string;
+    file: File;
+    previewUrl: string;
+    ai?: CropAI;
+  }>;
 };
 
+/* ── 크롭 유틸 ───────────────── */
+type AreaPixels = { width: number; height: number; x: number; y: number };
+
+async function createImage(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = src;
+  });
+}
+async function getCroppedBlob(
+  imageSrc: string,
+  cropPixels: AreaPixels,
+  mime = "image/jpeg",
+  quality = 0.95
+) {
+  const image = await createImage(imageSrc);
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d")!;
+  const { x, y, width, height } = cropPixels;
+
+  canvas.width = Math.max(1, Math.floor(width));
+  canvas.height = Math.max(1, Math.floor(height));
+  ctx.drawImage(image, x, y, width, height, 0, 0, canvas.width, canvas.height);
+
+  return new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => (blob ? resolve(blob) : reject(new Error("toBlob failed"))),
+      mime,
+      quality
+    );
+  });
+}
+
+/* ── 크롭 모달 ───────────────── */
+type CropModalProps = {
+  open: boolean;
+  onClose: () => void;
+  imageSrc: string;
+  onAddCrop: (file: File) => void;
+  aspect?: number;
+};
+
+function CropModal({
+  open,
+  onClose,
+  imageSrc,
+  onAddCrop,
+  aspect = 4 / 3,
+}: CropModalProps) {
+  const [zoom, setZoom] = useState(1);
+  const [crop, setCrop] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [area, setArea] = useState<AreaPixels | null>(null);
+  const [captured, setCaptured] = useState(false);
+
+  useEffect(() => {
+    if (open) {
+      setZoom(1);
+      setCrop({ x: 0, y: 0 });
+      setArea(null);
+      setCaptured(false);
+    }
+  }, [open, imageSrc]);
+
+  const onCropComplete = (_: any, pixels: AreaPixels) => setArea(pixels);
+
+  const captureArea = async () => {
+    if (!area) return alert("영역을 먼저 지정해 주세요.");
+    const blob = await getCroppedBlob(imageSrc, area);
+    const file = new File([blob], `crop-${Date.now()}.jpg`, {
+      type: "image/jpeg",
+    });
+    onAddCrop(file);
+    setCaptured(true);
+    setTimeout(() => setCaptured(false), 1400);
+  };
+
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center">
+      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
+      <div className="relative w-full max-w-3xl mx-4 rounded-2xl overflow-hidden bg-white dark:bg-gray-900 shadow-2xl border border-white/20">
+        <div className="px-4 py-3 border-b border-gray-200/60 dark:border-gray-800/60 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="p-2 rounded-xl bg-purple-600 text-white">
+              <CropIcon className="h-4 w-4" />
+            </div>
+            <div className="font-semibold">캡쳐(확대·드래그)</div>
+          </div>
+          <Button variant="ghost" size="sm" onClick={onClose}>
+            닫기
+          </Button>
+        </div>
+
+        <div className="relative h-[60vh] bg-black/85">
+          <Cropper
+            image={imageSrc}
+            crop={crop}
+            zoom={zoom}
+            aspect={aspect}
+            onCropChange={setCrop}
+            onZoomChange={setZoom}
+            onCropComplete={onCropComplete}
+            restrictPosition
+            zoomWithScroll
+            objectFit="contain"
+          />
+          {captured && (
+            <div className="absolute left-1/2 -translate-x-1/2 top-4">
+              <div className="flex items-center gap-2 rounded-full bg-purple-600/95 text-white px-3 py-1 shadow">
+                <Sparkles className="h-4 w-4" />
+                <span className="text-sm font-medium">캡쳐되었습니다</span>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="p-4 flex flex-wrap items-center justify-between gap-3 border-t border-gray-200/60 dark:border-gray-800/60">
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-gray-600 dark:text-gray-300">
+              확대
+            </span>
+            <input
+              type="range"
+              min={1}
+              max={3}
+              step={0.01}
+              value={zoom}
+              onChange={(e) => setZoom(+e.target.value)}
+              className="w-44"
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              onClick={captureArea}
+              className="rounded-xl bg-purple-600 hover:bg-purple-700"
+            >
+              캡쳐
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── 페이지 ───────────────── */
 export default function ReviewWritePage() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -63,24 +215,31 @@ export default function ReviewWritePage() {
   const [loadingRestaurant, setLoadingRestaurant] = useState(true);
   const [restaurant, setRestaurant] = useState<RestaurantInfo | null>(null);
 
-  const [menusLoading, setMenusLoading] = useState(false);
-  const [menus, setMenus] = useState<MenuItem[]>([]);
-  const [menuQuery, setMenuQuery] = useState("");
-  const [selectedMenuId, setSelectedMenuId] = useState<number | null>(null);
-
   const [uploadedImages, setUploadedImages] = useState<UploadedImage[]>([]);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [showAILoadingModal, setShowAILoadingModal] = useState(false);
 
   const [comment, setComment] = useState("");
-  const [avgScore5, setAvgScore5] = useState(0); // 0~5
+  const [avgScore5, setAvgScore5] = useState(0);
   const avgScore100 = Math.round(avgScore5 * 20);
 
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [conflict409, setConflict409] = useState<string | null>(null);
 
-  /* -------- 식당 상세 -------- */
+  const [stampBanner, setStampBanner] = useState<string | null>(null);
+  const [earnedStamp, setEarnedStamp] = useState(false);
+
+  // Crop modal
+  const [cropOpen, setCropOpen] = useState(false);
+  const [cropTargetId, setCropTargetId] = useState<string | null>(null);
+  const cropTarget = useMemo(
+    () =>
+      cropTargetId ? uploadedImages.find((i) => i.id === cropTargetId) : null,
+    [cropTargetId, uploadedImages]
+  );
+
+  /* 식당 상세 */
   useEffect(() => {
     let ignore = false;
     (async () => {
@@ -114,85 +273,58 @@ export default function ReviewWritePage() {
         if (!ignore) setLoadingRestaurant(false);
       }
     })();
-    return () => { ignore = true; };
+    return () => {
+      ignore = true;
+    };
   }, [restaurantId]);
 
-  /* -------- 메뉴 목록 --------
-     BE에 getRestaurantMenus(restaurantId)가 있다고 가정.
-     없다면 apiClient에 간단히 추가하거나, /restaurants/{id}/menus 호출로 대체하세요. */
-  useEffect(() => {
-    let ignore = false;
-    (async () => {
-      if (!Number.isFinite(restaurantId)) return;
-      try {
-        setMenusLoading(true);
-        const resp = await (apiClient as any).getRestaurantMenus?.(restaurantId);
-        // fallback이 필요하면 아래와 같이 교체 가능:
-        // const resp = await apiClient.get(`/restaurants/${restaurantId}/menus`);
-        if (ignore) return;
-        if (resp?.success && Array.isArray(resp.data)) {
-          setMenus(resp.data as MenuItem[]);
-        } else {
-          setMenus([]); // 메뉴 없음
-        }
-      } catch {
-        if (!ignore) setMenus([]);
-      } finally {
-        if (!ignore) setMenusLoading(false);
-      }
-    })();
-    return () => { ignore = true; };
-  }, [restaurantId]);
-
-  const filteredMenus = useMemo(() => {
-    const q = menuQuery.trim();
-    if (!q) return menus;
-    return menus.filter((m) => (m.name || "").toLowerCase().includes(q.toLowerCase()));
-  }, [menus, menuQuery]);
-
-  /* -------- 업로드 (POST /images/review/upload) -------- */
-  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  /* 업로드 */
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files) return;
 
+    const next: UploadedImage[] = [];
     for (const file of Array.from(files)) {
-      try {
-        if (!file.type.startsWith("image/")) continue;
-
-        const up = await apiClient.uploadImage("review", file);
-        if (!up.success) throw new Error(up.error || "이미지 업로드 실패");
-
-        const { fileName } = up.data!;
-        const previewUrl = apiClient.getImageUrl("review", fileName);
-
-        setUploadedImages((prev) => [
-          ...prev,
-          {
-            id: Date.now().toString() + Math.random().toString(36).slice(2, 10),
-            fileName,
-            url: previewUrl,
-            preview: previewUrl,
-            shotType: "before", // 기본값: 식사 전
-          },
-        ]);
-      } catch (err: any) {
-        console.error(err);
-        alert(err?.message || "이미지 업로드 중 오류가 발생했어요.");
-      }
+      const previewUrl = URL.createObjectURL(file);
+      const fakeName = `${Date.now()}_${Math.random()
+        .toString(36)
+        .slice(2, 8)}_${file.name}`;
+      next.push({
+        id: crypto.randomUUID(),
+        fileName: fakeName,
+        preview: previewUrl,
+        url: "",
+        shotType: "after",
+        file,
+      });
     }
-
-    // 같은 파일 다시 선택 가능하도록 리셋
-    try { e.target.value = ""; } catch {}
+    setUploadedImages((prev) => [...prev, ...next]);
+    e.target.value = "";
   };
 
-  /* -------- 평균 재계산 -------- */
+  /* 평균 재계산(크롭 우선) */
   const recalcAverage = (imgs: UploadedImage[]) => {
-    const scores = imgs
-      .map((it) => it.ai?.score)
-      .filter((s): s is number => typeof s === "number");
+    const perImageScores: number[] = [];
+    for (const it of imgs) {
+      if (it.shotType !== "after") continue;
+      const cropScores =
+        it.multiCrops
+          ?.map((c) => c.ai?.score)
+          .filter((v): v is number => typeof v === "number") ?? [];
+      if (cropScores.length > 0) {
+        const avgC = cropScores.reduce((a, b) => a + b, 0) / cropScores.length;
+        perImageScores.push(avgC);
+      } else if (typeof it.ai?.score === "number") {
+        perImageScores.push(it.ai.score);
+      }
+    }
     const avg =
-      scores.length > 0
-        ? Math.round((scores.reduce((a, b) => a + b, 0) / scores.length) * 10) / 10
+      perImageScores.length > 0
+        ? Math.round(
+            (perImageScores.reduce((a, b) => a + b, 0) /
+              perImageScores.length) *
+              10
+          ) / 10
         : 0;
     setAvgScore5(avg || 0);
   };
@@ -205,92 +337,114 @@ export default function ReviewWritePage() {
     });
   };
 
-  const toggleShotType = (id: string) => {
-    setUploadedImages(prev =>
-      prev.map(it =>
-        it.id === id
-          ? { ...it, shotType: it.shotType === "before" ? "after" : "before" }
-          : it
-      )
-    );
+  /* 단일 크롭 분석 */
+  const analyzeCropFile = async (
+    imageId: string,
+    cropId: string,
+    file: File
+  ) => {
+    const fd = new FormData();
+    fd.append("image", file);
+
+    const res = await fetch("/api/ai/waste/analyze", {
+      method: "POST",
+      body: fd,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data?.ok)
+      throw new Error(data?.error || `AI 분석 실패(${res.status})`);
+
+    const score5 =
+      typeof data.score5 === "number"
+        ? data.score5
+        : typeof data.score100 === "number"
+        ? data.score100 / 20
+        : 0;
+    const score = Math.max(0, Math.min(5, Math.round(score5 * 10) / 10));
+
+    const ownerAnalysis: string =
+      Array.isArray(data.raw) && typeof data.raw[0] === "string"
+        ? data.raw[0]
+        : String(data.summary ?? "");
+    const userCommentTxt: string =
+      Array.isArray(data.raw) && typeof data.raw[1] === "string"
+        ? data.raw[1]
+        : "";
+    const scoreLabel: string =
+      Array.isArray(data.raw) && typeof data.raw[2] === "string"
+        ? data.raw[2]
+        : typeof data.score5 === "number"
+        ? `점수: ${data.score5}점`
+        : "";
+
+    setUploadedImages((prev) => {
+      const next = prev.map((img) => {
+        if (img.id !== imageId) return img;
+        const list = img.multiCrops ?? [];
+        const newList = list.map((c) =>
+          c.id === cropId
+            ? {
+                ...c,
+                ai: {
+                  score,
+                  summary: ownerAnalysis || "",
+                  ownerAnalysis,
+                  userComment: userCommentTxt,
+                  scoreLabel,
+                  analyzed_at: new Date().toISOString(),
+                } as CropAI,
+              }
+            : c
+        );
+        return { ...img, multiCrops: newList };
+      });
+      recalcAverage(next);
+      return next;
+    });
   };
 
-  /* -------- AI 분석 (POST /images/review/{fileName}/analyze) -------- */
-  const analyzeImage = async (imageId: string) => {
-    const target = uploadedImages.find((img) => img.id === imageId)
-    if (!target) return alert("이미지를 찾을 수 없어요.")
-    if (!selectedMenuId) return alert("먼저 메뉴를 선택해주세요.")
-  
+  /* 전역 일괄 분석 */
+  const runAnalyzeAll = async () => {
+    const totalCrops = uploadedImages.reduce(
+      (acc, img) => acc + (img.multiCrops?.length ?? 0),
+      0
+    );
+    if (totalCrops === 0)
+      return alert("저장된 캡쳐가 없습니다. 먼저 캡쳐를 추가해 주세요.");
+    setShowAILoadingModal(true);
+    setIsAnalyzing(true);
     try {
-      setShowAILoadingModal(true)
-      setIsAnalyzing(true)
-  
-      // 서버에 업로드된 프록시 URL을 다시 Blob으로 가져와서 전달
-      const blob = await fetch(target.preview).then((r) => r.blob())
-      const { score, summary } = await getWasteScore(blob)
-  
-      const safeScore = Math.max(0, Math.min(5, Number(score) || 0))
-  
-      setUploadedImages((prev) => {
-        const next = prev.map((img) =>
-          img.id === imageId
-            ? {
-                ...img,
-                ai: {
-                  score: safeScore,
-                  summary,
-                  analyzed_at: new Date().toISOString(),
-                },
-              }
-            : img
-        )
-        recalcAverage(next)
-        return next
-      })
+      for (const img of uploadedImages) {
+        for (const c of img.multiCrops ?? []) {
+          if (c.ai) continue;
+          await analyzeCropFile(img.id, c.id, c.file);
+        }
+      }
     } catch (e: any) {
-      console.error(e)
-      alert(e?.message || "AI 분석에 실패했어요. 다시 시도해주세요.")
+      alert(e?.message || "AI 분석 실패");
     } finally {
       setTimeout(() => {
-        setShowAILoadingModal(false)
-        setIsAnalyzing(false)
-      }, 1200)
+        setShowAILoadingModal(false);
+        setIsAnalyzing(false);
+      }, 600);
     }
-  }
+  };
 
-  /* -------- “전/후” 비교 계산 (선택된 메뉴 기준) -------- */
-  const compareForSelectedMenu = useMemo(() => {
-    if (!selectedMenuId) return null;
-    const beforeScores = uploadedImages
-      .filter((i) => i.shotType === "before" && typeof i.ai?.score === "number")
-      .map((i) => i.ai!.score);
-    const afterScores = uploadedImages
-      .filter((i) => i.shotType === "after" && typeof i.ai?.score === "number")
-      .map((i) => i.ai!.score);
+  /* 스탬프 배너 */
+  useEffect(() => {
+    if (avgScore5 >= 4) {
+      setEarnedStamp(true);
+      setStampBanner("축하합니다! 평균 별점 4.0점 이상으로 스탬프가 적립됩니다.");
+    } else {
+      setEarnedStamp(false);
+      setStampBanner(null);
+    }
+  }, [avgScore5]);
 
-    if (beforeScores.length === 0 && afterScores.length === 0) return null;
-
-    const avg = (arr: number[]) =>
-      arr.length ? Math.round((arr.reduce((a, b) => a + b, 0) / arr.length) * 10) / 10 : 0;
-
-    const beforeAvg = avg(beforeScores);
-    const afterAvg = avg(afterScores);
-    const delta = Math.round((afterAvg - beforeAvg) * 10) / 10;
-
-    return { beforeAvg, afterAvg, delta };
-  }, [uploadedImages, selectedMenuId]);
-
-  /* -------- 제출: POST /restaurants/{restaurantId}/reviews -------- */
+  /* 제출 */
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!Number.isFinite(restaurantId)) {
-      alert("잘못된 식당 ID 입니다.");
-      return;
-    }
-    if (!selectedMenuId) {
-      alert("메뉴를 선택해주세요.");
-      return;
-    }
+    if (!Number.isFinite(restaurantId)) return alert("잘못된 식당 ID 입니다.");
     if (submitting) return;
 
     setSubmitError(null);
@@ -298,19 +452,48 @@ export default function ReviewWritePage() {
     try {
       setSubmitting(true);
 
-      const payload: any = {
-        contents: comment.trim(),
+      // ⬇⬇⬇ 중요: feedback/detail_feedback 생성
+      const allCrops =
+        uploadedImages.flatMap((img) => img.multiCrops ?? []);
+
+      const feedback: string | null =
+        allCrops.find((c) => c.ai?.ownerAnalysis)?.ai?.ownerAnalysis ??
+        allCrops.find((c) => c.ai?.userComment)?.ai?.userComment ??
+        null;
+
+      const detailFeedback: string | null = allCrops.length
+        ? allCrops
+            .map((c, i) => {
+              const s =
+                typeof c.ai?.score === "number"
+                  ? `${c.ai!.score.toFixed(1)}★`
+                  : "";
+              const oa = c.ai?.ownerAnalysis?.trim() ?? "";
+              const uc = c.ai?.userComment?.trim() ?? "";
+              const parts = [
+                `#${i + 1}${s ? ` (${s})` : ""}`,
+                oa && `AI: ${oa}`,
+                uc && `한줄평: ${uc}`,
+              ].filter(Boolean);
+              return parts.join(" - ");
+            })
+            .join("\n")
+        : null;
+
+      const payload = {
+        content: comment.trim(),
         score: Number(avgScore5.toFixed(1)),
-        menuId: selectedMenuId, // ✅ 리뷰에 메뉴 연결
-        images: uploadedImages.map((img) => ({
-          fileName: img.fileName,
-          shotType: img.shotType,
-          score: typeof img.ai?.score === "number" ? img.ai!.score : null,
-          summary: img.ai?.summary ?? null,
-        })),
+        images: uploadedImages.map((img) => img.fileName),
+
+        // ✅ 리뷰 테이블 매핑
+        feedback,
+        detailFeedback,
       };
 
-      const resp = await apiClient.createReviewForRestaurant(restaurantId, payload);
+      const resp = await apiClient.createReviewForRestaurant(
+        restaurantId,
+        payload as any
+      );
 
       if (!resp.success) {
         const err = String(resp.error || "");
@@ -320,14 +503,24 @@ export default function ReviewWritePage() {
           return;
         }
         if (err.includes("409") || err.includes("이미 작성한 리뷰가 존재")) {
-          setConflict409("이미 작성한 리뷰가 존재합니다. 기존 리뷰를 수정하거나 삭제 후 다시 시도해주세요.");
-          try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch {}
+          setConflict409(
+            "이미 작성한 리뷰가 존재합니다. 기존 리뷰를 수정하거나 삭제 후 다시 시도해주세요."
+          );
+          try {
+            window.scrollTo({ top: 0, behavior: "smooth" });
+          } catch {}
           return;
         }
         throw new Error(err || "리뷰 생성에 실패했어요.");
       }
 
-      router.replace(`/review/success?restaurantId=${restaurantId}`);
+      const earned = avgScore5 >= 4 ? 1 : 0;
+      if (earned) alert("축하합니다! 평균 4.0 이상으로 스탬프가 적립됩니다.");
+      router.replace(
+        `/review/success?restaurantId=${restaurantId}${
+          earned ? "&stampEarned=1" : ""
+        }`
+      );
     } catch (err: any) {
       console.error(err);
       setSubmitError(err?.message || "리뷰 제출 중 오류가 발생했어요.");
@@ -337,25 +530,75 @@ export default function ReviewWritePage() {
   };
 
   const canSubmit =
-    comment.trim().length > 0 &&
-    avgScore5 > 0 &&
-    uploadedImages.length > 0 &&
-    !!selectedMenuId;
+    comment.trim().length > 0 && avgScore5 > 0 && uploadedImages.length > 0;
+
+  const openCropFor = (imageId: string) => {
+    setCropTargetId(imageId);
+    setCropOpen(true);
+  };
+  const closeCrop = () => {
+    setCropOpen(false);
+    setCropTargetId(null);
+  };
+  const handleAddCrop = (file: File) => {
+    const url = URL.createObjectURL(file);
+    setUploadedImages((prev) =>
+      prev.map((img) =>
+        img.id === cropTargetId
+          ? {
+              ...img,
+              multiCrops: [
+                ...(img.multiCrops ?? []),
+                { id: crypto.randomUUID(), file, previewUrl: url },
+              ],
+            }
+          : img
+      )
+    );
+  };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-green-50 via-sky-50 to-emerald-50 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900">
+    <div className="min-h-screen bg-gradient-to-br from-green-50 via-sky-50 to-emerald-50 dark:from-gray-950 dark:via-gray-900 dark:to-gray-950">
       {/* AI 로딩 모달 */}
-      <AnalyzingModal open={showAILoadingModal} mascotSrc="/bobple-mascot.png" durationSec={3} />
+      <AnalyzingModal
+        open={showAILoadingModal}
+        mascotSrc="/bobple-mascot.png"
+        durationSec={3}
+      />
+
+      {/* 크롭 모달 */}
+      <CropModal
+        open={cropOpen && !!cropTarget}
+        onClose={closeCrop}
+        imageSrc={cropTarget?.preview || ""}
+        onAddCrop={handleAddCrop}
+        aspect={4 / 3}
+      />
 
       {/* 409 배너 */}
       {conflict409 && (
-        <div className="sticky top-0 z-20">
+        <div className="sticky top-0 z-30">
           <div className="mx-auto max-w-3xl p-3">
-            <div className="flex items-start gap-3 rounded-xl border border-yellow-300/60 bg-yellow-50/70 dark:bg-yellow-900/30 px-4 py-3 backdrop-blur">
+            <div className="flex items-start gap-3 rounded-2xl border border-yellow-300/60 bg-yellow-50/90 dark:bg-yellow-900/30 px-4 py-3 backdrop-blur">
               <AlertCircle className="h-5 w-5 shrink-0 text-yellow-600 dark:text-yellow-300 mt-0.5" />
               <div className="text-sm text-yellow-800 dark:text-yellow-100">
                 <p className="font-semibold">이미 작성한 리뷰가 존재함</p>
                 <p className="mt-0.5">{conflict409}</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 스탬프 배너 */}
+      {stampBanner && (
+        <div className="sticky top-0 z-20">
+          <div className="mx-auto max-w-3xl p-3">
+            <div className="flex items-start gap-3 rounded-2xl border border-purple-300/60 bg-purple-50/90 dark:bg-purple-900/30 px-4 py-3 backdrop-blur">
+              <CheckCircle className="h-5 w-5 shrink-0 text-purple-600 dark:text-purple-300 mt-0.5" />
+              <div className="text-sm text-purple-800 dark:text-purple-100">
+                <p className="font-semibold">스탬프 획득</p>
+                <p className="mt-0.5">{stampBanner}</p>
               </div>
             </div>
           </div>
@@ -369,7 +612,12 @@ export default function ReviewWritePage() {
         className="bg-white/80 dark:bg-gray-900/80 backdrop-blur-xl border-b border-white/20 p-4 sticky top-0 z-10 shadow-lg"
       >
         <div className="flex items-center justify-between max-w-2xl mx-auto">
-          <Button variant="ghost" size="sm" onClick={() => router.back()} className="hover:bg-white/50 dark:hover:bg-gray-800/50">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => router.back()}
+            className="hover:bg-white/50 dark:hover:bg-gray-800/50 rounded-xl"
+          >
             <ArrowLeft className="h-4 w-4 mr-2" />
             뒤로가기
           </Button>
@@ -381,288 +629,332 @@ export default function ReviewWritePage() {
       </motion.header>
 
       <div className="container mx-auto p-4 max-w-2xl">
-        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6 }} className="space-y-6">
-          {/* 상단 식당 카드 */}
-          <motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.1 }}>
-            <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-xl rounded-2xl">
-              <CardContent className="p-6">
-                <div className="flex items-start justify-between">
-                  <div className="space-y-2">
-                    <div className="text-sm text-gray-500 dark:text-gray-400 font-medium">식당</div>
-                    <div className="text-2xl font-bold bg-gradient-to-r from-green-600 to-sky-600 bg-clip-text text-transparent">
-                      {loadingRestaurant ? "불러오는 중…" : restaurant?.name || "식당 정보 없음"}
-                    </div>
-                    <div className="text-sm text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-gray-800 px-3 py-1 rounded-full inline-block">
-                      {restaurant?.category || "카테고리 없음"}
-                    </div>
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.6 }}
+          className="space-y-6"
+        >
+          {/* 식당 카드 */}
+          <Card className="backdrop-blur-xl bg-white/85 dark:bg-gray-900/85 border-white/20 shadow-xl rounded-2xl">
+            <CardContent className="p-6">
+              <div className="flex items-start justify-between">
+                <div className="space-y-2">
+                  <div className="text-sm text-gray-500 dark:text-gray-400 font-medium">
+                    식당
                   </div>
-                  <Badge className="bg-gradient-to-r from-green-100 to-sky-100 dark:from-green-900 dark:to-sky-900 text-green-700 dark:text-green-300">
-                    신규 작성
-                  </Badge>
-                </div>
-              </CardContent>
-            </Card>
-          </motion.div>
-
-          {/* ✅ 메뉴 선택 박스 */}
-          <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.15 }}>
-            <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-xl rounded-2xl">
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2 text-xl">
-                  <div className="bg-gradient-to-br from-emerald-500 to-green-600 p-2 rounded-xl">
-                    <UtensilsCrossed className="h-5 w-5 text-white" />
+                  <div className="text-2xl font-bold bg-gradient-to-r from-green-600 to-sky-600 bg-clip-text text-transparent">
+                    {loadingRestaurant
+                      ? "불러오는 중…"
+                      : restaurant?.name || "식당 정보 없음"}
                   </div>
-                  메뉴 선택
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="flex gap-2">
-                  <input
-                    value={menuQuery}
-                    onChange={(e) => setMenuQuery(e.target.value)}
-                    className="flex-1 rounded-xl border border-gray-200 dark:border-gray-700 bg-white/70 dark:bg-gray-800/70 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400"
-                    placeholder="메뉴 검색…"
-                  />
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() => setMenuQuery("")}
-                    className="rounded-xl"
-                  >
-                    초기화
-                  </Button>
-                </div>
-
-                <div className="max-h-52 overflow-auto rounded-xl border border-gray-200 dark:border-gray-700 bg-white/60 dark:bg-gray-800/60">
-                  {menusLoading ? (
-                    <div className="p-4 text-sm text-gray-500">메뉴 불러오는 중…</div>
-                  ) : filteredMenus.length === 0 ? (
-                    <div className="p-4 text-sm text-gray-500">메뉴가 없어요.</div>
-                  ) : (
-                    <ul className="divide-y divide-gray-200/60 dark:divide-gray-700/60">
-                      {filteredMenus.map((m) => {
-                        const active = selectedMenuId === m.id;
-                        return (
-                          <li
-                            key={m.id}
-                            className={`px-4 py-2 cursor-pointer text-sm flex items-center justify-between
-                              ${active ? "bg-emerald-50/80 dark:bg-emerald-900/20" : "hover:bg-gray-50/70 dark:hover:bg-gray-800/40"}`}
-                            onClick={() => setSelectedMenuId(m.id)}
-                          >
-                            <span className="font-medium">{m.name}</span>
-                            {typeof m.price === "number" && (
-                              <span className="text-xs text-gray-500">{m.price.toLocaleString()}원</span>
-                            )}
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  )}
-                </div>
-
-                {selectedMenuId && (
-                  <p className="text-xs text-emerald-700 dark:text-emerald-300">
-                    선택된 메뉴 ID: <span className="font-semibold">{selectedMenuId}</span>
-                  </p>
-                )}
-              </CardContent>
-            </Card>
-          </motion.div>
-
-          {/* 업로드 & AI 분석 */}
-          <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.2 }}>
-            <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-xl rounded-2xl">
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2 text-xl">
-                  <div className="bg-gradient-to-br from-green-500 to-emerald-600 p-2 rounded-xl">
-                    <Camera className="h-5 w-5 text-white" />
+                  <div className="text-xs sm:text-sm text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-gray-800 px-3 py-1 rounded-full inline-block shadow-sm">
+                    {restaurant?.category || "카테고리 없음"}
                   </div>
-                  사진 업로드 & AI 분석
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-6">
-                <motion.div
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.98 }}
-                  className="border-2 border-dashed border-green-300 dark:border-green-700 rounded-2xl p-8 text-center bg-gradient-to-br from-green-50/50 to-sky-50/50 dark:from-green-900/20 dark:to-sky-900/20"
+                </div>
+                <Badge className="rounded-full bg-gradient-to-r from-green-100 to-sky-100 dark:from-green-900 dark:to-sky-900 text-green-700 dark:text-green-300">
+                  신규 작성
+                </Badge>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* 업로드/분석 */}
+          <Card className="backdrop-blur-xl bg-white/85 dark:bg-gray-900/85 border-white/20 shadow-xl rounded-2xl">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-xl">
+                <div className="bg-gradient-to-br from-purple-500 to-pink-500 p-2 rounded-xl">
+                  <CropIcon className="h-5 w-5 text-white" />
+                </div>
+                사진 업로드 & AI 분석
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              <div className="rounded-xl border border-purple-300/60 dark:border-purple-700/60 bg-purple-50/70 dark:bg-purple-900/20 px-4 py-3 text-sm text-purple-900 dark:text-purple-200">
+                <b>캡쳐 후 분석</b>만 지원합니다. 한 장에 여러 그릇이 있다면, 각
+                그릇을 <b>캡쳐</b>로 저장해 둔 뒤 아래 <b>전체 분석</b> 버튼으로
+                분석하세요.
+              </div>
+
+              <div className="border-2 border-dashed border-purple-300 dark:border-purple-700 rounded-2xl p-8 text-center bg-gradient-to-br from-purple-50/60 to-pink-50/60 dark:from-purple-900/20 dark:to-pink-900/20">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/jpeg,image/png,image/jpg"
+                  multiple
+                  onChange={handleImageUpload}
+                  className="hidden"
+                />
+                <Button
+                  variant="outline"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="bg-white/80 dark:bg-gray-800/80 backdrop-blur-sm hover:bg-white dark:hover:bg-gray-800 border-purple-200 dark:border-purple-700 rounded-xl"
                 >
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept="image/jpeg,image/png,image/jpg"
-                    multiple
-                    onChange={handleImageUpload}
-                    className="hidden"
-                  />
-                  <Button
-                    variant="outline"
-                    onClick={() => fileInputRef.current?.click()}
-                    className="bg-white/80 dark:bg-gray-800/80 backdrop-blur-sm hover:bg-white dark:hover:bg-gray-800 border-green-200 dark:border-green-700 rounded-xl"
-                  >
-                    <Upload className="h-4 w-4 mr-2" />
-                    사진 선택
-                  </Button>
-                  <p className="text-sm text-gray-600 dark:text-gray-300 mt-3">사진 업로드 후 메뉴 선택 → AI 분석을 실행하세요</p>
-                </motion.div>
+                  <Upload className="h-4 w-4 mr-2" />
+                  사진 선택
+                </Button>
+                <p className="text-sm text-gray-600 dark:text-gray-300 mt-3">
+                  사진 업로드 → <b>캡쳐</b> 저장 → <b>아래 전체 분석</b>.
+                </p>
+              </div>
 
-                {uploadedImages.length > 0 && (
-                  <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
-                    <h4 className="font-semibold text-lg text-gray-800 dark:text-gray-200">업로드된 사진</h4>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      {uploadedImages.map((image, index) => (
-                        <motion.div key={image.id} initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: index * 0.08 }}>
-                          <Card className="overflow-hidden backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-lg rounded-2xl">
-                            <div className="relative">
-                              <img src={image.preview || "/placeholder.svg"} alt="업로드" className="w-full h-48 object-cover" />
-                              <Button variant="destructive" size="sm" className="absolute top-2 right-2 rounded-full" onClick={() => removeImage(image.id)}>
-                                삭제
-                              </Button>
+              {uploadedImages.length > 0 && (
+                <div className="space-y-4">
+                  <h4 className="font-semibold text-lg text-gray-800 dark:text-gray-200">
+                    업로드된 사진
+                  </h4>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {uploadedImages.map((image, index) => (
+                      <motion.div
+                        key={image.id}
+                        initial={{ opacity: 0, scale: 0.96 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        transition={{ delay: index * 0.06 }}
+                      >
+                        <Card className="overflow-hidden backdrop-blur-xl bg-white/90 dark:bg-gray-900/90 border-white/20 shadow-lg rounded-2xl">
+                          <div className="relative">
+                            <img
+                              src={image.preview || "/placeholder.svg"}
+                              alt="업로드"
+                              className="w-full h-48 object-cover"
+                            />
+                            <div className="absolute top-2 left-2 rounded-full bg-white/90 dark:bg-gray-800/90 px-3 py-1 text-[11px] font-medium text-purple-700 dark:text-purple-300 border border-purple-200/70 dark:border-purple-700/40 shadow-sm">
+                              식사 후 (고정)
+                            </div>
+                            <div className="absolute top-2 right-2 flex gap-2">
                               <Button
-                                type="button"
+                                variant="destructive"
                                 size="sm"
-                                variant="secondary"
-                                onClick={() => toggleShotType(image.id)}
-                                className="absolute top-2 left-2 rounded-full bg-white/80 dark:bg-gray-800/80"
-                                title="식사 전/후 전환"
+                                className="rounded-full"
+                                onClick={() => removeImage(image.id)}
+                                title="삭제"
                               >
-                                <Shuffle className="h-4 w-4 mr-1" />
-                                {image.shotType === "before" ? "식사 전" : "식사 후"}
+                                <Trash2 className="h-4 w-4" />
                               </Button>
                             </div>
+                          </div>
 
-                            <CardContent className="p-4">
-                              {!image.ai ? (
-                                <Button
-                                  onClick={() => analyzeImage(image.id)}
-                                  disabled={isAnalyzing || !selectedMenuId}
-                                  className="w-full rounded-xl bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700"
-                                >
-                                  <Sparkles className="h-4 w-4 mr-2" />
-                                  {isAnalyzing ? "AI 분석 중..." : (selectedMenuId ? "AI 분석 시작" : "메뉴 선택 필요")}
-                                </Button>
-                              ) : (
-                                <div className="space-y-3">
-                                  <div className="flex items-center gap-2">
-                                    <CheckCircle className="h-4 w-4 text-green-500" />
-                                    <span className="text-sm font-medium">
-                                      분석 완료 · <span className="uppercase">{image.shotType === "before" ? "BEFORE" : "AFTER"}</span>
-                                    </span>
-                                  </div>
-
-                                  <div className="space-y-2">
-                                    <div className="flex justify-between text-sm">
-                                      <span>AI 산출 별점</span>
-                                      <span className="font-bold bg-gradient-to-r from-green-600 to-sky-600 bg-clip-text text-transparent">
-                                        {image.ai.score.toFixed(1)} / 5
-                                      </span>
-                                    </div>
-                                    <Progress value={Math.round(image.ai.score * 20)} className="h-3" />
-                                  </div>
-
-                                  {image.ai.summary && (
-                                    <div className="bg-gradient-to-r from-green-50 to-sky-50 dark:from-green-900/20 dark:to-sky-900/20 p-3 rounded-xl border border-green-200 dark:border-green-700">
-                                      <p className="text-sm font-semibold text-green-700 dark:text-green-300 mb-1">AI 피드백</p>
-                                      <p className="text-xs text-gray-600 dark:text-gray-300">{image.ai.summary}</p>
-                                    </div>
-                                  )}
+                          <CardContent className="p-4">
+                            {(image.multiCrops?.length ?? 0) > 0 ? (
+                              <div className="space-y-3">
+                                <div className="text-xs text-gray-600 dark:text-gray-300">
+                                  저장된 캡쳐{" "}
+                                  <span className="ml-1 font-semibold">
+                                    ({image.multiCrops!.length})
+                                  </span>
                                 </div>
-                              )}
-                            </CardContent>
-                          </Card>
-                        </motion.div>
-                      ))}
+
+                                <div className="flex gap-3 overflow-x-auto pb-1 md:flex-wrap md:overflow-x-visible">
+                                  {image.multiCrops!.map((crop) => (
+                                    <div
+                                      key={crop.id}
+                                      className="flex-1 min-w-[240px] max-w-[320px] border rounded-xl overflow-hidden bg-white/80 dark:bg-gray-800/80 shadow-sm"
+                                    >
+                                      <img
+                                        src={crop.previewUrl}
+                                        className="w-full h-32 object-cover"
+                                        alt="crop preview"
+                                      />
+                                      <div className="p-3 flex flex-col gap-2 text-sm">
+                                        <div className="flex items-center justify-between">
+                                          <span className="text-sm font-bold text-purple-600 dark:text-purple-300">
+                                            {typeof crop.ai?.score === "number"
+                                              ? `${crop.ai.score.toFixed(1)}★`
+                                              : ""}
+                                          </span>
+                                          {crop.ai?.scoreLabel && (
+                                            <span className="text-[11px] px-2 py-0.5 rounded-full border text-gray-600 dark:text-gray-200">
+                                              {crop.ai.scoreLabel}
+                                            </span>
+                                          )}
+                                        </div>
+
+                                        {!crop.ai && (
+                                          <div className="w-full text-center text-[13px] text-gray-500">
+                                            미분석
+                                          </div>
+                                        )}
+
+                                        {crop.ai?.ownerAnalysis && (
+                                          <p className="text-[13px] leading-[1.35] text-gray-800 dark:text-gray-200 break-words">
+                                            <b className="text-gray-700 dark:text-gray-300">
+                                              AI 분석:
+                                            </b>{" "}
+                                            {crop.ai.ownerAnalysis}
+                                          </p>
+                                        )}
+
+                                        {crop.ai?.userComment && (
+                                          <p className="text-[13px] leading-[1.35] text-gray-700 dark:text-gray-300 break-words">
+                                            <b className="text-gray-700 dark:text-gray-300">
+                                              한줄평:
+                                            </b>{" "}
+                                            {crop.ai.userComment}
+                                          </p>
+                                        )}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="mt-2 text-xs text-gray-500">
+                                아직 저장된 캡쳐가 없습니다. 아래{" "}
+                                <b>캡쳐</b> 버튼으로 원하는 부분을 저장하세요.
+                              </div>
+                            )}
+
+                            <div className="mt-4">
+                              <Button
+                                variant="outline"
+                                onClick={() => openCropFor(image.id)}
+                                className="w-full rounded-xl border-purple-200 dark:border-purple-800"
+                              >
+                                <Sparkles className="h-4 w-4 mr-2" />
+                                캡쳐
+                              </Button>
+                            </div>
+                          </CardContent>
+                        </Card>
+                      </motion.div>
+                    ))}
+                  </div>
+
+                  {/* 전역 CTA */}
+                  <div className="pt-2">
+                    <Button
+                      disabled={isAnalyzing}
+                      onClick={runAnalyzeAll}
+                      className="w-full gap-2 rounded-xl bg-purple-600 hover:bg-purple-700"
+                    >
+                      <Sparkles className="w-4 h-4" />
+                      캡쳐 후 분석
+                    </Button>
+                    {isAnalyzing && (
+                      <div className="mt-2">
+                        <Progress value={66} />
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* AI 종합 점수 */}
+          {avgScore5 > 0 && (
+            <Card className="backdrop-blur-xl bg-white/85 dark:bg-gray-900/85 border-white/20 shadow-xl rounded-2xl">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-xl">
+                  <div className="bg-gradient-to-br from-sky-500 to-blue-600 p-2 rounded-xl">
+                    <Sparkles className="h-5 w-5 text-white" />
+                  </div>
+                  AI 분석 결과 (식사 후 기준)
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-5">
+                <div className="bg-gradient-to-r from-purple-50 to-pink-50 dark:from-purple-900/20 dark:to-pink-900/20 p-6 rounded-2xl border border-purple-200 dark:border-purple-700">
+                  <div className="flex items-center justify-between mb-4">
+                    <span className="text-lg font-semibold text-gray-800 dark:text-gray-200">
+                      잔반 없음 별점(평균)
+                    </span>
+                    <div className="flex items-center gap-3">
+                      <div className="flex items-center">
+                        {Array.from({ length: 5 }).map((_, i) => (
+                          <Star
+                            key={i}
+                            className={`h-6 w-6 ${
+                              i < Math.round(avgScore5)
+                                ? "text-purple-500 fill-purple-500"
+                                : "text-gray-300"
+                            }`}
+                          />
+                        ))}
+                      </div>
+                      <span className="text-lg font-bold bg-gradient-to-r from-purple-600 to-pink-600 bg-clip-text text-transparent">
+                        {avgScore5.toFixed(1)} / 5
+                      </span>
                     </div>
-                  </motion.div>
-                )}
+                  </div>
+                  <Progress value={avgScore100} className="h-3" />
+                  <p className="text-xs text-gray-600 dark:text-gray-300 mt-2">
+                    * 각 사진의 <b>캡쳐 점수 평균</b>(없으면 대표 점수)의 평균입니다.
+                  </p>
+                </div>
               </CardContent>
             </Card>
-          </motion.div>
+          )}
 
-          {/* AI 종합 점수 + 전/후 비교 */}
-          {(avgScore5 > 0 || compareForSelectedMenu) && (
-            <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.25 }}>
-              <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-xl rounded-2xl">
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2 text-xl">
-                    <div className="bg-gradient-to-br from-sky-500 to-blue-600 p-2 rounded-xl">
-                      <Sparkles className="h-5 w-5 text-white" />
-                    </div>
-                    AI 분석 결과
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-5">
-                  {avgScore5 > 0 && (
-                    <div className="bg-gradient-to-r from-green-50 to-sky-50 dark:from-green-900/20 dark:to-sky-900/20 p-6 rounded-2xl border border-green-200 dark:border-green-700">
-                      <div className="flex items-center justify-between mb-4">
-                        <span className="text-lg font-semibold text-gray-800 dark:text-gray-200">잔반 없음 별점(평균)</span>
-                        <div className="flex items-center gap-3">
-                          <div className="flex items-center">
-                            {Array.from({ length: 5 }).map((_, i) => (
-                              <Star
-                                key={i}
-                                className={`h-6 w-6 ${i < Math.round(avgScore5) ? "text-green-500 fill-green-500" : "text-gray-300"}`}
-                              />
-                            ))}
-                          </div>
-                          <span className="text-lg font-bold bg-gradient-to-r from-green-600 to-sky-600 bg-clip-text text-transparent">
-                            {avgScore5.toFixed(1)} / 5
-                          </span>
-                        </div>
+          {/* 스탬프 카드 */}
+          {earnedStamp && avgScore5 >= 4 && (
+            <motion.div
+              initial={{ opacity: 0, y: 16, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              transition={{ type: "spring", stiffness: 180, damping: 16 }}
+            >
+              <Card className="border-purple-300/60 dark:border-purple-700/60 bg-gradient-to-br from-purple-50 to-pink-50 dark:from-purple-900/20 dark:to-pink-900/20 shadow-xl rounded-2xl">
+                <CardContent className="p-5 sm:p-6">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-2">
+                      <div className="p-2 rounded-xl bg-gradient-to-br from-purple-500 to-pink-500 text-white">
+                        <StampIcon className="h-5 w-5" />
                       </div>
-                      <Progress value={avgScore100} className="h-3" />
-                      <p className="text-xs text-gray-600 dark:text-gray-300 mt-2">개별 이미지의 별점 평균으로 계산됩니다.</p>
-                    </div>
-                  )}
-
-                  {compareForSelectedMenu && (
-                    <div className="rounded-2xl border border-emerald-300/60 dark:border-emerald-700/60 p-5 bg-emerald-50/60 dark:bg-emerald-900/20">
-                      <p className="text-sm font-semibold text-emerald-700 dark:text-emerald-300 mb-2">
-                        선택 메뉴 전/후 비교
-                      </p>
-                      <div className="grid grid-cols-3 gap-3 text-center">
-                        <div className="rounded-xl p-3 bg-white/70 dark:bg-gray-800/60 border border-emerald-200/60 dark:border-emerald-700/40">
-                          <p className="text-xs text-gray-500 mb-1">식사 전 평균</p>
-                          <p className="text-lg font-bold">{compareForSelectedMenu.beforeAvg.toFixed(1)} / 5</p>
-                        </div>
-                        <div className="rounded-xl p-3 bg-white/70 dark:bg-gray-800/60 border border-emerald-200/60 dark:border-emerald-700/40">
-                          <p className="text-xs text-gray-500 mb-1">식사 후 평균</p>
-                          <p className="text-lg font-bold">{compareForSelectedMenu.afterAvg.toFixed(1)} / 5</p>
-                        </div>
-                        <div className="rounded-xl p-3 bg-white/70 dark:bg-gray-800/60 border border-emerald-200/60 dark:border-emerald-700/40">
-                          <p className="text-xs text-gray-500 mb-1">변화량(후-전)</p>
-                          <p className={`text-lg font-bold ${compareForSelectedMenu.delta >= 0 ? "text-emerald-600" : "text-red-500"}`}>
-                            {compareForSelectedMenu.delta >= 0 ? "+" : ""}
-                            {compareForSelectedMenu.delta.toFixed(1)}
-                          </p>
-                        </div>
+                      <div className="text-lg font-semibold text-purple-700 dark:text-purple-200">
+                        스탬프 적립
                       </div>
-                      <p className="text-[11px] text-gray-500 mt-2">
-                        * 전/후로 지정된 이미지들이 각각 AI 분석을 완료했을 때 계산돼요.
-                      </p>
                     </div>
-                  )}
+                    <div className="text-sm text-purple-700/80 dark:text-purple-200/80">
+                      이번 리뷰
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-center mb-2">
+                    <motion.div
+                      initial={{ scale: 0 }}
+                      animate={{ scale: 1 }}
+                      transition={{
+                        type: "spring",
+                        stiffness: 300,
+                        damping: 12,
+                        delay: 0.05,
+                      }}
+                      className="w-14 h-14 rounded-full bg-gradient-to-br from-purple-500 to-pink-500 text-white shadow-lg border-2 border-purple-400 flex items-center justify-center"
+                    >
+                      <StampIcon className="h-7 w-7" />
+                    </motion.div>
+                  </div>
+                  <p className="text-center text-sm text-gray-700 dark:text-gray-300">
+                    <span className="font-semibold text-purple-700 dark:text-purple-300">
+                      스탬프 1개 적립 완료!
+                    </span>{" "}
+                    평균 4점 이상 리뷰로 적립됐어요.
+                  </p>
                 </CardContent>
               </Card>
             </motion.div>
           )}
 
-          {/* 코멘트 & 제출 */}
-          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }}>
+          {/* 코멘트/제출 */}
+          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}>
             <form onSubmit={onSubmit}>
-              <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-xl rounded-2xl">
+              <Card className="backdrop-blur-xl bg-white/85 dark:bg-gray-900/85 border-white/20 shadow-xl rounded-2xl">
                 <CardHeader>
                   <CardTitle className="text-xl">코멘트</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-6">
                   {submitError && (
-                    <div className="flex items-start gap-2 rounded-xl border border-red-300/60 bg-red-50/70 dark:bg-red-900/30 px-3 py-2">
+                    <div className="flex items-start gap-2 rounded-xl border border-red-300/60 bg-red-50/80 dark:bg-red-900/30 px-3 py-2">
                       <AlertCircle className="h-4 w-4 mt-0.5 text-red-600 dark:text-red-300" />
-                      <p className="text-sm text-red-800 dark:text-red-100">{submitError}</p>
+                      <p className="text-sm text-red-800 dark:text-red-100">
+                        {submitError}
+                      </p>
                     </div>
                   )}
 
                   <div className="space-y-3">
-                    <Label htmlFor="comment" className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                    <Label
+                      htmlFor="comment"
+                      className="text-sm font-medium text-gray-700 dark:text-gray-300"
+                    >
                       리뷰 내용
                     </Label>
                     <Textarea
@@ -671,17 +963,19 @@ export default function ReviewWritePage() {
                       value={comment}
                       onChange={(e) => setComment(e.target.value)}
                       placeholder="식사 경험을 적어주세요…"
-                      className="bg-white/50 dark:bg-gray-800/50 border-gray-200 dark:border-gray-700 focus:border-green-500 focus:ring-green-500/20 rounded-xl"
+                      className="bg-white/60 dark:bg-gray-800/60 border-gray-200 dark:border-gray-700 focus:border-purple-500 focus:ring-purple-500/20 rounded-xl"
                       maxLength={500}
                     />
-                    <p className="text-xs text-gray-500 dark:text-gray-400">{comment.length}/500자</p>
+                    <p className="text-xs text-gray-500 dark:text-gray-400">
+                      {comment.length}/500자
+                    </p>
                   </div>
 
                   <div className="pt-2">
                     <Button
                       type="submit"
                       disabled={!canSubmit || submitting}
-                      className="w-full h-12 bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white font-medium shadow-lg hover:shadow-xl transition-all duration-300 rounded-xl"
+                      className="w-full h-12 bg-gradient-to-r from-purple-500 to-pink-600 hover:from-purple-600 hover:to-pink-700 text-white font-medium shadow-lg hover:shadow-xl transition-all duration-300 rounded-xl"
                     >
                       {submitting ? "제출 중…" : "리뷰 제출"}
                     </Button>
@@ -691,10 +985,13 @@ export default function ReviewWritePage() {
                     <motion.div
                       initial={{ opacity: 0, y: 10 }}
                       animate={{ opacity: 1, y: 0 }}
-                      className="flex items-center gap-2 text-sm text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 p-3 rounded-xl"
+                      className="flex items-center gap-2 text-sm text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 p-3 rounded-xl"
                     >
                       <AlertCircle className="h-4 w-4" />
-                      <span>메뉴 선택, 사진 업로드·AI 분석, 코멘트를 완료하면 제출할 수 있어요.</span>
+                      <span>
+                        사진 업로드, <b>캡쳐 후 분석</b>, 코멘트를 완료하면 제출할 수
+                        있어요.
+                      </span>
                     </motion.div>
                   )}
                 </CardContent>
