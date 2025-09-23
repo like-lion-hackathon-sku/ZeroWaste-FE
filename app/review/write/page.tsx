@@ -190,7 +190,6 @@ function CropModal({
             />
           </div>
           <div className="flex items-center gap-2">
-            {/* 캡쳐 버튼만 유지 (파란 캡쳐 버튼 제거) */}
             <Button
               onClick={captureArea}
               className="rounded-xl bg-purple-600 hover:bg-purple-700"
@@ -452,15 +451,50 @@ export default function ReviewWritePage() {
     setConflict409(null);
     try {
       setSubmitting(true);
+
+      // ⬇⬇⬇ 중요: feedback/detail_feedback 생성
+      const allCrops =
+        uploadedImages.flatMap((img) => img.multiCrops ?? []);
+
+      const feedback: string | null =
+        allCrops.find((c) => c.ai?.ownerAnalysis)?.ai?.ownerAnalysis ??
+        allCrops.find((c) => c.ai?.userComment)?.ai?.userComment ??
+        null;
+
+      const detailFeedback: string | null = allCrops.length
+        ? allCrops
+            .map((c, i) => {
+              const s =
+                typeof c.ai?.score === "number"
+                  ? `${c.ai!.score.toFixed(1)}★`
+                  : "";
+              const oa = c.ai?.ownerAnalysis?.trim() ?? "";
+              const uc = c.ai?.userComment?.trim() ?? "";
+              const parts = [
+                `#${i + 1}${s ? ` (${s})` : ""}`,
+                oa && `AI: ${oa}`,
+                uc && `한줄평: ${uc}`,
+              ].filter(Boolean);
+              return parts.join(" - ");
+            })
+            .join("\n")
+        : null;
+
       const payload = {
         content: comment.trim(),
         score: Number(avgScore5.toFixed(1)),
         images: uploadedImages.map((img) => img.fileName),
+
+        // ✅ 리뷰 테이블 매핑
+        feedback,
+        detailFeedback,
       };
+
       const resp = await apiClient.createReviewForRestaurant(
         restaurantId,
         payload as any
       );
+
       if (!resp.success) {
         const err = String(resp.error || "");
         if (err.includes("401")) {
@@ -479,6 +513,7 @@ export default function ReviewWritePage() {
         }
         throw new Error(err || "리뷰 생성에 실패했어요.");
       }
+
       const earned = avgScore5 >= 4 ? 1 : 0;
       if (earned) alert("축하합니다! 평균 4.0 이상으로 스탬프가 적립됩니다.");
       router.replace(
@@ -555,7 +590,7 @@ export default function ReviewWritePage() {
         </div>
       )}
 
-      {/* 스탬프 배너 (보라색 톤) */}
+      {/* 스탬프 배너 */}
       {stampBanner && (
         <div className="sticky top-0 z-20">
           <div className="mx-auto max-w-3xl p-3">
@@ -687,7 +722,6 @@ export default function ReviewWritePage() {
                               식사 후 (고정)
                             </div>
                             <div className="absolute top-2 right-2 flex gap-2">
-                              {/* 상단 작은 캡쳐 버튼 삭제, 삭제만 유지 */}
                               <Button
                                 variant="destructive"
                                 size="sm"
@@ -735,7 +769,6 @@ export default function ReviewWritePage() {
                                           )}
                                         </div>
 
-                                        {/* 미분석 중앙 정렬 */}
                                         {!crop.ai && (
                                           <div className="w-full text-center text-[13px] text-gray-500">
                                             미분석
@@ -772,7 +805,6 @@ export default function ReviewWritePage() {
                             )}
 
                             <div className="mt-4">
-                              {/* 하단 메인 버튼: 영역 지정 -> 캡쳐로 이름 변경 */}
                               <Button
                                 variant="outline"
                                 onClick={() => openCropFor(image.id)}
@@ -853,7 +885,7 @@ export default function ReviewWritePage() {
             </Card>
           )}
 
-          {/* 스탬프 카드 (기존 유지) */}
+          {/* 스탬프 카드 */}
           {earnedStamp && avgScore5 >= 4 && (
             <motion.div
               initial={{ opacity: 0, y: 16, scale: 0.98 }}

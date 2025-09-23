@@ -73,6 +73,7 @@ type UIReview = {
   wasteRating?: number
   date?: string
   comment?: string
+  detailFeedback?: string | null
   images?: string[]
 }
 type UIMenuItem = {
@@ -99,26 +100,6 @@ type UIRestaurant = {
   gallery?: string[]
   reviews?: UIReview[]
   infoSections?: { title: string; body: string }[]
-}
-
-/* ── 배치 분석 스키마(서버 응답) ── */
-type PerMenu = {
-  name: string
-  count: number
-  avg_leftover: number
-  worst_samples?: string[]
-  best_samples?: string[]
-  insight?: string
-}
-type Overall = {
-  total_records: number
-  weighted_score_100: number
-  summary: string
-  actions?: string[]
-}
-type BatchAnalysis = {
-  per_menu: PerMenu[]
-  overall: Overall
 }
 
 /** 상세(raw)의 사진/메뉴 파일명을 presigned URL로 변환 */
@@ -214,10 +195,12 @@ const normalizeReview = (r: any): UIReview => {
       ? u
       : (u?.name ?? u?.username ?? u?.nickname ?? r.nickname ?? r.userName ?? r.authorName ?? r.author ?? "익명")
 
-  // BE에는 별점이 없으니(남는양 leftoverRate? → 숫자면 그대로 사용)
   const ratingRaw = r.score ?? r.leftoverRate ?? r.waste_rating ?? r.rating ?? r.stars ?? r.star ?? r.wasteScore ?? 0
 
   const comment = r.contents ?? r.comment ?? r.content ?? r.text ?? ""
+  const detail =
+    r.detailFeedback ?? r.detail_feedback ?? r.feedback_detail ?? r.ai_feedback ?? null
+
   const date = r.createdAt ?? r.created_at ?? r.date ?? r.created ?? ""
   const images = Array.isArray(r.images)
     ? r.images.map((x: any) => (typeof x === "string" ? x : x?.url)).filter(Boolean)
@@ -231,6 +214,7 @@ const normalizeReview = (r: any): UIReview => {
     wasteRating: Number(r.wasteRating ?? ratingRaw) || 0,
     date,
     comment,
+    detailFeedback: typeof detail === "string" ? detail : null,
     images,
   }
 }
@@ -325,7 +309,7 @@ function buildBatchFromReviews(revs: UIReview[]) {
       {
         name: "전체", // 실제 메뉴명을 알면 교체
         leftover_score: Number(r.wasteRating) || 0,
-        user_comment: r.comment || "",
+        user_comment: (r.detailFeedback && r.detailFeedback.trim()) || (r.comment || ""), // ← 핵심
       },
     ],
   }))
@@ -350,13 +334,10 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
   const [reviewsError, setReviewsError] = useState<string | null>(null)
   const [reviewsFetched, setReviewsFetched] = useState(false)
 
-  // AI 요약 (폴백용)
-  const [aiSummary, setAiSummary] = useState<string | null>(null)
+  // AI 호출 상태 (raw만 사용)
   const [aiLoading, setAiLoading] = useState(false)
   const [aiError, setAiError] = useState<string | null>(null)
-
-  // 배치 분석 결과
-  const [batch, setBatch] = useState<BatchAnalysis | null>(null)
+  const [aiRaw, setAiRaw] = useState<any>(null)
 
   async function loadReviewsOnce(id: number) {
     if (!id || reviewsFetched) return
@@ -385,61 +366,16 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
     }
   }
 
-  const summarizeWithFallback = async (_id: number, reviewData: UIReview[]) => {
-    setAiLoading(true)
-    setAiError(null)
-    try {
-      const res = await apiClient.getAiReviewSummary?.(_id)
-      if (res?.success && res.data) {
-        const text =
-          typeof res.data === "string" ? res.data : (res.data as any)?.summary || (res.data as any)?.text || null
-        if (text) {
-          setAiSummary(String(text))
-          return
-        }
-      }
-
-      // 폴백: 간단 요약
-      const positives = reviewData.filter((r) => (r.wasteRating ?? 0) >= 4)
-      const neutrals = reviewData.filter((r) => (r.wasteRating ?? 0) >= 3 && (r.wasteRating ?? 0) < 4)
-      const negatives = reviewData.filter((r) => (r.wasteRating ?? 0) < 3)
-
-      const topPhrases = (arr: UIReview[], limit = 3) =>
-        arr.map((r) => (r.comment || "").trim()).filter(Boolean).slice(0, limit)
-
-      const bullets: string[] = [
-        `긍정 리뷰 ${positives.length}건 · 보통 ${neutrals.length}건 · 아쉬움 ${negatives.length}건.`,
-      ]
-      const add = (title: string, items: string[]) => {
-        if (!items.length) return
-        bullets.push(`${title}`)
-        items.forEach((t) => bullets.push(`- ${t.slice(0, 120)}`))
-      }
-      add("좋았던 점", topPhrases(positives))
-      add("보통이었던 점", topPhrases(neutrals))
-      add("아쉬웠던 점", topPhrases(negatives))
-
-      setAiSummary(bullets.join("\n"))
-    } catch (e: any) {
-      setAiError(e?.message || "AI 요약 생성에 실패했어요.")
-    } finally {
-      setAiLoading(false)
-    }
-  }
-
-  /** 🔁 배치 분석(서버 호출) */
+  /** 🔁 배치 분석(서버 호출) — raw만 저장 */
   const analyzeOnServer = async () => {
     if (!reviews.length) {
-      setBatch(null)
-      setAiSummary(null)
+      setAiRaw(null)
       return
     }
     setAiLoading(true)
     setAiError(null)
     try {
       const payload = buildBatchFromReviews(reviews)
-
-      // apiClient.analyzeWasteBatch 가 있다면 이걸 사용해도 됨.
       const res = await fetch("/api/ai/waste/analyze-batch", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -449,14 +385,10 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
       if (!res.ok || !data?.ok) {
         throw new Error(data?.error || "분석 실패")
       }
-
-      const result: BatchAnalysis = data.result
-      setBatch(result)
-      setAiSummary(result?.overall?.summary ?? null)
+      // 서버가 내려주는 raw 그대로 보관
+      setAiRaw(data.raw ?? null)
     } catch (e: any) {
-      // 실패 시 폴백 요약
-      setBatch(null)
-      await summarizeWithFallback(restaurantId, reviews)
+      setAiRaw(null)
       setAiError(e?.message || "AI 분석에 실패했어요.")
     } finally {
       setAiLoading(false)
@@ -470,8 +402,7 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
       setLoading(true)
       setError(null)
       setReviewsFetched(false)
-      setAiSummary(null)
-      setBatch(null)
+      setAiRaw(null)
       try {
         const res = await apiClient.getRestaurantDetail(restaurantId)
         if (!mounted) return
@@ -497,9 +428,9 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
     }
   }, [restaurantId])
 
-  // 리뷰 로딩 끝나면 AI 분석 1회(실패 시 폴백)
+  // 리뷰 로딩 끝나면 AI 분석 1회
   useEffect(() => {
-    if (!reviewsFetched || aiLoading || batch || aiSummary) return
+    if (!reviewsFetched || aiLoading || aiRaw !== null) return
     analyzeOnServer()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reviewsFetched])
@@ -987,7 +918,7 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
               {/* Reviews */}
               <TabsContent value="reviews" className="mt-8">
                 <motion.div className="space-y-6" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} transition={{ duration: 0.3 }}>
-                  {/* 요약 */}
+                  {/* 요약 숫자 카드 */}
                   <Card className="bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm border-white/20 dark:border-slate-700/50 shadow-xl rounded-3xl overflow-hidden">
                     <CardHeader className="bg-gradient-to-r from-blue-500/10 to-cyan-500/10 border-b border-white/20 dark:border-slate-700/50">
                       <CardTitle className="flex items-center gap-3 text-xl">
@@ -1013,7 +944,7 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
                     </CardContent>
                   </Card>
 
-                  {/* AI 리뷰 요약 (배치 분석) */}
+                  {/* AI 원본(raw) 출력 */}
                   {isOwnerMode && (
                     <Card className="bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm border-white/20 dark:border-slate-700/50 shadow-xl rounded-3xl overflow-hidden">
                       <CardHeader className="bg-gradient-to-r from-purple-500/10 to-pink-500/10 border-b border-white/20 dark:border-slate-700/50">
@@ -1022,7 +953,7 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
                             <div className="p-2 rounded-xl bg-gradient-to-br from-purple-500 to-pink-600 shadow-lg">
                               <Bot className="h-5 w-5 text-white" />
                             </div>
-                            AI 리뷰 요약
+                            AI 원본 결과 (raw)
                           </span>
                           <Button
                             variant="ghost"
@@ -1044,81 +975,22 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
                           <div className="text-center text-red-500 py-8 bg-red-50 dark:bg-red-900/20 rounded-xl">
                             {aiError}
                           </div>
-                        ) : batch ? (
-                          <>
-                            {/* 전체 요약 */}
-                            <div className="prose prose-sm dark:prose-invert max-w-none whitespace-pre-wrap leading-relaxed">
-                              {batch.overall.summary}
-                            </div>
-
-                            {/* 개선 액션 */}
-                            {batch.overall.actions?.length ? (
-                              <ul className="list-disc pl-5 space-y-1 text-sm text-foreground">
-                                {batch.overall.actions.map((a, i) => (
-                                  <li key={i}>{a}</li>
-                                ))}
-                              </ul>
-                            ) : null}
-
-                            {/* 메뉴별 인사이트 */}
-                            {batch.per_menu?.length ? (
-                              <div className="grid gap-4">
-                                {batch.per_menu.map((m, i) => (
-                                  <div
-                                    key={i}
-                                    className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-white/20 dark:border-slate-700/50"
-                                  >
-                                    <div className="font-semibold">{m.name}</div>
-                                    <div className="text-sm text-muted-foreground">
-                                      평균 잔반 {m.avg_leftover}점 (총 {m.count}회)
-                                    </div>
-                                    {m.insight && (
-                                      <div className="mt-2 text-sm whitespace-pre-wrap">{m.insight}</div>
-                                    )}
-                                    {(m.best_samples?.length || m.worst_samples?.length) && (
-                                      <div className="mt-3 grid gap-2 text-sm">
-                                        {m.best_samples?.length ? (
-                                          <div>
-                                            <div className="font-medium">👍 Best</div>
-                                            <ul className="list-disc pl-5">
-                                              {m.best_samples.slice(0, 2).map((s, idx) => (
-                                                <li key={idx}>{s}</li>
-                                              ))}
-                                            </ul>
-                                          </div>
-                                        ) : null}
-                                        {m.worst_samples?.length ? (
-                                          <div>
-                                            <div className="font-medium">⚠️ Worst</div>
-                                            <ul className="list-disc pl-5">
-                                              {m.worst_samples.slice(0, 2).map((s, idx) => (
-                                                <li key={idx}>{s}</li>
-                                              ))}
-                                            </ul>
-                                          </div>
-                                        ) : null}
-                                      </div>
-                                    )}
-                                  </div>
-                                ))}
-                              </div>
-                            ) : null}
-                          </>
-                        ) : aiSummary ? (
-                          // 폴백 요약 표시
-                          <div className="prose prose-sm dark:prose-invert max-w-none whitespace-pre-wrap leading-relaxed">
-                            {aiSummary}
-                          </div>
-                        ) : (
+                        ) : aiRaw == null ? (
                           <div className="text-center text-muted-foreground py-8">
-                            아직 보여줄 요약이 없어요.
+                            아직 보여줄 결과가 없어요.
                           </div>
+                        ) : typeof aiRaw === "string" ? (
+                          <pre className="whitespace-pre-wrap text-sm leading-relaxed">{aiRaw}</pre>
+                        ) : (
+                          <pre className="whitespace-pre overflow-auto rounded-xl bg-slate-50 dark:bg-slate-900/40 p-4 text-xs">
+                            {JSON.stringify(aiRaw, null, 2)}
+                          </pre>
                         )}
                       </CardContent>
                     </Card>
                   )}
 
-                  {/* 목록 */}
+                  {/* 리뷰 목록 */}
                   <Card className="bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm border-white/20 dark:border-slate-700/50 shadow-xl rounded-3xl overflow-hidden">
                     <CardHeader className="bg-gradient-to-r from-slate-500/10 to-slate-700/10 border-b border-white/20 dark:border-slate-700/50">
                       <CardTitle className="text-lg">방문자 리뷰</CardTitle>

@@ -1,26 +1,27 @@
+// app/api/ai/waste/analyze-batch/route.ts
 import { NextResponse, type NextRequest } from "next/server";
 import { Client } from "@gradio/client";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const GRADIO_BASE = "https://5ed0df4846238b1cea.gradio.live";
+const GRADIO_BASE = "https://5ed0df4846238b1cea.gradio.live"; // 네 Space 주소
 const GRADIO_ENDPOINT = process.env.GRADIO_ENDPOINT ?? "/predict";
 
 /** 클라이언트가 원하는 최종 응답 스키마 */
 type PerMenu = {
   name: string;
-  count: number;              // 등장 횟수
-  avg_leftover: number;       // 0~5 평균 (소수1자리)
-  worst_samples?: string[];   // 잔반이 높았던 코멘트 예시
-  best_samples?: string[];    // 잔반이 낮았던 코멘트 예시
-  insight?: string;           // 간단 인사이트
+  count: number;
+  avg_leftover: number;
+  worst_samples?: string[];
+  best_samples?: string[];
+  insight?: string;
 };
 type Overall = {
   total_records: number;
-  weighted_score_100: number; // 0~100 (소수0자리)
-  summary: string;            // 한 줄 요약
-  actions?: string[];         // 개선 액션 3~5개
+  weighted_score_100: number;
+  summary: string;
+  actions?: string[];
 };
 type BatchAnalysis = {
   per_menu: PerMenu[];
@@ -30,74 +31,65 @@ type BatchAnalysis = {
 function round1(n: number) { return Math.round(n * 10) / 10; }
 function round0(n: number) { return Math.round(n); }
 
-/** 입력 JSON 검증 & 문자열 프롬프트 생성 */
-async function readAndBuildPrompt(req: NextRequest): Promise<string> {
-  const ct = req.headers.get("content-type") ?? "";
-  if (!ct.startsWith("application/json")) {
-    throw new Error("Content-Type must be application/json");
-  }
-  const body = await req.json();
-  if (!Array.isArray(body)) {
-    throw new Error("Body must be an array of day objects.");
-  }
-
-  // 사용자가 붙여넣는 예시 구조:
-  // [{ date, time, food_menu: [{name, leftover_score, user_comment}] }, ...]
-  // 그대로 프롬프트에 포함시키되, 작업지시를 명확히.
-  return [
-    "다음은 급식/식당의 잔반 데이터입니다. JSON을 읽고 아래 형식으로 분석하세요.",
-    "",
-    "요구 형식(JSON):",
-    JSON.stringify({
-      per_menu: [
-        { name: "예: 된장찌개", count: 0, avg_leftover: 0.0, worst_samples: [], best_samples: [], insight: "" }
-      ],
-      overall: {
-        total_records: 0,
-        weighted_score_100: 0,
-        summary: "",
-        actions: ["액션1", "액션2", "액션3"]
-      }
-    }, null, 2),
-    "",
-    "규칙:",
-    "- leftover_score는 0~5로 가정(높을수록 잔반이 많음).",
-    "- per_menu.avg_leftover는 소수 1자리, overall.weighted_score_100은 0~100 정수로 제시.",
-    "- worst/best_samples에는 원문 user_comment 예시를 최대 2개 씩.",
-    "- actions는 구체적인 개선안 3~5개.",
-    "- 응답은 반드시 위 JSON 스키마로만 출력하세요(설명문 금지).",
-    "",
-    "데이터(JSON):",
-    JSON.stringify(body, null, 2),
-  ].join("\n");
-}
-
-/** Gradio 호출: 텍스트 입력 키 여러 가지를 순차 시도 */
-async function callGradioText(base: string, endpoint: string, text: string) {
-  const client = await Client.connect(base, { hf_token: undefined });
-  const candidates: Record<string, any>[] = [
-    { text }, { input: text }, { prompt: text }, { message: text }, { inputs: text },
-  ];
-  let lastErr: any;
-  for (const payload of candidates) {
-    try {
-      return await client.predict(endpoint, payload);
-    } catch (e) {
-      lastErr = e;
-    }
-  }
-  throw lastErr ?? new Error("Gradio 호출 실패");
-}
-
-/** 모델이 문자열로 JSON을 돌려줄 때 파싱 */
 function safeParseJSON(s: unknown): any | null {
   if (typeof s !== "string") return null;
   try { return JSON.parse(s); } catch { return null; }
 }
 
-/** 모델 원본 → 우리 스키마로 정규화(최대한 보정) */
+/** Gradio 호출: JSON 입력 파라미터를 찾아 전달 */
+async function callGradioJson(base: string, endpoint: string, data: any) {
+  const client = await Client.connect(base, { hf_token: undefined });
+  const api = await client.view_api();
+
+  const named = api.named_endpoints ?? {};
+
+  // 실제 predict()에 넣을 경로 문자열 결정
+  let path = endpoint;
+  if (!named[endpoint]) {
+    const firstKey = Object.keys(named)[0];
+    if (!firstKey) throw new Error("Gradio endpoint not found");
+    path = firstKey; // ex) "/predict"
+  }
+
+  // 해당 엔드포인트의 메타
+  const ep: any = named[path];
+  if (!ep) throw new Error("Gradio endpoint meta not found");
+
+  // JSON/텍스트 파라미터 키 탐색
+  const preferred = ["json_data", "json", "data", "text", "input", "prompt"];
+  const param: any =
+    ep.parameters?.find((p: any) =>
+      preferred.includes(String(p?.parameter_name ?? p?.name ?? "").toLowerCase())
+    ) ??
+    ep.parameters?.find((p: any) =>
+      /json|text|input/i.test(String(p?.label ?? p?.parameter_name ?? ""))
+    );
+
+  if (!param) throw new Error("적절한 JSON 파라미터를 찾지 못했습니다.");
+
+  const key = String((param as any).parameter_name ?? (param as any).name ?? "json_data");
+
+  // payload 생성
+  const payload: Record<string, any> = {};
+  payload[key] = typeof data === "string" ? data : JSON.stringify(data);
+
+  // 나머지 파라미터 기본값 채우기
+  (ep.parameters ?? []).forEach((p: any) => {
+    const name = String(p?.parameter_name ?? p?.name ?? "");
+    if (!name || (name in payload)) return;
+
+    const comp = String(p?.component ?? "").toLowerCase();
+    if (comp.includes("checkbox")) payload[name] = false;
+    else if (comp.includes("slider")) payload[name] = p?.value ?? 0;
+    else payload[name] = null;
+  });
+
+  // ✅ ep.path 대신 우리가 확정한 path 문자열 사용
+  return await client.predict(path, payload);
+}
+
+/** 모델 원본 → 우리 스키마로 정규화 */
 function normalizeToSchema(raw: any): BatchAnalysis {
-  // raw가 문자열(JSON)일 수 있음
   const obj = typeof raw === "string" ? safeParseJSON(raw) : raw;
 
   const per_menu_raw: any[] = Array.isArray(obj?.per_menu) ? obj.per_menu : [];
@@ -124,18 +116,20 @@ function normalizeToSchema(raw: any): BatchAnalysis {
 /** POST /api/ai/waste/analyze-batch */
 export async function POST(req: NextRequest) {
   try {
-    const prompt = await readAndBuildPrompt(req);
-    const result = await callGradioText(GRADIO_BASE, GRADIO_ENDPOINT, prompt);
+    const body = await req.json();
+    if (!Array.isArray(body)) {
+      throw new Error("Body must be an array of day objects.");
+    }
 
-    // Gradio의 result.data는 환경마다 배열/문자열/객체 등 다양함
-    const data = (result as any)?.data;
-    // 1) 문자열 JSON -> 파싱, 2) 객체면 그대로 시도, 3) 배열이면 가장 긴 문자열/객체 선택
+    const result = await callGradioJson(GRADIO_BASE, GRADIO_ENDPOINT, body);
+
+    const data = (result as any)?.data ?? result;
     let candidate: any = data;
     if (Array.isArray(data)) {
-      // 문자열 JSON이 섞여 있으면 그중 가장 긴 것
       const texts = data.filter((x) => typeof x === "string") as string[];
-      const bestText = texts.sort((a, b) => b.length - a.length)[0];
-      candidate = bestText ?? data.find((x) => typeof x === "object") ?? data[0];
+      candidate = texts.sort((a, b) => b.length - a.length)[0]
+        ?? data.find((x) => typeof x === "object")
+        ?? data[0];
     }
 
     const normalized = normalizeToSchema(candidate);
