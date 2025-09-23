@@ -573,7 +573,7 @@ await Promise.all(detailResults.map(async (pr, i) => {
           const photoUrl = fn ? await toSignedRestaurantUrl(fn) : null
       
           const rawId = r.restaurantId ?? r.restaurant_id ?? r.id ?? r._id ?? r.restId ?? r.rest_id
-const idNum = Number(r.id) || undefined
+const idNum = Number(rawId) || undefined
           const isFavByServer = !!r.favorited
           const isFavByMe = idNum != null && favoriteIds.has(Number(idNum))
           const rawScore = r.wasteScore ?? r.waste_score ?? r.score ?? r.ecoScore ?? null
