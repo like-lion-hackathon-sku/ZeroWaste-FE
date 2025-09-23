@@ -1,10 +1,21 @@
+// app/scan/page.tsx
 "use client"
 
 import { useSearchParams, useRouter } from "next/navigation"
-import { useCallback, useRef, useState } from "react"
+import { useCallback, useMemo, useRef, useState } from "react"
 import dynamic from "next/dynamic"
 import { Button } from "@/components/ui/button"
-import { ArrowLeft, CheckCircle } from "lucide-react"
+import {
+  ArrowLeft,
+  CheckCircle,
+  Camera,
+  QrCode,
+  RefreshCw,
+  AlertTriangle,
+  Keyboard,
+  Loader2,
+} from "lucide-react"
+import { apiClient } from "@/lib/api/client"
 
 /* ───────────────── dynamic import: 모든 export 케이스 대응 ───────────────── */
 function resolveScanner(mod: any) {
@@ -24,7 +35,6 @@ const QrScanner = dynamic(
     const mod: any = await import("@yudiel/react-qr-scanner")
     const Comp = resolveScanner(mod)
     if (Comp) return Comp
-    // 안전 fallback (개발 중 표시)
     return function MissingScanner() {
       return (
         <div className="p-4 text-red-500 text-sm">
@@ -35,7 +45,12 @@ const QrScanner = dynamic(
   },
   {
     ssr: false,
-    loading: () => <div className="p-4 text-white/80">카메라 준비 중…</div>,
+    loading: () => (
+      <div className="flex items-center justify-center h-32 text-sm text-white/80">
+        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+        카메라 준비 중…
+      </div>
+    ),
   }
 )
 
@@ -49,6 +64,31 @@ type QRProps = {
 }
 const QrScannerTyped = QrScanner as unknown as React.ComponentType<QRProps>
 
+/* ───────────────── 유틸: QR payload 파서 ───────────────── */
+function parseStampCode(raw: string): { code: string | null; meta?: any } {
+  if (!raw) return { code: null }
+  // 1) JSON payload: {"t":"STAMP_USE","code":"..."}
+  try {
+    const obj = JSON.parse(raw)
+    if (obj && typeof obj === "object" && typeof obj.code === "string" && obj.code.trim()) {
+      return { code: obj.code.trim(), meta: obj }
+    }
+  } catch {
+    /* noop */
+  }
+  // 2) URL 형태: https://...?code=xxx
+  try {
+    const url = new URL(raw)
+    const code = url.searchParams.get("code")
+    if (code && code.trim()) return { code: code.trim(), meta: { url: raw } }
+  } catch {
+    /* noop */
+  }
+  // 3) 순수 코드(UUID 등)
+  if (/^[0-9a-fA-F-]{20,}$/.test(raw.trim())) return { code: raw.trim() }
+  return { code: null }
+}
+
 /* ───────────────── Page ───────────────── */
 export default function ScanPage() {
   const router = useRouter()
@@ -57,76 +97,258 @@ export default function ScanPage() {
   const restaurantId = sp.get("restaurantId") ?? ""
 
   const [decoded, setDecoded] = useState<string | null>(null)
-  const handledRef = useRef(false) // StrictMode 중복 처리 방지
+  const [status, setStatus] = useState<"idle" | "success" | "error">("idle")
+  const [msg, setMsg] = useState<string>("")
+  const [manualCode, setManualCode] = useState("")
+  const handledRef = useRef(false) // StrictMode & 중복콜 방지
+  const [submitting, setSubmitting] = useState(false)
 
-  // 후면 카메라 우선
-  const videoConstraints: MediaTrackConstraints = {
-    facingMode: { ideal: "environment" },
+  // 후면 카메라 우선 + 해상도 힌트
+  const videoConstraints: MediaTrackConstraints = useMemo(
+    () => ({
+      facingMode: { ideal: "environment" },
+      width: { ideal: 1280 },
+      height: { ideal: 720 },
+    }),
+    []
+  )
+
+  const vibrate = (pattern = [60]) => {
+    try {
+      if (typeof window !== "undefined" && "vibrate" in navigator) {
+        // @ts-ignore
+        navigator.vibrate?.(pattern)
+      }
+    } catch {}
   }
 
+  const callUseAPI = useCallback(
+    async (code: string) => {
+      setSubmitting(true)
+      setMsg("")
+      try {
+        // ✅ 현재 클라 시그니처 유지: (restaurantId, code)
+        const res = await apiClient.bizUseStamp(Number(restaurantId), code)
+        if (!res?.success) throw new Error(res?.error || "스탬프 사용 처리 실패")
+        setStatus("success")
+        setMsg("확인되었습니다. 스탬프가 사용 처리되었습니다.")
+        vibrate([20, 30, 20])
+        // 상세로 복귀(딥링크 파라미터로 완료 신호)
+        setTimeout(() => {
+          router.replace(`/restaurant/${restaurantId}?stamp=done`)
+        }, 550)
+      } catch (e: any) {
+        setStatus("error")
+        setMsg(e?.message || "스탬프 사용 처리에 실패했습니다.")
+        vibrate([80])
+        // 실패 시 재시도 허용
+        handledRef.current = false
+      } finally {
+        setSubmitting(false)
+      }
+    },
+    [restaurantId, router]
+  )
+
   const handleDecode = useCallback(
-    async (text: string) => {
-      if (handledRef.current) return
+    async (result: string | string[]) => {
+      // 라이브러리마다 배열로 올 수 있으니 안전 처리
+      const text = Array.isArray(result) ? String(result[0] ?? "") : String(result ?? "")
+      if (!text || handledRef.current) return
       handledRef.current = true
       setDecoded(text)
 
-      try {
-        // TODO: 실제 API 연동 시 여기에 호출
-        // await apiClient.useStamp({ restaurantId: Number(restaurantId), code: text })
-
-        alert(`스캔 성공!\ncode=${text}\n타입=${type}\n식당ID=${restaurantId}`)
-        router.replace(`/restaurant/${restaurantId}?stamp=done`)
-      } catch (err) {
-        console.error(err)
-        alert("스탬프 처리 중 오류가 발생했습니다.")
-        router.back()
+      const { code } = parseStampCode(text)
+      if (!code) {
+        setStatus("error")
+        setMsg("유효한 스탬프 QR이 아닙니다. 다시 시도해주세요.")
+        handledRef.current = false
+        return
       }
+      await callUseAPI(code)
     },
-    [restaurantId, router, type]
+    [callUseAPI]
   )
 
   const handleCancel = () => router.back()
 
+  const onSubmitManual = async () => {
+    const code = manualCode.trim()
+    if (!code || handledRef.current) return
+    handledRef.current = true
+    setDecoded(code)
+    await callUseAPI(code)
+  }
+
+  const resetForRescan = () => {
+    handledRef.current = false
+    setDecoded(null)
+    setStatus("idle")
+    setMsg("")
+  }
+
+  const title = type === "stamp" ? "스탬프 사용 (QR 스캔)" : "QR 스캔"
+
   return (
-    <div className="min-h-screen bg-black text-white flex flex-col items-center justify-start p-6">
-      <div className="w-full max-w-2xl">
+    <div className="min-h-screen bg-gradient-to-br from-slate-950 via-green-950/30 to-emerald-950/20 text-white flex flex-col items-center justify-start p-6">
+      <div className="w-full max-w-3xl">
         {/* 헤더 */}
         <div className="flex items-center justify-between mb-4">
-          <Button variant="ghost" onClick={handleCancel} className="bg-white/10">
+          <Button variant="ghost" onClick={handleCancel} className="rounded-2xl bg-white/10 hover:bg-white/20">
             <ArrowLeft className="h-4 w-4 mr-2" />
             뒤로
           </Button>
-          <div className="text-sm opacity-80">QR 코드 스캔</div>
-          <div style={{ width: 64 }} />
+          <div className="text-sm opacity-80">{title}</div>
+          <div style={{ width: 80 }} />
         </div>
 
-        {/* 카메라 영역 */}
-        <div className="rounded-xl overflow-hidden bg-black border border-white/10">
-          <div style={{ width: "100%", height: 520, position: "relative", background: "#000" }}>
-            <QrScannerTyped
-              constraints={videoConstraints}
-              onDecode={(result) => {
-                const text = Array.isArray(result) ? String(result[0] ?? "") : String(result ?? "")
-                if (text) handleDecode(text)
-              }}
-              onError={(err) => console.error("QR scanner error:", err)}
-              containerStyle={{ width: "100%", height: "100%" }}
-              videoStyle={{ width: "100%", height: "100%", objectFit: "cover" }}
-            />
+        {/* 카드 */}
+        <div className="rounded-3xl overflow-hidden border border-white/10 bg-gradient-to-b from-white/10 to-white/[0.06] backdrop-blur-xl shadow-2xl">
+          {/* 상단 헤더영역 */}
+          <div className="p-5 border-b border-white/10 bg-gradient-to-r from-emerald-600/20 to-teal-600/20">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 shadow-lg">
+                  <QrCode className="h-5 w-5 text-white" />
+                </div>
+                <div className="font-semibold text-base md:text-lg">{title}</div>
+              </div>
+              <div className="text-xs text-white/70">식당 ID: {restaurantId || "-"}</div>
+            </div>
+          </div>
+
+          {/* 카메라 영역 */}
+          <div className="relative">
+            <div className="relative bg-black">
+              <div className="relative w-full h-[56vw] max-h-[520px] min-h-[280px]">
+                <QrScannerTyped
+                  constraints={videoConstraints}
+                  onDecode={handleDecode}
+                  onError={(err) => {
+                    console.error("QR scanner error:", err)
+                    setStatus("error")
+                    setMsg("카메라 접근에 실패했어요. 권한을 확인하거나 수동 입력을 이용하세요.")
+                  }}
+                  containerStyle={{ width: "100%", height: "100%" }}
+                  videoStyle={{ width: "100%", height: "100%", objectFit: "cover" }}
+                />
+                {/* 가이드 프레임 */}
+                <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+                  <div className="w-[78%] max-w-[480px] aspect-square rounded-3xl border-2 border-emerald-400/80 shadow-[0_0_30px_rgba(16,185,129,0.55)]" />
+                </div>
+              </div>
+
+              {/* 오버레이 메시지 */}
+              <div className="absolute bottom-3 inset-x-3">
+                <div className="rounded-2xl px-4 py-3 bg-black/40 backdrop-blur-md border border-white/10 text-sm flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Camera className="h-4 w-4 opacity-80" />
+                    <span className="opacity-90">
+                      카메라를 QR 코드에 맞춰주세요
+                    </span>
+                  </div>
+                  {decoded ? (
+                    <div className="flex items-center gap-2 text-emerald-400">
+                      <CheckCircle className="h-4 w-4" />
+                      <span>스캔됨</span>
+                    </div>
+                  ) : (
+                    <span className="text-white/60">자동 인식</span>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* 액션 영역 */}
+          <div className="p-5 space-y-5">
+            {/* 상태 표시 */}
+            {msg && (
+              <div
+                className={`rounded-2xl px-4 py-3 text-sm border ${
+                  status === "success"
+                    ? "bg-emerald-50/20 text-emerald-300 border-emerald-400/30"
+                    : "bg-red-50/20 text-red-300 border-red-400/30"
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  {status === "success" ? (
+                    <CheckCircle className="h-4 w-4" />
+                  ) : (
+                    <AlertTriangle className="h-4 w-4" />
+                  )}
+                  <span>{msg}</span>
+                </div>
+              </div>
+            )}
+
+            {/* 버튼들 */}
+            <div className="flex flex-wrap items-center gap-3">
+              <Button
+                onClick={resetForRescan}
+                variant="secondary"
+                className="rounded-2xl bg-white/10 hover:bg-white/20 border border-white/10"
+                disabled={submitting}
+                title="다시 스캔"
+              >
+                <RefreshCw className="h-4 w-4 mr-2" />
+                다시 스캔
+              </Button>
+
+              <div className="flex-1" />
+
+              <Button
+                variant="ghost"
+                onClick={handleCancel}
+                className="rounded-2xl hover:bg-white/10"
+              >
+                <ArrowLeft className="h-4 w-4 mr-2" />
+                돌아가기
+              </Button>
+            </div>
+
+            {/* 수동 입력 (대체 수단) */}
+            <div className="rounded-2xl p-4 bg-white/5 border border-white/10">
+              <div className="flex items-center gap-2 text-sm text-white/80 mb-3">
+                <Keyboard className="h-4 w-4" />
+                QR 대신 코드 수동 입력
+              </div>
+              <div className="flex gap-2">
+                <input
+                  className="flex-1 px-4 py-2 rounded-xl bg-black/30 border border-white/10 outline-none focus:border-emerald-400/50 placeholder:text-white/30"
+                  placeholder='예: 123e4567-e89b-12d3-a456-426614174000 또는 {"t":"STAMP_USE","code":"..."}'
+                  value={manualCode}
+                  onChange={(e) => setManualCode(e.target.value)}
+                  disabled={submitting}
+                />
+                <Button
+                  onClick={onSubmitManual}
+                  disabled={!manualCode.trim() || submitting}
+                  className="rounded-xl"
+                >
+                  {submitting ? (
+                    <>
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                      처리 중…
+                    </>
+                  ) : (
+                    <>
+                      <QrCode className="h-4 w-4 mr-2" />
+                      사용 처리
+                    </>
+                  )}
+                </Button>
+              </div>
+              <p className="mt-2 text-xs text-white/50">
+                고객 앱에서 보여주는 QR을 스캔하거나, 표시된 코드 문자열을 그대로 붙여넣어도 됩니다.
+              </p>
+            </div>
           </div>
         </div>
 
-        {/* 상태 표시 */}
-        <div className="mt-4 flex items-center justify-between">
-          <div className="text-sm text-white/80">식당 ID: {restaurantId}</div>
-          {decoded ? (
-            <div className="flex items-center gap-2 text-green-400">
-              <CheckCircle className="h-5 w-5" />
-              <span>스캔됨</span>
-            </div>
-          ) : (
-            <div className="text-sm text-white/60">카메라로 QR을 비추세요</div>
-          )}
+        {/* 하단 도움말 */}
+        <div className="mt-4 text-center text-xs text-white/50">
+          스캔이 지연될 경우 조명/초점을 맞춘 뒤 다시 시도하세요.
         </div>
       </div>
     </div>

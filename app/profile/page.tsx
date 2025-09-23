@@ -12,13 +12,14 @@ import {
   ArrowLeft, User, Star, Heart, Award, Users, Edit, Loader2, Trash2,
   MapPin, Phone, Leaf, Store, UserCheck, Plus, Stamp as StampIcon,
   ChevronLeft, ChevronRight, QrCode, ShieldCheck, TimerReset,
+  Search, Filter, SlidersHorizontal, MessageSquare, ThumbsUp, ThumbsDown, Utensils, Sparkles
 } from "lucide-react"
 import { useRouter } from "next/navigation"
 
 // ✅ Zustand
 import { useUserStore } from "@/lib/state/user"
 
-// ✅ 데이터 훅 (즐겨찾기/리뷰) — 뱃지는 FE 계산
+// ✅ 데이터 훅 (즐겨찾기/리뷰)
 import { useFavorites, useUserReviews } from "@/lib/hooks/use-api-with-fallback"
 
 // ✅ API 클라이언트
@@ -43,14 +44,67 @@ const toArray = <T,>(v: any): T[] => (Array.isArray(v) ? v : (v?.items ?? v?.suc
 
 type RestaurantLite = { id: number; name: string; category?: string | null; address?: string | null; telephone?: string | null }
 type FavoriteItem = { id?: number; restaurant_id: number | null; restaurant?: RestaurantLite }
-type ReviewVM = { id: number | string; restaurant?: { id: number; name: string; category?: string | null }; waste_rating: number; comment: string; created_at?: string | null }
-type RestaurantStamp = { restaurantId: number; restaurantName: string; totalStamps: number; maxStamps: number }
+type ReviewVM = {
+  id: number | string
+  restaurant?: { id: number; name: string; category?: string | null }
+  waste_rating: number
+  comment: string
+  created_at?: string | null
+}
+type RestaurantStamp = {
+  restaurantId: number | null
+  restaurantName: string
+  totalStamps: number
+  maxStamps: number
+  uiKey: number
+}
 type StampHistoryVM = { id: number | string; restaurantId: number; restaurantName: string; type: "earn" | "use"; count: number; created_at?: string | null }
 
 function stringHash(s: string): number {
   let h = 0
   for (let i = 0; i < s.length; i++) { h = (h * 31 + s.charCodeAt(i)) | 0 }
   return Math.abs(h) || 1
+}
+
+/* ─────────────────────────────────────────────────────────
+   리뷰 디테일 파서 (코멘트에서 키워드 추출)
+   예시 입력:
+   "맛: 훌륭 / 양: 넉넉 / 서비스: 친절 / 청결: 매우 깨끗 / 분위기: 아늑"
+   또는
+   "[맛] 훌륭 / [양] 넉넉" 형태도 지원
+────────────────────────────────────────────────────────── */
+type DetailKey = "맛" | "양" | "서비스" | "청결" | "분위기"
+type DetailChip = { key: DetailKey; value: string }
+
+const KEY_LABELS: DetailKey[] = ["맛", "양", "서비스", "청결", "분위기"]
+
+function extractDetailChips(comment: string): DetailChip[] {
+  if (!comment) return []
+  const chips: DetailChip[] = []
+  const text = comment.replace(/\n+/g, " ").trim()
+
+  // 패턴1: 키: 값
+  KEY_LABELS.forEach((k) => {
+    const m = text.match(new RegExp(`${k}\\s*[:：]\\s*([^/\\]\\|]+)`, "i"))
+    if (m?.[1]) chips.push({ key: k, value: m[1].trim() })
+  })
+
+  // 패턴2: [키] 값
+  if (chips.length === 0) {
+    KEY_LABELS.forEach((k) => {
+      const m = text.match(new RegExp(`\\[\\s*${k}\\s*\\]\\s*([^/\\]|]+)`, "i"))
+      if (m?.[1]) chips.push({ key: k, value: m[1].trim() })
+    })
+  }
+
+  // 중복 제거
+  const seen = new Set<string>()
+  return chips.filter((c) => {
+    const key = `${c.key}:${c.value}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
 }
 
 /* ─────────────────────────────────────────────────────────
@@ -65,44 +119,29 @@ const useUserStampsData = () => {
     setLoading(true)
     setError(null)
     try {
-      const res = await apiClient.getMyStamps()
+      const res = await apiClient.getUserStamps()
       if (!res?.success) throw new Error(res?.error || "failed")
 
-      // BE 표준: { success: { stamps: [{ restaurant: "하오하오즈", count: 3 }, ...] } }
       const raw = Array.isArray(res.data) ? res.data : (res as any)?.data?.stamps ?? []
-      // A) [{ restaurant: string, count: number }]
-      if (raw.length > 0 && typeof raw[0]?.restaurant === "string" && "count" in raw[0]) {
-        const out: RestaurantStamp[] = raw.map((r: any) => {
-          const name = String(r.restaurant)
-          const rid = stringHash(name)
-          const cnt = Number(r.count ?? 0)
-          return { restaurantId: rid, restaurantName: name, totalStamps: Math.max(0, cnt), maxStamps: 5 }
-        })
-        setStamps(out)
-      } else {
-        // B) (fallback) 개별 스탬프 배열 → 미사용 합산
-        const counter = new Map<number, { name: string; count: number }>()
-        for (const r of raw as any[]) {
-          const rid = Number(r?.restaurant_id ?? r?.restaurantId ?? 0)
-          const usedAt = r?.used_at ?? r?.usedAt
-          if (usedAt) continue
-          const name = typeof r?.restaurant === "string" ? r.restaurant : r?.restaurant?.name ?? (rid ? `식당 ${rid}` : "알 수 없음")
-          const key = Number.isFinite(rid) && rid > 0 ? rid : stringHash(name)
-          const prev = counter.get(key)
-          if (prev) prev.count += 1
-          else counter.set(key, { name, count: 1 })
+
+      const out: RestaurantStamp[] = raw.map((r: any) => {
+        const name = String(r.restaurant ?? r.restaurantName ?? "")
+        const realId = Number(r.restaurantId ?? r.restaurant_id)
+        const hasRealId = Number.isFinite(realId) && realId > 0
+        const count = Number(r.count ?? 0)
+        return {
+          restaurantId: hasRealId ? realId : null,
+          restaurantName: name,
+          totalStamps: Math.max(0, count),
+          maxStamps: 5,
+          uiKey: hasRealId ? realId : stringHash(name),
         }
-        const out: RestaurantStamp[] = Array.from(counter.entries()).map(([rid, { name, count }]) => ({
-          restaurantId: rid, restaurantName: name, totalStamps: count, maxStamps: 5,
-        }))
-        setStamps(out)
-      }
+      })
+      setStamps(out)
     } catch (e) {
       setError(e instanceof Error ? e.message : "failed to load stamps")
       setStamps([])
-    } finally {
-      setLoading(false)
-    }
+    } finally { setLoading(false) }
   }, [])
 
   useEffect(() => { refetch() }, [refetch])
@@ -119,7 +158,7 @@ const useUserStampHistory = () => {
     setLoading(true)
     setError(null)
     try {
-      const res = await apiClient.getMyStampHistory()
+      const res = await apiClient.getUserStampHistory()
       if (!res?.success) throw new Error(res?.error || "failed")
       const rows = Array.isArray(res.data) ? res.data : []
 
@@ -138,7 +177,7 @@ const useUserStampHistory = () => {
           restaurantName: String(rname ?? ""),
           type: (isUse ? "use" : "earn"),
           count: Number(r?.count ?? 1),
-          created_at: r?.created_at ?? r?.createdAt ?? null,
+          created_at: r?.created_at ?? r?.createdAt ?? r?.acquiredAt ?? r?.expiredAt ?? null,
         }
       })
 
@@ -147,9 +186,7 @@ const useUserStampHistory = () => {
     } catch (e) {
       setItems([])
       setError(e instanceof Error ? e.message : "failed to load history")
-    } finally {
-      setLoading(false)
-    }
+    } finally { setLoading(false) }
   }, [])
 
   useEffect(() => { refetch() }, [refetch])
@@ -183,7 +220,7 @@ function LoginGate() {
 ────────────────────────────────────────────────────────── */
 function LoggedInProfileView() {
   const router = useRouter()
-  const [activeTab, setActiveTab] = useState<TabKey>("스탬프")
+  const [activeTab, setActiveTab] = useState<TabKey>("리뷰")
   const [userRole, setUserRole] = useState<UserRole>(UserRole.USER)
 
   // ✅ 스토어 사용자
@@ -191,8 +228,7 @@ function LoggedInProfileView() {
 
   // ✅ 데이터 훅들
   const { data: favorites, loading: favoritesLoading, isUsingFallback: favoritesFallback } = useFavorites()
-  const { data: reviews, loading: reviewsLoading, isUsingFallback: reviewsFallback } = useUserReviews()
-
+  const { data: reviews,   loading: reviewsLoading,   isUsingFallback: reviewsFallback   } = useUserReviews()
   const { stamps: restaurantStamps, loading: stampsLoading, error: stampsError, refetch: refetchStamps } = useUserStampsData()
   const { items: stampHistory, loading: historyLoading, error: historyError, refetch: refetchHistory } = useUserStampHistory()
 
@@ -205,7 +241,12 @@ function LoggedInProfileView() {
   const [reviewList, setReviewList] = useState<ReviewVM[]>([])
   const [deletingId, setDeletingId] = useState<number | string | null>(null)
 
-  // 내 식당(사업자) 목록 (간단 노출)
+  // 리뷰 필터/정렬/검색 상태
+  const [reviewQuery, setReviewQuery] = useState("")
+  const [reviewSort, setReviewSort] = useState<"latest" | "ratingDesc" | "ratingAsc">("latest")
+  const [ratingFilter, setRatingFilter] = useState<number | null>(null) // null=전체
+
+  // 내 식당(사업자) 목록
   type OwnerRestaurant = { id: number; name: string; category?: string | null; address?: string | null; telephone?: string | null; rating?: number; reviewCount?: number }
   const [ownerRestaurants, setOwnerRestaurants] = useState<OwnerRestaurant[]>([])
 
@@ -217,9 +258,10 @@ function LoggedInProfileView() {
         if (!res.success) throw new Error(res.error || "목록 로드 실패")
         const data = (res.data ?? []) as any
         const list: any[] = Array.isArray(data?.items) ? data.items : Array.isArray(data) ? data : []
-        const norm: OwnerRestaurant[] = list.map((r: any) => ([
-          "id","name","category","address","telephone","rating","reviewCount"
-        ] as const).reduce((acc,k)=>({...acc,[k]: r?.[k]}), {} as OwnerRestaurant)) as any
+        const norm: OwnerRestaurant[] = list.map((r: any) =>
+          (["id","name","category","address","telephone","rating","reviewCount"] as const)
+            .reduce((acc,k)=>({...acc,[k]: r?.[k]}), {} as OwnerRestaurant)
+        ) as any
         if (!ignore) setOwnerRestaurants(norm)
       } catch (e) {
         console.error(e)
@@ -241,7 +283,7 @@ function LoggedInProfileView() {
     const avgOwnerRating = ownerRestaurants.length > 0
       ? ownerRestaurants.reduce((s, r) => s + (r.rating || 0), 0) / ownerRestaurants.length
       : 0
-    const totalFavorites = ownerRestaurants.length * 156 // 대략값(예시)
+    const totalFavorites = ownerRestaurants.length * 156 // 예시값(서버 연동 전)
     return { totalRestaurants: ownerRestaurants.length, totalReceivedReviews, avgOwnerRating: Math.round(avgOwnerRating * 10) / 10, totalFavorites }
   }, [ownerRestaurants])
 
@@ -301,7 +343,7 @@ function LoggedInProfileView() {
     return Math.max(0, Math.min(5, Math.round((sum / total) * 10) / 10))
   }, [reviewList])
 
-  // FE 뱃지 계산
+  // FE 뱃지 계산(샘플)
   const badgeStats = useMemo(() => {
     const totalReviews = reviewList.length
     const uniqueRestaurants = new Set(reviewList.map((r) => r.restaurant?.id).filter(Boolean)).size
@@ -326,13 +368,13 @@ function LoggedInProfileView() {
     else { setUserRole(UserRole.USER); setActiveTab("리뷰") }
   }
 
-  // ───────────── 스탬프(개수) 사용/페이징 로직 ─────────────
+  // 페이지네이션 상태 (uiKey 기준)
   const [pageByRestaurant, setPageByRestaurant] = useState<Record<number, number>>({})
-  const getCurrentPage = (rid: number) => pageByRestaurant[rid] ?? 1
-  const setPage = (rid: number, page: number) =>
-    setPageByRestaurant((p) => ({ ...p, [rid]: Math.max(1, page) }))
+  const getCurrentPage = (ridKey: number) => pageByRestaurant[ridKey] ?? 1
+  const setPage = (ridKey: number, page: number) =>
+    setPageByRestaurant((p) => ({ ...p, [ridKey]: Math.max(1, page) }))
 
-  // ✅ "사용하기" 다이얼로그 상태 (BE 세션 코드 기반)
+  // ✅ "사용하기" 다이얼로그 상태
   type StampDialogState =
     | { open: false }
     | {
@@ -342,12 +384,11 @@ function LoggedInProfileView() {
         maxUsable: number
         count: number
         generating: boolean
-        code?: string           // BE가 발급한 세션 코드
-        condition?: number      // 사용 조건(=사용 개수)
-        expiresAt?: number      // (선택) 타이머용
+        code?: string
+        condition?: number
+        expiresAt?: number
         remainSec?: number
       }
-
   const [stampDialog, setStampDialog] = useState<StampDialogState>({ open: false })
 
   const openUseDialog = (s: RestaurantStamp) => {
@@ -367,36 +408,40 @@ function LoggedInProfileView() {
     })
   }
 
-  // ✅ BE 스펙: POST /stamps/me/use { restaurantId, condition } → { code }
-  const createUseSession = async (restaurantId: number, condition: number) => {
-    const base = process.env.NEXT_PUBLIC_API_URL || "/_be"
-    const res = await fetch(`${base}/stamps/me/use`, {
-      method: "POST",
-      credentials: "include",
-      headers: { "Content-Type": "application/json", "Accept": "application/json" },
-      body: JSON.stringify({ restaurantId, condition }),
-    })
-    if (!res.ok) {
-      const txt = await res.text().catch(() => "")
-      // BE는 throw 시 error.message를 내려줘. 여기서 그대로 표출
-      throw new Error(txt || `HTTP ${res.status}`)
-    }
-    const json = await res.json().catch(() => ({}))
-    // { resultType: "SUCCESS", success: { code: "uuid..." } } 형태 지원
-    const code = json?.success?.code ?? json?.code
-    if (!code) throw new Error("세션 코드 발급 실패")
-    return String(code)
+  // ── restaurantId 자동매칭: 즐겨찾기 → 내 리뷰 → 검색
+  async function resolveRestaurantIdFor(s: RestaurantStamp): Promise<number> {
+    if (s.restaurantId) return s.restaurantId
+
+    const name = s.restaurantName.trim()
+
+    const fromFav = favList.find(f => f.restaurant?.name?.trim() === name)
+    if (fromFav?.restaurant?.id) return fromFav.restaurant.id
+
+    const fromReview = reviewList.find(r => r.restaurant?.name?.trim() === name)
+    if (fromReview?.restaurant?.id) return fromReview.restaurant.id
+
+    const sr = await apiClient.searchRestaurants(name)
+    const items = (sr?.data as any)?.items ?? (sr?.data as any) ?? []
+    const norm = (x: string) => x.replace(/\s+/g, "").toLowerCase()
+    const exact = items.find((x: any) => x?.name?.trim() === name) || items.find((x: any) => norm(x?.name || "") === norm(name))
+    if (exact?.id) return Number(exact.id)
+
+    throw new Error("식당 ID를 자동으로 찾을 수 없어요. 식당 상세 화면에서 사용해 주세요.")
+  }
+
+  // BE 세션 코드 발급 (POST /stamps/me/use)
+  async function createUseSession(restaurantId: number, condition: number) {
+    const r = await apiClient.requestUseStamp(restaurantId, condition)
+    if (!r.success) throw new Error(r.error || "세션 코드 발급 실패")
+    return String((r.data as any).code)
   }
 
   async function generateUseQR(restaurant: RestaurantStamp, count: number) {
     try {
       setStampDialog((s) => ({ ...(s as any), generating: true }))
-      const code = await createUseSession(restaurant.restaurantId, count)
-
-      // QR은 "사장님 단말이 이 code를 읽어서 /biz/stamps/use 로 사용 완료" 하는 흐름
-      // 유효시간은 백엔드에서 관리(여기서는 안내용 타이머만)
+      const realId = await resolveRestaurantIdFor(restaurant)
+      const code = await createUseSession(realId, count)
       const expiresAt = Date.now() + 2 * 60 * 1000
-
       setStampDialog({
         open: true,
         step: "qr",
@@ -464,8 +509,33 @@ function LoggedInProfileView() {
   }, [me])
 
   const showFallbackWarning = favoritesFallback || reviewsFallback
-
   const [historyOpen, setHistoryOpen] = useState(false)
+
+  // 리뷰 가공: 검색/필터/정렬 적용
+  const filteredSortedReviews = useMemo(() => {
+    let arr = [...reviewList]
+
+    if (reviewQuery.trim()) {
+      const q = reviewQuery.trim().toLowerCase()
+      arr = arr.filter(r =>
+        (r.restaurant?.name?.toLowerCase() ?? "").includes(q) ||
+        (r.restaurant?.category?.toLowerCase() ?? "").includes(q) ||
+        (r.comment.toLowerCase()).includes(q)
+      )
+    }
+
+    if (ratingFilter != null) {
+      arr = arr.filter(r => Math.round(r.waste_rating) === ratingFilter)
+    }
+
+    switch (reviewSort) {
+      case "ratingDesc": arr.sort((a, b) => (b.waste_rating - a.waste_rating) || (new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime())); break
+      case "ratingAsc":  arr.sort((a, b) => (a.waste_rating - b.waste_rating) || (new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime())); break
+      default:           arr.sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()); break
+    }
+
+    return arr
+  }, [reviewList, reviewQuery, reviewSort, ratingFilter])
 
   /* ─────────────────────────────────────────────────────────
      렌더
@@ -607,9 +677,15 @@ function LoggedInProfileView() {
                 )}
               </motion.div>
 
+              {/* 상태 가시화 배지 */}
               {(showFallbackWarning || stampsError) && (
                 <div className="mt-4 text-xs text-amber-600 dark:text-amber-400">
                   ⚠️ 일부 데이터는 임시 값 또는 로딩 오류가 있을 수 있어요.
+                </div>
+              )}
+              {isLoading && (
+                <div className="mt-2 inline-flex items-center gap-2 text-xs text-gray-500">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" /> 데이터 로딩 중…
                 </div>
               )}
             </CardContent>
@@ -645,67 +721,176 @@ function LoggedInProfileView() {
                 <TabsContent value="리뷰" className="mt-6">
                   <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-xl">
                     <CardHeader className="p-4 sm:p-6">
-                      <CardTitle className="flex items-center gap-2 text-[clamp(16px,4vw,18px)]">
-                        <Star className="h-5 w-5 text-green-500" />
-                        작성한 리뷰 ({reviewList.length})
+                      <CardTitle className="flex items-center justify-between gap-2 text-[clamp(16px,4vw,18px)]">
+                        <span className="inline-flex items-center gap-2">
+                          <Star className="h-5 w-5 text-green-500" />
+                          작성한 리뷰 ({filteredSortedReviews.length})
+                        </span>
+
+                        {/* 필터/정렬/검색 바 */}
+                        <div className="flex items-center gap-2 w-full sm:w-auto sm:ml-auto">
+                          <div className="relative flex-1 sm:w-64">
+                            <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+                            <Input
+                              value={reviewQuery}
+                              onChange={(e) => setReviewQuery(e.target.value)}
+                              placeholder="식당명/카테고리/내용 검색"
+                              className="pl-8"
+                            />
+                          </div>
+                          <div className="relative">
+                            <select
+                              value={reviewSort}
+                              onChange={(e) => setReviewSort(e.target.value as any)}
+                              className="appearance-none pr-8 pl-3 h-9 rounded-md border bg-white/70 dark:bg-gray-800/70 text-sm"
+                            >
+                              <option value="latest">최신순</option>
+                              <option value="ratingDesc">별점 높은순</option>
+                              <option value="ratingAsc">별점 낮은순</option>
+                            </select>
+                            <SlidersHorizontal className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+                          </div>
+                          <div className="relative">
+                            <select
+                              value={ratingFilter ?? ""}
+                              onChange={(e) => setRatingFilter(e.target.value ? Number(e.target.value) : null)}
+                              className="appearance-none pr-8 pl-3 h-9 rounded-md border bg-white/70 dark:bg-gray-800/70 text-sm"
+                            >
+                              <option value="">별점(전체)</option>
+                              {[5,4,3,2,1,0].map(v => <option key={v} value={v}>{v}점</option>)}
+                            </select>
+                            <Filter className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+                          </div>
+                        </div>
                       </CardTitle>
                     </CardHeader>
+
                     <CardContent className="p-4 sm:p-6">
-                      <div className="space-y-4 sm:space-y-6">
-                        {reviewList.length > 0 ? (
-                          reviewList.map((review, idx) => {
-                            return (
-                              <motion.div
-                                key={review.id}
-                                initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 * idx }}
-                                className="backdrop-blur-sm bg-white/50 dark:bg-gray-800/50 border border-white/20 rounded-2xl p-4 hover:shadow-lg transition-all duration-300"
-                              >
-                                <div className="flex items-start justify-between mb-3 gap-3">
-                                  <div className="min-w-0">
-                                    <h3 className="font-semibold text-gray-900 dark:text-white mb-1 truncate">
-                                      {review.restaurant?.name || "식당 정보 없음"}
-                                    </h3>
-                                    <div className="flex items-center gap-4 text-sm text-gray-600 dark:text-gray-300">
-                                      <div className="flex items-center gap-1">
-                                        {Array.from({ length: 5 }).map((_, i) => (
-                                          <Star key={i} className={`h-3 w-3 ${i < Math.round(review.waste_rating || 0) ? "fill-current text-green-500" : "text-gray-300"}`} />
-                                        ))}
-                                        <span>{review.waste_rating.toFixed(1)}</span>
+                      {/* 로딩 스켈레톤 */}
+                      {reviewsLoading && (
+                        <div className="space-y-4">
+                          {Array.from({ length: 3 }).map((_, i) => (
+                            <div key={i} className="animate-pulse p-4 rounded-2xl bg-white/50 dark:bg-gray-800/50 border">
+                              <div className="h-4 w-1/3 bg-gray-200 dark:bg-gray-700 rounded mb-2" />
+                              <div className="h-3 w-1/4 bg-gray-200 dark:bg-gray-700 rounded mb-4" />
+                              <div className="h-3 w-full bg-gray-200 dark:bg-gray-700 rounded mb-2" />
+                              <div className="h-3 w-2/3 bg-gray-200 dark:bg-gray-700 rounded" />
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {!reviewsLoading && (
+                        <div className="space-y-4 sm:space-y-6">
+                          {filteredSortedReviews.length > 0 ? (
+                            filteredSortedReviews.map((review, idx) => {
+                              const chips = extractDetailChips(review.comment)
+                              const ratingInt = Math.round(review.waste_rating || 0)
+                              const ratingTone =
+                                ratingInt >= 4 ? "from-emerald-500 to-green-500" :
+                                ratingInt === 3 ? "from-amber-500 to-yellow-500" :
+                                "from-rose-500 to-pink-500"
+
+                              return (
+                                <motion.div
+                                  key={review.id}
+                                  initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.04 * idx }}
+                                  className="relative overflow-hidden backdrop-blur-sm bg-white/60 dark:bg-gray-800/60 border border-white/20 rounded-2xl p-4 hover:shadow-lg transition-all duration-300"
+                                >
+                                  {/* 상단 색 보더 */}
+                                  <div className={`absolute inset-x-0 top-0 h-1 bg-gradient-to-r ${ratingTone}`} />
+
+                                  <div className="flex items-start justify-between mb-3 gap-3">
+                                    <div className="min-w-0">
+                                      {/* 식당 이름 + 카테고리 */}
+                                      <div className="flex items-center gap-2 flex-wrap">
+                                        <h3 className="font-semibold text-gray-900 dark:text-white truncate max-w-[240px] sm:max-w-[360px]">
+                                          {review.restaurant?.name || "식당 정보 없음"}
+                                        </h3>
+                                        {!!review.restaurant?.category && (
+                                          <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 dark:bg-emerald-900/20 dark:text-emerald-300 dark:border-emerald-800">
+                                            <Utensils className="h-3 w-3" />
+                                            {review.restaurant.category}
+                                          </span>
+                                        )}
                                       </div>
-                                      <span className="truncate">{review.restaurant?.category || "카테고리 없음"}</span>
+
+                                      {/* 별점 바 */}
+                                      <div className="flex items-center gap-3 mt-1 text-sm text-gray-600 dark:text-gray-300">
+                                        <div className="flex items-center gap-1">
+                                          {Array.from({ length: 5 }).map((_, i) => (
+                                            <Star key={i} className={`h-3.5 w-3.5 ${i < ratingInt ? "fill-current text-green-500" : "text-gray-300"}`} />
+                                          ))}
+                                          <span className="ml-1 font-medium">{review.waste_rating.toFixed(1)}</span>
+                                        </div>
+                                        <span className="text-xs text-gray-500">
+                                          {review.created_at ? formatDate(review.created_at) : "날짜 없음"}
+                                        </span>
+                                      </div>
+                                    </div>
+
+                                    {/* 액션 */}
+                                    <div className="flex flex-col items-end gap-2">
+                                      {review.restaurant?.id ? (
+                                        <Button
+                                          variant="outline"
+                                          size="sm"
+                                          onClick={() => handleRestaurantClick(review.restaurant!.id)}
+                                          className="h-8 px-3"
+                                        >
+                                          가게 보기
+                                        </Button>
+                                      ) : null}
+                                      <Button
+                                        variant="destructive"
+                                        size="sm"
+                                        onClick={() => handleDeleteReview(review.id)}
+                                        disabled={deletingId === review.id}
+                                        className="gap-2 h-8"
+                                        title="리뷰 삭제"
+                                      >
+                                        {deletingId === review.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                                        삭제
+                                      </Button>
                                     </div>
                                   </div>
-                                  <span className="text-xs text-gray-500 flex-shrink-0">
-                                    {review.created_at ? formatDate(review.created_at) : "날짜 없음"}
-                                  </span>
-                                </div>
 
-                                <p className="text-gray-700 dark:text-gray-300 mb-3 break-words whitespace-pre-wrap leading-relaxed">{review.comment || "댓글 없음"}</p>
+                                  {/* 디테일 칩 */}
+                                  {chips.length > 0 && (
+                                    <div className="mb-2 flex flex-wrap gap-1.5">
+                                      {chips.map((c, i) => (
+                                        <span
+                                          key={`${c.key}-${i}`}
+                                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs border bg-white/70 dark:bg-gray-900/40"
+                                        >
+                                          {c.key === "맛" && <Sparkles className="h-3.5 w-3.5 text-fuchsia-500" />}
+                                          {c.key === "양" && <Leaf className="h-3.5 w-3.5 text-green-600" />}
+                                          {c.key === "서비스" && <ThumbsUp className="h-3.5 w-3.5 text-sky-600" />}
+                                          {c.key === "청결" && <Sparkles className="h-3.5 w-3.5 text-teal-600" />}
+                                          {c.key === "분위기" && <MessageSquare className="h-3.5 w-3.5 text-amber-600" />}
+                                          <span className="font-medium">{c.key}</span>
+                                          <span className="text-gray-600 dark:text-gray-300">{c.value}</span>
+                                        </span>
+                                      ))}
+                                    </div>
+                                  )}
 
-                                <div className="flex justify-end">
-                                  <Button
-                                    variant="destructive"
-                                    size="sm"
-                                    onClick={() => handleDeleteReview(review.id)}
-                                    disabled={deletingId === review.id}
-                                    className="gap-2"
-                                    title="리뷰 삭제"
-                                  >
-                                    {deletingId === review.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
-                                    삭제
-                                  </Button>
-                                </div>
-                              </motion.div>
-                            )
-                          })
-                        ) : (
-                          <div className="text-center text-gray-500 py-12">
-                            <Star className="h-16 w-16 mx-auto mb-4 opacity-30" />
-                            <h3 className="text-lg font-medium mb-2">작성한 리뷰가 없습니다</h3>
-                            <p>첫 번째 리뷰를 작성해보세요</p>
-                          </div>
-                        )}
-                      </div>
+                                  {/* 코멘트 본문 */}
+                                  <p className="text-gray-800 dark:text-gray-200 break-words whitespace-pre-wrap leading-relaxed">
+                                    {review.comment || "댓글 없음"}
+                                  </p>
+                                </motion.div>
+                              )
+                            })
+                          ) : (
+                            <div className="text-center text-gray-500 py-12">
+                              <Star className="h-16 w-16 mx-auto mb-4 opacity-30" />
+                              <h3 className="text-lg font-medium mb-2">조건에 맞는 리뷰가 없습니다</h3>
+                              <p className="text-sm">검색어나 필터를 조정해보세요.</p>
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </CardContent>
                   </Card>
                 </TabsContent>
@@ -822,16 +1007,16 @@ function LoggedInProfileView() {
                         <div className="space-y-6">
                           {restaurantStamps.length > 0 ? (
                             restaurantStamps.map((stamp, index) => {
-                              const rid = stamp.restaurantId
+                              const ridKey = stamp.uiKey
                               const totalPages = Math.max(1, Math.ceil(stamp.totalStamps / stamp.maxStamps))
-                              const curPage = getCurrentPage(rid)
+                              const curPage = getCurrentPage(ridKey)
                               const startIdx = (curPage - 1) * stamp.maxStamps
                               const filledOnThisPage = Math.max(0, Math.min(stamp.maxStamps, stamp.totalStamps - startIdx))
                               const extraBeyondFirst = Math.max(0, stamp.totalStamps - stamp.maxStamps)
 
                               return (
                                 <motion.div
-                                  key={rid}
+                                  key={ridKey}
                                   initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.06 * index }}
                                   className="relative backdrop-blur-sm bg-white/50 dark:bg-gray-800/50 border border-white/20 rounded-2xl p-5 sm:p-6 hover:shadow-lg transition-all duration-300"
                                 >
@@ -880,6 +1065,7 @@ function LoggedInProfileView() {
                                           <Button
                                             onClick={() => openUseDialog(stamp)}
                                             className="bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white px-5 py-2 rounded-full text-sm font-medium shadow-lg hover:shadow-xl"
+                                            title={stamp.restaurantId ? "" : "ID 자동 매칭을 시도해요. 실패하면 상세 화면에서 사용해 주세요."}
                                           >
                                             사용하기
                                           </Button>
@@ -893,7 +1079,7 @@ function LoggedInProfileView() {
 
                                     {/* 왼쪽: 페이지네이션 */}
                                     <div className="order-2 sm:order-1 flex items-center justify-center sm:justify-start gap-2 flex-wrap">
-                                      <Button variant="outline" size="sm" onClick={() => setPage(rid, Math.max(1, curPage - 1))} disabled={curPage <= 1} className="h-8 px-2">
+                                      <Button variant="outline" size="sm" onClick={() => setPage(ridKey, Math.max(1, curPage - 1))} disabled={curPage <= 1} className="h-8 px-2">
                                         <ChevronLeft className="h-4 w-4" />
                                       </Button>
 
@@ -902,14 +1088,14 @@ function LoggedInProfileView() {
                                           key={i}
                                           variant={curPage === i + 1 ? "default" : "outline"}
                                           size="sm"
-                                          onClick={() => setPage(rid, i + 1)}
+                                          onClick={() => setPage(ridKey, i + 1)}
                                           className={`h-8 w-8 p-0 ${curPage === i + 1 ? "bg-gradient-to-r from-purple-500 to-pink-500 text-white" : ""}`}
                                         >
                                           {i + 1}
                                         </Button>
                                       ))}
 
-                                      <Button variant="outline" size="sm" onClick={() => setPage(rid, Math.min(totalPages, curPage + 1))} disabled={curPage >= totalPages} className="h-8 px-2">
+                                      <Button variant="outline" size="sm" onClick={() => setPage(ridKey, Math.min(totalPages, curPage + 1))} disabled={curPage >= totalPages} className="h-8 px-2">
                                         <ChevronRight className="h-4 w-4" />
                                       </Button>
                                     </div>
@@ -938,7 +1124,6 @@ function LoggedInProfileView() {
                 {/* 뱃지 (USER) */}
                 <TabsContent value="뱃지" className="mt-6">
                   <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }} className="space-y-6">
-                    {/* 획득한 뱃지 */}
                     <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-xl">
                       <CardHeader className="p-4 sm:p-6">
                         <CardTitle className="flex items-center gap-2 text-[clamp(16px,4vw,18px)]">
@@ -972,7 +1157,6 @@ function LoggedInProfileView() {
                       </CardContent>
                     </Card>
 
-                    {/* 진행 중인 뱃지 */}
                     <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-xl">
                       <CardHeader className="p-4 sm:p-6">
                         <CardTitle className="flex items-center gap-2 text-[clamp(16px,4vw,18px)]">
@@ -1057,6 +1241,9 @@ function LoggedInProfileView() {
                                     {typeof r.reviewCount === "number" && <span>리뷰 {r.reviewCount}개</span>}
                                   </div>
                                 </div>
+                                <Button variant="destructive" size="sm" onClick={(e) => { e.stopPropagation(); handleDelete(r.id) }}>
+                                  삭제
+                                </Button>
                               </div>
 
                               {r.address && (
@@ -1224,11 +1411,7 @@ function LoggedInProfileView() {
 
               <div className="w-full flex flex-col items-center gap-3 py-2">
                 <div className="p-3 rounded-2xl bg-white shadow-inner border">
-                  <QRCodeCanvas
-                    value={stampDialog.code || ""}
-                    size={220}
-                    includeMargin
-                  />
+                  <QRCodeCanvas value={stampDialog.code || ""} size={220} includeMargin />
                 </div>
                 <div className="flex items-center gap-2 text-sm text-gray-600">
                   <TimerReset className="h-4 w-4" />
@@ -1291,7 +1474,7 @@ function LoggedInProfileView() {
         </DialogContent>
       </Dialog>
 
-      {/* 전역 로딩 오버레이 (선택) */}
+      {/* 전역 로딩 오버레이 */}
       {isLoading && (
         <div className="fixed bottom-4 right-4 pointer-events-none">
           <div className="px-3 py-2 rounded-lg bg-white/90 shadow border text-sm text-gray-600">

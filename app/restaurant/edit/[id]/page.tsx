@@ -24,13 +24,11 @@ interface RestaurantData {
   name: string
   image?: string | null
   businessLicense?: string | null
-  // 서버가 phone 또는 telephone 중 하나를 내려줄 수 있으므로 둘 다 옵셔널로
   phone?: string | null
   telephone?: string | null
   description?: string
   directions?: string
   address?: string
-  // 서버에서 비울 수도 있으니 optional
   menu?: Array<{
     name?: string
     price?: string
@@ -45,6 +43,7 @@ export default function RestaurantEditPage() {
   const restaurantId = Number.parseInt((params as any).id as string)
 
   const [loading, setLoading] = useState(false)
+  const [deleting, setDeleting] = useState(false)
   const [initialLoading, setInitialLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -76,23 +75,19 @@ export default function RestaurantEditPage() {
           setError(res.error || "식당 정보를 불러올 수 없습니다.")
           return
         }
-      
-        // 여기서 명시적으로 타입 캐스팅
+
         const data = res.data as Partial<RestaurantData>
-      
-        // Populate form with existing data
+
         setRestaurantName(data.name ?? "")
         setRestaurantImagePreview(data.image ?? "")
-      
-        // Set restaurant info
+
         setRestaurantInfo({
           description: data.description ?? "",
           directions: data.directions ?? "",
-          phone: data.phone ?? data.telephone ?? "", // 혹시 서버가 telephone을 주면 대응
+          phone: data.phone ?? data.telephone ?? "",
           address: data.address ?? "",
         })
-      
-        // Set menu items
+
         if (data.menu && Array.isArray(data.menu) && data.menu.length > 0) {
           const formattedMenu: MenuItem[] = data.menu.map((item: any) => ({
             name: item.name ?? "",
@@ -167,31 +162,25 @@ export default function RestaurantEditPage() {
       alert("식당 이름을 입력해주세요.")
       return
     }
-
     if (!restaurantInfo.description.trim()) {
       alert("가게 소개를 입력해주세요.")
       return
     }
-
     if (!restaurantInfo.phone.trim()) {
       alert("전화번호를 입력해주세요.")
       return
     }
-
     if (!restaurantInfo.address.trim()) {
       alert("주소를 입력해주세요.")
       return
     }
-
     const validMenuItems = menuItems.filter((item) => item.name.trim() && item.price.trim() && item.description.trim())
-
     if (validMenuItems.length === 0) {
       alert("최소 하나의 메뉴를 완전히 입력해주세요.")
       return
     }
 
     setLoading(true)
-
     try {
       const res = await apiClient.updateBusinessRestaurant(restaurantId, {
         name: restaurantName,
@@ -199,9 +188,7 @@ export default function RestaurantEditPage() {
         telephone: restaurantInfo.phone,
       })
 
-      if (!res.success) {
-        throw new Error(res.error || "식당 정보 수정에 실패했습니다.")
-      }
+      if (!res.success) throw new Error(res.error || "식당 정보 수정에 실패했습니다.")
 
       alert("식당 정보가 성공적으로 수정되었습니다!")
       router.push(`/restaurant/${restaurantId}`)
@@ -210,6 +197,25 @@ export default function RestaurantEditPage() {
       console.error("Restaurant update error:", error)
     } finally {
       setLoading(false)
+    }
+  }
+
+  const handleDelete = async () => {
+    if (!restaurantId) return
+    const ok = confirm("정말 삭제하시겠어요? 이 작업은 되돌릴 수 없습니다.")
+    if (!ok) return
+
+    setDeleting(true)
+    try {
+      const res = await apiClient.deleteBusinessRestaurant(restaurantId) // DELETE /biz/restaurants/:id
+      if (!res.success) throw new Error(res.error || "식당 삭제에 실패했습니다.")
+      alert("식당이 삭제되었습니다.")
+      router.replace("/profile")
+    } catch (e: any) {
+      console.error(e)
+      alert(e?.message || "삭제 중 오류가 발생했습니다. 다시 시도해주세요.")
+    } finally {
+      setDeleting(false)
     }
   }
 
@@ -262,12 +268,8 @@ export default function RestaurantEditPage() {
       </motion.header>
 
       <div className="container mx-auto p-4 max-w-4xl">
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.1 }}
-          className="mb-6"
-        >
+        {/* 기본 정보 */}
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }} className="mb-6">
           <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-2xl">
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
@@ -378,12 +380,7 @@ export default function RestaurantEditPage() {
         </motion.div>
 
         {/* 메뉴 정보 */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.2 }}
-          className="mb-6"
-        >
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }} className="mb-6">
           <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-2xl">
             <CardHeader>
               <div className="flex items-center justify-between">
@@ -500,12 +497,7 @@ export default function RestaurantEditPage() {
         </motion.div>
 
         {/* 식당 정보 */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.3 }}
-          className="mb-6"
-        >
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }} className="mb-6">
           <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-2xl">
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
@@ -560,12 +552,40 @@ export default function RestaurantEditPage() {
           </Card>
         </motion.div>
 
-        {/* 수정 버튼 */}
-        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4 }}>
+        {/* 수정/삭제 버튼 */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.4 }}
+          className="grid grid-cols-1 md:grid-cols-2 gap-3"
+        >
+          {/* 삭제 */}
+          <Button
+            onClick={handleDelete}
+            disabled={deleting || loading}
+            variant="destructive"
+            className="h-12"
+            size="lg"
+          >
+            {deleting ? (
+              <>
+                <motion.div
+                  animate={{ rotate: 360 }}
+                  transition={{ duration: 1, repeat: Number.POSITIVE_INFINITY, ease: "linear" }}
+                  className="w-5 h-5 border-2 border-white border-t-transparent rounded-full mr-2"
+                />
+                삭제 중...
+              </>
+            ) : (
+              "식당 삭제"
+            )}
+          </Button>
+
+          {/* 저장 */}
           <Button
             onClick={handleSubmit}
-            disabled={loading}
-            className="w-full h-12 bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white font-medium shadow-lg hover:shadow-xl transition-all duration-300"
+            disabled={loading || deleting}
+            className="h-12 bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white font-medium shadow-lg hover:shadow-xl transition-all duration-300"
             size="lg"
           >
             {loading ? (

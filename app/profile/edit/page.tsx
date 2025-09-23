@@ -139,29 +139,29 @@ export default function EditProfilePage() {
   }
 
   const handleSave = async () => {
-    if (!sourceUser) return
-    setSaving(true)
+    if (!sourceUser) return;
+    setSaving(true);
     try {
-      let res: any
-      if (file || useDefault) {
-        const fd = new FormData()
-        fd.append("nickname", formData.nickname ?? "")
-        if (file) fd.append("profileImage", file)
-        if (useDefault) fd.append("defaultImage", "true")
-        res = await apiClient.updateProfile(fd)
+      const fd = new FormData();
+      fd.append("nickname", (formData.nickname ?? "").trim());
+  
+      if (useDefault) {
+        // 기본 이미지로 변경
+        fd.append("defaultImage", "true"); // 문자열!
+        // 파일은 절대 넣지 않음
       } else {
-        res = await apiClient.updateProfile({
-          nickname: formData.nickname,
-          defaultImage: false,
-        })
+        // 닉네임만 변경 OR 새 이미지 업로드
+        fd.append("defaultImage", "false"); // 문자열!
+        if (file) {
+          // 업로드할 때는 반드시 profileImage 키
+          fd.append("profileImage", file);
+        }
       }
-
-      if (!res?.success) {
-        throw new Error(typeof res?.error === "string" ? res.error : "프로필 업데이트 실패")
-      }
-
-      // 서버 응답을 스토어에 병합
-      const updated = (res.data?.user ?? res.data ?? {}) as SafeProfile
+  
+      const res = await apiClient.updateProfile(fd);
+      if (!res?.success) throw new Error(res?.error || "프로필 업데이트 실패");
+  
+      const updated = (res.data ?? {}) as SafeProfile;
       const merged: SafeProfile = {
         ...(sourceUser || {}),
         ...updated,
@@ -170,16 +170,15 @@ export default function EditProfilePage() {
           updated.profile ??
           updated.profileImage ??
           (useDefault ? null : (sourceUser?.profile ?? sourceUser?.profileImage ?? null)),
-      }
-      setUser(merged as any)
-
-      router.back()
+      };
+      setUser(merged as any);
+      router.back();
     } catch (e: any) {
-      alert(e?.message || "프로필 업데이트 중 오류가 발생했습니다.")
+      alert(e?.message || "프로필 업데이트 중 오류가 발생했습니다.");
     } finally {
-      setSaving(false)
+      setSaving(false);
     }
-  }
+  };
 
   const createdAtText = useMemo(() => formatDate(p.created_at ?? ""), [p.created_at])
 

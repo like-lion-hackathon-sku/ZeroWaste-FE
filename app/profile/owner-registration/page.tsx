@@ -6,23 +6,20 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import {
-  ArrowLeft,
-  Upload,
-  Plus,
-  Trash2,
-  Camera,
-  Store,
-  MapPin,
-  Search,
-} from "lucide-react"
+import { ArrowLeft, Upload, Plus, Trash2, Camera, Store, MapPin, Search, Gift } from "lucide-react"
 import { useRouter } from "next/navigation"
+import { apiClient } from "@/lib/api/client"
 
 // ---------------- Types ----------------
 type MenuItem = {
   name: string
   beforeImage?: File
   beforeImagePreview?: string
+}
+
+type BenefitItem = {
+  condition: number | ""
+  reward: string
 }
 
 type NaverPlaceRaw = {
@@ -58,6 +55,11 @@ export default function OwnerRegistrationPage() {
     phone: "",
     address: "",
   })
+
+  // ✅ 혜택(benefits)
+  const [benefits, setBenefits] = useState<BenefitItem[]>([
+    { condition: "", reward: "" },
+  ])
 
   // ───────────────────────── 이미지 업로드 공통
   const handleImageUpload = (
@@ -104,6 +106,19 @@ export default function OwnerRegistrationPage() {
     setMenuItems(next)
   }
 
+  // ───────────────────────── 혜택 조작
+  const addBenefit = () => setBenefits([...benefits, { condition: "", reward: "" }])
+
+  const removeBenefit = (i: number) => {
+    if (benefits.length > 1) setBenefits(benefits.filter((_, idx) => idx !== i))
+  }
+
+  const updateBenefit = (i: number, patch: Partial<BenefitItem>) => {
+    const next = [...benefits]
+    next[i] = { ...next[i], ...patch }
+    setBenefits(next)
+  }
+
   // ───────────────────────── 네이버 API 검색
   const handleSearch = async () => {
     if (!searchQuery.trim()) return
@@ -134,72 +149,56 @@ export default function OwnerRegistrationPage() {
     setSearchQuery("")   // 검색창 초기화
   }
 
-  // ───────────────────────── 제출 (multipart/form-data)
+  // ───────────────────────── 제출 (multipart/form-data) via apiClient
   const handleSubmit = async () => {
+    // 기본 검증
     if (!restaurantName.trim()) {
       alert("식당 이름을 입력해주세요.")
       return
     }
-    if (!restaurantInfo.address.trim() && !naverRaw?.address) {
+    if (!restaurantInfo.address.trim() && !naverRaw?.address && !naverRaw?.roadAddress) {
       alert("주소를 입력(또는 네이버에서 선택)해주세요.")
       return
     }
-  
+
+    // 메뉴명 최소 1개
+    const menuNames = menuItems
+      .map(m => (m.name || "").trim())
+      .filter(Boolean)
+    if (menuNames.length === 0) {
+      if (!confirm("메뉴 이름이 없습니다. 계속 진행할까요?")) return
+    }
+
+    // benefits 정제: condition >0 & reward 유효
+    const refinedBenefits = benefits
+      .map(b => ({
+        condition: typeof b.condition === "number" ? b.condition : Number(b.condition),
+        reward: (b.reward || "").trim(),
+      }))
+      .filter(b => Number.isFinite(b.condition) && b.condition > 0 && b.reward.length > 0)
+
     setLoading(true)
     try {
-      const name = restaurantName.trim()
-      const address = (naverRaw?.address || restaurantInfo.address || "").trim()
-      const telephone = (naverRaw?.telephone || restaurantInfo.phone || "").trim()
-      const mapx = (naverRaw?.mapx || "0").toString()
-      const mapy = (naverRaw?.mapy || "0").toString()
-  
-      const fd = new FormData()
-      // 스칼라 필드
-      fd.append("name", name)
-      fd.append("category", "ETC")
-      fd.append("address", address)
-      fd.append("telephone", telephone)
-      fd.append("mapx", mapx)
-      fd.append("mapy", mapy)
-      fd.append("benefits", "[]") // 옵션: 없으면 빈 배열 문자열
-  
-      // 대표/가게 이미지
-      if (restaurantImage) {
-        fd.append("images", restaurantImage, restaurantImage.name)
+      const payload = {
+        name: restaurantName.trim(),
+        category: "ETC", // 필요 시 선택 UI로 변경
+        address: (naverRaw?.roadAddress || naverRaw?.address || restaurantInfo.address || "").trim(),
+        telephone: (naverRaw?.telephone || restaurantInfo.phone || "").trim(),
+        // BE DTO가 문자열을 parseInt 하므로 문자열 그대로 전달 OK
+        mapx: (naverRaw?.mapx || "0") as unknown as number, // 타입은 맞추되 값은 문자열 전달됨
+        mapy: (naverRaw?.mapy || "0") as unknown as number,
+        images: restaurantImage ? [restaurantImage] : [],
+        menuImages: menuItems.map(m => m.beforeImage).filter(Boolean) as File[],
+        menuMetadatas: menuNames, // apiClient가 안전 포맷으로 변환해 전송
+        benefits: refinedBenefits, // [{condition, reward}]
       }
-  
-      // 메뉴 이미지들(있으면)
-      menuItems.forEach(m => {
-        if (m.beforeImage) {
-          fd.append("menuImages", m.beforeImage, m.beforeImage.name)
-        }
-      })
-  
-      // ✅ 메뉴 이름들을 콤마로 이어붙인 단일 문자열로
-      const menuNames = menuItems.map(m => (m.name || "").trim()).filter(Boolean)
-      const safeMenuNames = menuNames.map(n => n.replace(/,/g, "，")) // 콤마가 포함되면 전각 콤마로
-      const menuMetadatasStr = menuItems
-  .map(m => (m.name || "").trim())       // 공백 정리
-  .filter(Boolean)                       // 빈 값 제거
-  .map(name => `"${name}"`)              // 따옴표 감싸기
-  .join(","); 
-  if (menuMetadatasStr) {
-    fd.append("menuMetadatas", menuMetadatasStr);
-  }
-  
-      const baseUrl = (process.env.NEXT_PUBLIC_API_URL as string) || "/_be"
-      const resp = await fetch(`${baseUrl}/biz/restaurants/`, {
-        method: "POST",
-        body: fd, // Content-Type 자동 설정 (multipart/form-data; boundary=…)
-      })
-  
-      if (!resp.ok) {
-        const errText = await resp.text().catch(() => "")
-        throw new Error(errText || `업로드 실패 (status ${resp.status})`)
+
+      const res = await apiClient.createBusinessRestaurantMultipart(payload)
+      if (!res.success) {
+        throw new Error(res.error || "등록에 실패했어요.")
       }
-  
-      const resJson = await resp.json().catch(() => ({}))
-      const rid = (resJson?.data as any)?.restaurantId
+
+      const rid = (res.data as any)?.restaurantId
       alert("사장님 등록이 완료되었습니다!")
       router.push(rid ? `/restaurant/${rid}?isOwnerMode=true` : "/profile")
     } catch (err: any) {
@@ -238,11 +237,7 @@ export default function OwnerRegistrationPage() {
 
       <div className="container mx-auto p-4 max-w-4xl">
         {/* 🔎 네이버 식당 검색 */}
-        <motion.div
-          initial={{ opacity: 0, y: 16 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="mb-6"
-        >
+        <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} className="mb-6">
           <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-2xl">
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
@@ -265,7 +260,7 @@ export default function OwnerRegistrationPage() {
               </div>
 
               {searchResults.length > 0 && (
-                <ul className="mt-3 border rounded-md divide-y max-h-60 overflow-y-auto bg-white dark:bg-gray-800">
+                <ul className="mt-3 border rounded-md divide-y max-h-60 overflow-y-auto bg-white dark:bg-gray-8 00">
                   {searchResults.map((p, i) => (
                     <li
                       key={`${p.link}_${i}`}
@@ -274,8 +269,7 @@ export default function OwnerRegistrationPage() {
                     >
                       <p
                         className="font-medium text-gray-900 dark:text-gray-100"
-                        // 네이버가 <b> 태그로 하이라이트를 줌
-                        dangerouslySetInnerHTML={{ __html: p.title }}
+                        dangerouslySetInnerHTML={{ __html: p.title }} // 네이버 <b> 하이라이트
                       />
                       <p className="text-sm text-gray-500">
                         {p.roadAddress || p.address}
@@ -298,12 +292,7 @@ export default function OwnerRegistrationPage() {
         </motion.div>
 
         {/* 식당 기본 정보 */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.05 }}
-          className="mb-6"
-        >
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }} className="mb-6">
           <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-2xl">
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
@@ -314,10 +303,7 @@ export default function OwnerRegistrationPage() {
             <CardContent className="space-y-6">
               {/* 식당 이름 */}
               <div>
-                <Label
-                  htmlFor="restaurant-name"
-                  className="text-sm font-medium text-gray-700 dark:text-gray-300"
-                >
+                <Label htmlFor="restaurant-name" className="text-sm font-medium text-gray-700 dark:text-gray-300">
                   식당 이름 *
                 </Label>
                 <Input
@@ -331,9 +317,7 @@ export default function OwnerRegistrationPage() {
 
               {/* 식당 사진 */}
               <div>
-                <Label className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                  식당 사진
-                </Label>
+                <Label className="text-sm font-medium text-gray-700 dark:text-gray-300">식당 사진</Label>
                 <div className="mt-2 flex items-center gap-4">
                   {restaurantImagePreview && (
                     <div className="relative">
@@ -346,10 +330,7 @@ export default function OwnerRegistrationPage() {
                         variant="destructive"
                         size="sm"
                         className="absolute -top-2 -right-2 w-6 h-6 p-0"
-                        onClick={() => {
-                          setRestaurantImage(null)
-                          setRestaurantImagePreview("")
-                        }}
+                        onClick={() => { setRestaurantImage(null); setRestaurantImagePreview("") }}
                       >
                         <Trash2 className="h-3 w-3" />
                       </Button>
@@ -377,12 +358,7 @@ export default function OwnerRegistrationPage() {
         </motion.div>
 
         {/* 메뉴 정보 */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.1 }}
-          className="mb-6"
-        >
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }} className="mb-6">
           <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-2xl">
             <CardHeader>
               <div className="flex items-center justify-between">
@@ -398,23 +374,11 @@ export default function OwnerRegistrationPage() {
             </CardHeader>
             <CardContent className="space-y-6">
               {menuItems.map((item, index) => (
-                <motion.div
-                  key={index}
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className="p-4 border border-gray-200 dark:border-gray-700 rounded-lg space-y-4"
-                >
+                <motion.div key={index} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="p-4 border border-gray-200 dark:border-gray-700 rounded-lg space-y-4">
                   <div className="flex items-center justify-between">
-                    <h4 className="font-medium text-gray-900 dark:text-white">
-                      메뉴 {index + 1}
-                    </h4>
+                    <h4 className="font-medium text-gray-900 dark:text-white">메뉴 {index + 1}</h4>
                     {menuItems.length > 1 && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => removeMenuItem(index)}
-                        className="text-red-500 hover:text-red-700"
-                      >
+                      <Button variant="ghost" size="sm" onClick={() => removeMenuItem(index)} className="text-red-500 hover:text-red-700">
                         <Trash2 className="h-4 w-4" />
                       </Button>
                     )}
@@ -422,26 +386,20 @@ export default function OwnerRegistrationPage() {
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
-                      <Label className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                        메뉴 이름 *
-                      </Label>
+                      <Label className="text-sm font-medium text-gray-700 dark:text-gray-300">메뉴 이름 *</Label>
                       <Input
                         value={item.name}
-                        onChange={(e) =>
-                          updateMenuItem(index, "name", e.target.value)
-                        }
+                        onChange={(e) => updateMenuItem(index, "name", e.target.value)}
                         placeholder="메뉴 이름"
                         className="mt-1 bg-white/50 dark:bg-gray-800/50"
                       />
                     </div>
                   </div>
 
-                  {/* 식사 전 사진만 남김 */}
+                  {/* 식사 전 사진 */}
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div>
-                      <Label className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                        식사 전 사진
-                      </Label>
+                      <Label className="text-sm font-medium text-gray-700 dark:text-gray-300">식사 전 사진</Label>
                       <div className="mt-2 flex items-center gap-4">
                         {item.beforeImagePreview && (
                           <div className="relative">
@@ -465,10 +423,7 @@ export default function OwnerRegistrationPage() {
                             </Button>
                           </div>
                         )}
-                        <Label
-                          htmlFor={`menu-before-${index}`}
-                          className="cursor-pointer"
-                        >
+                        <Label htmlFor={`menu-before-${index}`} className="cursor-pointer">
                           <div className="flex items-center justify-center w-20 h-20 border-2 border-dashed border-gray-300 rounded-lg hover:border-green-500 transition-colors">
                             <Camera className="h-5 w-5 text-gray-400" />
                           </div>
@@ -492,13 +447,65 @@ export default function OwnerRegistrationPage() {
           </Card>
         </motion.div>
 
+        {/* 혜택(스탬프 보상) */}
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.12 }} className="mb-6">
+          <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-2xl">
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <CardTitle className="flex items-center gap-2">
+                  <Gift className="h-5 w-5 text-green-500" />
+                  스탬프 혜택
+                </CardTitle>
+                <Button onClick={addBenefit} variant="outline" size="sm">
+                  <Plus className="h-4 w-4 mr-2" />
+                  혜택 추가
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {benefits.map((b, i) => (
+                <div key={i} className="grid grid-cols-1 md:grid-cols-6 gap-3 items-end border rounded-md p-3">
+                  <div className="md:col-span-2">
+                    <Label className="text-sm">조건(스탬프 개수) *</Label>
+                    <Input
+                      inputMode="numeric"
+                      pattern="\d*"
+                      placeholder="예: 5"
+                      value={b.condition}
+                      onChange={(e) => {
+                        const v = e.target.value.replace(/[^\d]/g, "")
+                        updateBenefit(i, { condition: v === "" ? "" : Number(v) })
+                      }}
+                      className="mt-1"
+                    />
+                  </div>
+                  <div className="md:col-span-3">
+                    <Label className="text-sm">리워드 *</Label>
+                    <Input
+                      placeholder='예: "군만두 4개 세트"'
+                      value={b.reward}
+                      onChange={(e) => updateBenefit(i, { reward: e.target.value })}
+                      className="mt-1"
+                    />
+                  </div>
+                  <div className="md:col-span-1 flex justify-end">
+                    {benefits.length > 1 && (
+                      <Button variant="ghost" className="text-red-500" onClick={() => removeBenefit(i)}>
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              ))}
+              <p className="text-xs text-gray-500">
+                * 생성 시 저장된 혜택은 나중에 스탬프 사용 조건 및 리워드 지급 기준으로 활용됩니다.
+              </p>
+            </CardContent>
+          </Card>
+        </motion.div>
+
         {/* 식당 연락처/주소 */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.15 }}
-          className="mb-6"
-        >
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15 }} className="mb-6">
           <Card className="backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-white/20 shadow-2xl">
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
@@ -514,9 +521,7 @@ export default function OwnerRegistrationPage() {
                   </Label>
                   <Input
                     value={restaurantInfo.phone}
-                    onChange={(e) =>
-                      setRestaurantInfo({ ...restaurantInfo, phone: e.target.value })
-                    }
+                    onChange={(e) => setRestaurantInfo({ ...restaurantInfo, phone: e.target.value })}
                     placeholder="02-1234-5678"
                     className="mt-1 bg-white/50 dark:bg-gray-800/50"
                   />
@@ -527,9 +532,7 @@ export default function OwnerRegistrationPage() {
                   </Label>
                   <Input
                     value={restaurantInfo.address}
-                    onChange={(e) =>
-                      setRestaurantInfo({ ...restaurantInfo, address: e.target.value })
-                    }
+                    onChange={(e) => setRestaurantInfo({ ...restaurantInfo, address: e.target.value })}
                     placeholder="서울시 강남구 테헤란로 123"
                     className="mt-1 bg-white/50 dark:bg-gray-800/50"
                   />
@@ -540,11 +543,7 @@ export default function OwnerRegistrationPage() {
         </motion.div>
 
         {/* 등록 버튼 */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.2 }}
-        >
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}>
           <Button
             onClick={handleSubmit}
             disabled={loading}
@@ -555,11 +554,7 @@ export default function OwnerRegistrationPage() {
               <>
                 <motion.div
                   animate={{ rotate: 360 }}
-                  transition={{
-                    duration: 1,
-                    repeat: Number.POSITIVE_INFINITY,
-                    ease: "linear",
-                  }}
+                  transition={{ duration: 1, repeat: Number.POSITIVE_INFINITY, ease: "linear" }}
                   className="w-5 h-5 border-2 border-white border-t-transparent rounded-full mr-2"
                 />
                 등록 중...
