@@ -172,27 +172,19 @@ class ApiClient {
   }
 
   async updateProfile(payload: FormData | UpdateProfileJson) {
-    const url = "/api/profile/update" // 내부 Next 라우트 사용 시
-    const res = await fetch(url, {
+    // FormData인 경우: Content-Type을 지정하지 않고 body에 그대로 넣는다.
+    if (payload instanceof FormData) {
+      return this.request("/auth/profile", {
+        method: "POST",
+        body: payload,
+      })
+    }
+  
+    // JSON인 경우
+    return this.request("/auth/profile", {
       method: "POST",
-      ...(payload instanceof FormData
-        ? { body: payload }
-        : {
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
-          }),
-      credentials: "include",
+      body: JSON.stringify(payload),
     })
-    if (!res.ok) {
-      const msg = await res.text().catch(() => "")
-      return { success: false, error: msg || `HTTP ${res.status}` }
-    }
-    try {
-      const data = await res.json()
-      return typeof data?.success === "boolean" ? data : { success: true, data }
-    } catch {
-      return { success: true }
-    }
   }
 
   /** multipart 그대로 전달 (BE 엔드포인트 사용 시) */
@@ -214,28 +206,18 @@ class ApiClient {
     return this.request(`/restaurants/nearby?${sp.toString()}`)
   }
 
-  async getRestaurantsInBounds(bounds: {
-    minLat: number
-    maxLat: number
-    minLng: number
-    maxLng: number
-    category?: string
-    search?: string
-  }) {
+  async getRestaurantsInBounds(bounds: { minLat: number; maxLat: number; minLng: number; maxLng: number; category?: string; search?: string }) {
     const q = (bounds.search ?? "맛집").trim()
     return this.request(`/restaurants/nearby?q=${encodeURIComponent(q)}`)
   }
 
   async getRestaurantDetail(id: number) {
     return this.request<{
-      id: number
-      name: string
-      category: string
-      address?: string
-      telephone?: string
-      photos?: { id: number; photo_name: string }[]
-      menus?: { id: number; name: string; photo?: string }[]
-    }>(`/restaurants/${id}/detail`, { method: "GET" })
+      id: number; name: string; category: string;
+      address?: string; telephone?: string;
+      photos?: { id: number; photo_name: string }[];
+      menus?: { id: number; name: string; photo?: string }[];
+    }>(`/restaurants/${id}/detail`, { method: "GET" });
   }
 
   async getRestaurantReviews(id: number) {
@@ -410,17 +392,27 @@ async startUseStampForMe(payload: { restaurantId: number; condition: number }) {
   /** POST /api/reviews/restaurants/{id} */
   async createReviewForRestaurant(
     restaurantId: number,
-    payload: { content: string; score: number; images?: string[] }
+    payload: {
+      content: string;
+      score: number;
+      images?: string[];
+      detailFeedback?: string | null;
+    }
   ) {
-    const body = {
+    const norm = (v?: string | null) =>
+      typeof v === "string" && v.trim().length > 0 ? v.trim() : undefined;
+  
+    const body: any = {
       content: payload.content,
       score: payload.score,
-      images: Array.isArray(payload.images) ? payload.images : [],
-    }
+      imageKeys: Array.isArray(payload.images) ? payload.images : [],
+      detailFeedback: norm(payload.detailFeedback) ?? null,
+    };
+  
     return this.request(`/reviews/restaurants/${restaurantId}`, {
       method: "POST",
       body: JSON.stringify(body),
-    })
+    });
   }
 
   async updateReview(id: number, data: { contents?: string; score?: number }) {
@@ -442,16 +434,22 @@ async startUseStampForMe(payload: { restaurantId: number; condition: number }) {
   }
 
   async analyzeWasteBatch(payload: any) {
+    // 내부 Next 라우트이므로 baseUrl('/_be')를 타지 말고 직접 호출
     const res = await fetch("/api/ai/waste/analyze-batch", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      // 쿠키가 필요하면 아래 주석 해제:
+      // credentials: "include",
       body: JSON.stringify(payload),
-    })
-    const data = await res.json().catch(() => ({}))
+    });
+  
+    const data = await res.json().catch(() => ({}));
+  
     if (!res.ok || !data?.ok) {
-      return { success: false, error: data?.error || `HTTP ${res.status}` } as ApiResponse<any>
+      return { success: false, error: data?.error || `HTTP ${res.status}` } as ApiResponse<any>;
     }
-    return { success: true, data: data.result } as ApiResponse<any>
+    // data.result(= { per_menu, overall })를 그대로 넘겨주기
+    return { success: true, data: data.result } as ApiResponse<any>;
   }
 
   // ───────────────────────── Images (presigned URL + 분석)
