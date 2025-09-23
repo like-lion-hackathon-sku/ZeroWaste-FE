@@ -28,6 +28,7 @@ import AnalyzingModal from "@/components/ai/AnalyzingModal";
 
 /* ---------------- Types ---------------- */
 type RestaurantInfo = { id: number; name: string; category?: string | null };
+type MenuItem = { id: number; name: string; price?: number | null; photo?: string | null };
 
 type CropAI = {
   score: number;
@@ -106,14 +107,14 @@ function CropModal({
   onAddCrop,
   aspect = 4 / 3,
 }: CropModalProps) {
-  const [zoom, setZoom] = useState(1);
+  const [zoom, setZoom] = useState(1.5);
   const [crop, setCrop] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [area, setArea] = useState<AreaPixels | null>(null);
   const [captured, setCaptured] = useState(false);
 
   useEffect(() => {
     if (open) {
-      setZoom(1);
+      setZoom(1.5);
       setCrop({ x: 0, y: 0 });
       setArea(null);
       setCaptured(false);
@@ -215,6 +216,10 @@ export default function ReviewWritePage() {
   const [loadingRestaurant, setLoadingRestaurant] = useState(true);
   const [restaurant, setRestaurant] = useState<RestaurantInfo | null>(null);
 
+  // ✅ 메뉴 상태 (detail에서 같이 세팅)
+  const [menus, setMenus] = useState<MenuItem[]>([]);
+  const [selectedMenuIds, setSelectedMenuIds] = useState<number[]>([]);
+
   const [uploadedImages, setUploadedImages] = useState<UploadedImage[]>([]);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [showAILoadingModal, setShowAILoadingModal] = useState(false);
@@ -239,13 +244,14 @@ export default function ReviewWritePage() {
     [cropTargetId, uploadedImages]
   );
 
-  /* 식당 상세 */
+  /* 식당 상세 + 메뉴 한번에 세팅 */
   useEffect(() => {
     let ignore = false;
     (async () => {
       try {
         if (!Number.isFinite(restaurantId)) {
           setRestaurant(null);
+          setMenus([]);
           return;
         }
         setLoadingRestaurant(true);
@@ -257,18 +263,38 @@ export default function ReviewWritePage() {
           setRestaurant({
             id: restaurantId,
             name: d.name ?? `식당 #${restaurantId}`,
-            category: d.category ?? null,
+            category: d.category ?? d.categoryName ?? null,
           });
+
+          // detail 응답에 포함된 메뉴 사용
+          const menuArr: MenuItem[] =
+            Array.isArray(d.menus)
+              ? d.menus.map((m: any) => ({
+                  id: Number(m.id),
+                  name: String(m.name ?? ""),
+                  price:
+                    typeof m.price === "number"
+                      ? m.price
+                      : m.price != null
+                      ? Number(m.price)
+                      : null,
+                  photo: m.photo ?? null,
+                }))
+              : [];
+          setMenus(menuArr);
         } else {
           setRestaurant({ id: restaurantId, name: `식당 #${restaurantId}` });
+          setMenus([]);
         }
       } catch {
-        if (!ignore)
+        if (!ignore) {
           setRestaurant(
             Number.isFinite(restaurantId)
               ? { id: restaurantId, name: `식당 #${restaurantId}` }
               : null
           );
+          setMenus([]);
+        }
       } finally {
         if (!ignore) setLoadingRestaurant(false);
       }
@@ -452,9 +478,8 @@ export default function ReviewWritePage() {
     try {
       setSubmitting(true);
 
-      // ⬇⬇⬇ 중요: feedback/detail_feedback 생성
-      const allCrops =
-        uploadedImages.flatMap((img) => img.multiCrops ?? []);
+      // feedback/detailFeedback 생성
+      const allCrops = uploadedImages.flatMap((img) => img.multiCrops ?? []);
 
       const feedback: string | null =
         allCrops.find((c) => c.ai?.ownerAnalysis)?.ai?.ownerAnalysis ??
@@ -484,10 +509,10 @@ export default function ReviewWritePage() {
         content: comment.trim(),
         score: Number(avgScore5.toFixed(1)),
         images: uploadedImages.map((img) => img.fileName),
-
-        // ✅ 리뷰 테이블 매핑
         feedback,
         detailFeedback,
+        // ✅ 선택한 메뉴들 포함
+        menuIds: selectedMenuIds,
       };
 
       const resp = await apiClient.createReviewForRestaurant(
@@ -656,6 +681,64 @@ export default function ReviewWritePage() {
                   신규 작성
                 </Badge>
               </div>
+            </CardContent>
+          </Card>
+
+          {/* ✅ 먹은 메뉴 선택 */}
+          <Card className="backdrop-blur-xl bg-white/85 dark:bg-gray-900/85 border-white/20 shadow-xl rounded-2xl">
+            <CardHeader>
+              <CardTitle className="text-xl">먹은 메뉴 선택</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {menus.length === 0 ? (
+                <p className="text-sm text-gray-500">등록된 메뉴가 없습니다.</p>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {menus.map((m) => {
+                    const checked = selectedMenuIds.includes(m.id);
+                    return (
+                      <label
+                        key={m.id}
+                        className={`flex items-center justify-between gap-3 rounded-xl border px-3 py-2 cursor-pointer ${
+                          checked
+                            ? "border-purple-400 bg-purple-50"
+                            : "border-gray-200 bg-white"
+                        } dark:${
+                          checked
+                            ? "border-purple-700 bg-purple-900/20"
+                            : "border-gray-700 bg-gray-900/40"
+                        }`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            className="h-4 w-4"
+                            checked={checked}
+                            onChange={(e) =>
+                              setSelectedMenuIds((prev) =>
+                                e.target.checked
+                                  ? [...prev, m.id]
+                                  : prev.filter((id) => id !== m.id)
+                              )
+                            }
+                          />
+                          <span className="text-sm">{m.name}</span>
+                        </div>
+                        {m.price != null && (
+                          <span className="text-xs text-gray-500">
+                            {m.price.toLocaleString()}원
+                          </span>
+                        )}
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
+              {selectedMenuIds.length > 0 && (
+                <p className="text-xs text-gray-600 mt-1">
+                  선택한 메뉴: {selectedMenuIds.length}개
+                </p>
+              )}
             </CardContent>
           </Card>
 
