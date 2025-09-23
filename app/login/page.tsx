@@ -1,3 +1,4 @@
+// app/auth/login/page.tsx  (혹은 현재 로그인 페이지 경로)
 "use client"
 
 import { useRouter } from "next/navigation"
@@ -57,6 +58,29 @@ export default function LoginPage() {
     role: u?.role === "BIZ" ? "BIZ" : "USER",
   })
 
+  // ───────────────── helpers: token/role 추출 ─────────────────
+  const getAccessTokenFromResponse = (d: any): string | null =>
+    d?.accessToken || d?.token || d?.jwt || null
+
+  const decodeJwt = <T,>(token: string | null): T | null => {
+    if (!token) return null
+    try {
+      const base64 = token.split(".")[1]
+      const json = atob(base64.replace(/-/g, "+").replace(/_/g, "/"))
+      return JSON.parse(json) as T
+    } catch {
+      return null
+    }
+  }
+
+  const resolveRole = (rawUser: any, token: string | null): "USER" | "BIZ" => {
+    const r = rawUser?.role
+    if (r === "BIZ" || r === "USER") return r
+    const payload = decodeJwt<any>(token)
+    const pr = payload?.role
+    return pr === "BIZ" ? "BIZ" : "USER"
+  }
+
   /* ───────── 로그인 ───────── */
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault()
@@ -69,11 +93,25 @@ export default function LoginPage() {
       }
 
       const rawUser = (res as any).data
-      setUser(mapToUser(rawUser))
+
+      // 1) 토큰 저장 (Authorization 자동부착 로직이 localStorage를 참조)
+      const token = getAccessTokenFromResponse(rawUser)
+      if (token) {
+        try { localStorage.setItem("accessToken", token) } catch {}
+      }
+
+      // 2) role 보정 (응답에 없으면 토큰에서 복원)
+      const role = resolveRole(rawUser, token)
+
+      // 3) 전역 스토어 저장
+      setUser(mapToUser({ ...rawUser, role }))
+
+      // 4) 편의: userId 저장(선택)
       if (rawUser?.id) {
         try { localStorage.setItem("userId", String(rawUser.id)) } catch {}
       }
 
+      // 5) 프로필 완료 여부에 따른 라우팅
       const incomplete = rawUser?.is_completed === false || rawUser?.isCompleted === false
       if (incomplete) {
         setNeedProfile(true)
@@ -133,7 +171,6 @@ export default function LoginPage() {
       form.append("defaultImage", useDefaultImage ? "true" : "false")
       if (!useDefaultImage && file) form.append("profileImage", file)
 
-      // apiClient에 updateProfileMultipart가 없으면 updateProfile로 폴백
       const api: any = apiClient as any
       const res =
         typeof api.updateProfileMultipart === "function"
@@ -141,16 +178,6 @@ export default function LoginPage() {
           : await api.updateProfile({ nickname, defaultImage: useDefaultImage, profileImage: file ?? null })
 
       if (!res?.success) throw new Error(res?.error || "프로필 저장에 실패했어요.")
-
-      // 최신 사용자 정보로 동기화
-      const me = await apiClient.getProfile().catch(() => null)
-      if (me?.success && me.data) {
-        setUser(mapToUser(me.data))
-        try {
-          const id = (me.data as any)?.id
-          if (id != null) localStorage.setItem("userId", String(id))
-        } catch {}
-      }
 
       router.push("/map")
     } catch (err: any) {
@@ -272,7 +299,7 @@ export default function LoginPage() {
               <Button
                 variant="ghost"
                 className="w-full h-12 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-all"
-                onClick={handleGuestMode}
+                onClick={() => router.push("/map")}
               >
                 게스트 모드로 둘러보기
               </Button>
@@ -338,7 +365,13 @@ export default function LoginPage() {
                         파일 선택
                       </Button>
                     </div>
-                    <input ref={fileInputRef} type="file" accept="image/*" hidden onChange={onChangeFile} />
+                    <input ref={fileInputRef} type="file" accept="image/*" hidden onChange={(e) => {
+                      const f = e.target.files?.[0]
+                      if (!f) return
+                      if (!f.type.startsWith("image/")) { alert("이미지 파일만 업로드할 수 있어요."); e.target.value = ""; return }
+                      if (f.size > 5 * 1024 * 1024) { alert("파일 용량은 5MB 이하여야 해요."); e.target.value = ""; return }
+                      setFile(f); setUseDefaultImage(false); const url = URL.createObjectURL(f); setPreview(url)
+                    }} />
                   </div>
                 ) : (
                   <div className="flex items-center gap-3">
@@ -347,7 +380,9 @@ export default function LoginPage() {
                       <p className="text-sm text-gray-700 dark:text-gray-200">{file?.name}</p>
                       <p className="text-xs text-gray-400">{Math.round((file?.size || 0) / 1024)} KB</p>
                     </div>
-                    <Button type="button" variant="ghost" onClick={removeFile} className="text-red-500 hover:text-red-600">
+                    <Button type="button" variant="ghost" onClick={() => {
+                      setFile(null); if (preview) URL.revokeObjectURL(preview); setPreview(null); if (fileInputRef.current) fileInputRef.current.value = ""
+                    }} className="text-red-500 hover:text-red-600">
                       <Trash2 className="h-4 w-4" />
                     </Button>
                   </div>
@@ -366,7 +401,28 @@ export default function LoginPage() {
               >
                 나중에
               </Button>
-              <Button onClick={submitProfile} disabled={saving} className="bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700">
+              <Button onClick={async () => {
+                if (!nickname.trim()) { alert("닉네임을 입력해주세요."); return }
+                if (!useDefaultImage && !file) { alert("프로필 이미지를 선택하거나 '기본 이미지 사용'을 선택하세요."); return }
+                setSaving(true)
+                try {
+                  const form = new FormData()
+                  form.append("nickname", nickname.trim())
+                  form.append("defaultImage", useDefaultImage ? "true" : "false")
+                  if (!useDefaultImage && file) form.append("profileImage", file)
+                  const api: any = apiClient as any
+                  const res =
+                    typeof api.updateProfileMultipart === "function"
+                      ? await api.updateProfileMultipart(form)
+                      : await api.updateProfile({ nickname, defaultImage: useDefaultImage, profileImage: file ?? null })
+                  if (!res?.success) throw new Error(res?.error || "프로필 저장에 실패했어요.")
+                  router.push("/map")
+                } catch (err: any) {
+                  alert(err?.message || "프로필 저장 중 오류가 발생했어요.")
+                } finally {
+                  setSaving(false)
+                }
+              }} disabled={saving} className="bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700">
                 {saving ? "저장 중..." : "저장"}
               </Button>
             </div>

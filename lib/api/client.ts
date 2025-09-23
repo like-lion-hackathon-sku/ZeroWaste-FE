@@ -32,83 +32,106 @@ class ApiClient {
   }
 
   /** 공통 요청 래퍼 */
-  private async request<T>(endpoint: string, options: RequestInit = {}, _retrying = false): Promise<ApiResponse<T>> {
-    try {
-      const url = this.buildUrl(endpoint)
-      const isFormData = typeof FormData !== "undefined" && options.body instanceof FormData
+private async request<T>(
+  endpoint: string,
+  options: RequestInit = {},
+  _retrying = false
+): Promise<ApiResponse<T>> {
+  try {
+    const url = this.buildUrl(endpoint)
+    const isFormData =
+      typeof FormData !== "undefined" && options.body instanceof FormData
 
-      const headers: HeadersInit = { ...(options.headers || {}) }
-      if (!isFormData) {
-        if (!("Content-Type" in headers)) (headers as Record<string, string>)["Content-Type"] = "application/json"
-        if (!("Accept" in headers)) (headers as Record<string, string>)["Accept"] = "application/json"
+    const headers: HeadersInit = { ...(options.headers || {}) }
+    if (!isFormData) {
+      if (!("Content-Type" in headers))
+        (headers as Record<string, string>)["Content-Type"] = "application/json"
+      if (!("Accept" in headers))
+        (headers as Record<string, string>)["Accept"] = "application/json"
+    }
+
+    // ✅ Authorization 헤더 자동 부착
+    if (typeof window !== "undefined") {
+      const token =
+        localStorage.getItem("accessToken") ||
+        localStorage.getItem("authToken") ||
+        document.cookie.match(/accessToken=([^;]+)/)?.[1]
+      if (token && !("Authorization" in headers)) {
+        (headers as Record<string, string>)["Authorization"] = `Bearer ${token}`
       }
+    }
 
-      const res = await fetch(url, {
-        credentials: "include",
-        cache: "no-store",
-        ...options,
-        headers,
-      })
+    const res = await fetch(url, {
+      credentials: "include",
+      cache: "no-store",
+      ...options,
+      headers,
+    })
 
-      // 401 → refresh 1회 시도
-      if (res.status === 401 && !_retrying) {
-        if (!refreshPromise) {
-          refreshPromise = fetch(this.buildUrl("/auth/refresh"), {
-            method: "POST",
-            credentials: "include",
-            cache: "no-store",
-            headers: { Accept: "application/json" },
-          }).finally(() => {
-            refreshPromise = null
-          })
-        }
-        const rr = await refreshPromise
-        if (rr?.ok) {
-          return this.request<T>(endpoint, options, true)
-        }
+    // 401 → refresh 1회 시도
+    if (res.status === 401 && !_retrying) {
+      if (!refreshPromise) {
+        refreshPromise = fetch(this.buildUrl("/auth/refresh"), {
+          method: "POST",
+          credentials: "include",
+          cache: "no-store",
+          headers: { Accept: "application/json" },
+        }).finally(() => {
+          refreshPromise = null
+        })
       }
-
-      if (!res.ok) {
-        const bodyText = await res.text().catch(() => "")
-        let message = res.statusText
-        try {
-          const j = bodyText ? JSON.parse(bodyText) : {}
-          message = (j as any)?.message || (j as any)?.error || message
-          console.error("[API 4xx/5xx]", res.status, j)
-        } catch {
-          console.error("[API 4xx/5xx]", res.status, bodyText)
-        }
-        return { success: false, error: `HTTP ${res.status}: ${message}` } as ApiResponse<T>
+      const rr = await refreshPromise
+      if (rr?.ok) {
+        return this.request<T>(endpoint, options, true)
       }
+    }
 
-      const text = await res.text()
-      let data: any = {}
+    if (!res.ok) {
+      const bodyText = await res.text().catch(() => "")
+      let message = res.statusText
       try {
-        data = text ? JSON.parse(text) : {}
+        const j = bodyText ? JSON.parse(bodyText) : {}
+        message = (j as any)?.message || (j as any)?.error || message
+        console.error("[API 4xx/5xx]", res.status, j)
       } catch {
-        data = { success: true, data: text }
+        console.error("[API 4xx/5xx]", res.status, bodyText)
       }
-
-      // BE → FE 표준 정규화
-      if (data && typeof data === "object" && "resultType" in data) {
-        const { resultType, success, error } = data
-        if (String(resultType).toUpperCase() === "SUCCESS") {
-          return { success: true, data: (success ?? null) as T }
-        }
-        const reason = error?.reason || error?.message || "요청이 실패했어요."
-        return { success: false, error: reason } as ApiResponse<T>
-      }
-
-      if (typeof data?.success === "boolean") return data as ApiResponse<T>
-      return { success: true, data } as ApiResponse<T>
-    } catch (error) {
-      console.error("[v0] API request failed:", error)
       return {
         success: false,
-        error: error instanceof Error ? error.message : "Unknown error occurred",
+        error: `HTTP ${res.status}: ${message}`,
       } as ApiResponse<T>
     }
+
+    const text = await res.text()
+    let data: any = {}
+    try {
+      data = text ? JSON.parse(text) : {}
+    } catch {
+      data = { success: true, data: text }
+    }
+
+    // BE → FE 표준 정규화
+    if (data && typeof data === "object" && "resultType" in data) {
+      const { resultType, success, error } = data
+      if (String(resultType).toUpperCase() === "SUCCESS") {
+        return { success: true, data: (success ?? null) as T }
+      }
+      const reason =
+        error?.reason || error?.message || "요청이 실패했어요."
+      return { success: false, error: reason } as ApiResponse<T>
+    }
+
+    if (typeof data?.success === "boolean") return data as ApiResponse<T>
+    return { success: true, data } as ApiResponse<T>
+  } catch (error) {
+    console.error("[v0] API request failed:", error)
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error occurred",
+    } as ApiResponse<T>
   }
+}
+
 
   // ───────────────────────── Auth
   async login(email: string, password: string) {
@@ -122,9 +145,6 @@ class ApiClient {
   }
   async refresh() {
     return this.request("/auth/refresh", { method: "POST" })
-  }
-  async getProfile() {
-    return this.request("/auth/me", { method: "GET" })
   }
 
   async updateProfile(payload: FormData | UpdateProfileJson) {
@@ -295,17 +315,6 @@ class ApiClient {
   async getBusinessAnalytics(period?: string) {
     const params = period ? `?period=${encodeURIComponent(period)}` : ""
     return this.request(`/biz/analytics${params}`)
-  }
-
-  /** ⛔️ 주의: 아래 3개는 BE에 개별 CRUD 라우트가 있을 때만 사용 */
-  async createStampReward(restaurantId: number, data: { condition: number; reward: string }) {
-    return this.request("/biz/stamps/rewards", { method: "POST", body: JSON.stringify({ restaurantId, ...data }) })
-  }
-  async updateStampReward(rewardId: number, data: { condition?: number; reward?: string }) {
-    return this.request(`/biz/stamps/rewards/${rewardId}`, { method: "PUT", body: JSON.stringify(data) })
-  }
-  async deleteStampReward(rewardId: number) {
-    return this.request(`/biz/stamps/rewards/${rewardId}`, { method: "DELETE" })
   }
 
   // ───────────────────────── Reviews

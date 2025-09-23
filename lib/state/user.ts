@@ -1,13 +1,15 @@
 import { create } from "zustand"
 import { persist, createJSONStorage } from "zustand/middleware"
 
+export type Role = "USER" | "BIZ"
+
 export type User = {
   id: number
   email: string
   nickname?: string | null
   profile?: string | null
   is_completed?: boolean
-  role?: "USER" | "BIZ"
+  role: Role
 }
 
 type UserState = {
@@ -27,7 +29,7 @@ export const useUserStore = create<UserState>()(
     {
       name: "auth_user", // localStorage key
       storage: createJSONStorage(() => localStorage),
-      partialize: (s) => ({ user: s.user }), // 저장 범위 제한(선택)
+      partialize: (s) => ({ user: s.user }), // 저장 범위 제한
     }
   )
 )
@@ -35,5 +37,3 @@ export const useUserStore = create<UserState>()(
 // 헬퍼
 export const getUser = () => useUserStore.getState().user
 export const setUserHelper = (u: User | null) => useUserStore.getState().setUser(u)
-
-/** 구독 (선택) */
