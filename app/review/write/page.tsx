@@ -13,7 +13,6 @@ import { Textarea } from "@/components/ui/textarea";
 import { Progress } from "@/components/ui/progress";
 import {
   ArrowLeft,
-  Camera,
   Upload,
   Sparkles,
   CheckCircle,
@@ -21,6 +20,7 @@ import {
   Star,
   Stamp as StampIcon,
   Crop as CropIcon,
+  Trash2,
 } from "lucide-react";
 import Cropper from "react-easy-crop";
 import { apiClient } from "@/lib/api/client";
@@ -33,9 +33,8 @@ type CropAI = {
   score: number;
   summary: string;
   analyzed_at?: string;
-  /** 표기용: AI 분석 / 한줄평 / 스코어 라벨 */
-  ownerAnalysis?: string; // → AI 분석
-  userComment?: string;   // → 한줄평
+  ownerAnalysis?: string;
+  userComment?: string;
   scoreLabel?: string;
 };
 
@@ -142,10 +141,10 @@ function CropModal({
       <div className="relative w-full max-w-3xl mx-4 rounded-2xl overflow-hidden bg-white dark:bg-gray-900 shadow-2xl border border-white/20">
         <div className="px-4 py-3 border-b border-gray-200/60 dark:border-gray-800/60 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <div className="p-2 rounded-xl bg-emerald-600 text-white">
+            <div className="p-2 rounded-xl bg-purple-600 text-white">
               <CropIcon className="h-4 w-4" />
             </div>
-            <div className="font-semibold">영역 지정(확대·드래그)</div>
+            <div className="font-semibold">캡쳐(확대·드래그)</div>
           </div>
           <Button variant="ghost" size="sm" onClick={onClose}>
             닫기
@@ -167,7 +166,7 @@ function CropModal({
           />
           {captured && (
             <div className="absolute left-1/2 -translate-x-1/2 top-4">
-              <div className="flex items-center gap-2 rounded-full bg-emerald-600/95 text-white px-3 py-1 shadow">
+              <div className="flex items-center gap-2 rounded-full bg-purple-600/95 text-white px-3 py-1 shadow">
                 <Sparkles className="h-4 w-4" />
                 <span className="text-sm font-medium">캡쳐되었습니다</span>
               </div>
@@ -191,11 +190,12 @@ function CropModal({
             />
           </div>
           <div className="flex items-center gap-2">
+            {/* 캡쳐 버튼만 유지 (파란 캡쳐 버튼 제거) */}
             <Button
               onClick={captureArea}
-              className="rounded-xl bg-emerald-600 hover:bg-emerald-700"
+              className="rounded-xl bg-purple-600 hover:bg-purple-700"
             >
-              영역 추가(캡쳐)
+              캡쳐
             </Button>
           </div>
         </div>
@@ -338,7 +338,7 @@ export default function ReviewWritePage() {
     });
   };
 
-  /* 단일 크롭 분석 (메뉴 정보 전송 없음) */
+  /* 단일 크롭 분석 */
   const analyzeCropFile = async (
     imageId: string,
     cropId: string,
@@ -411,7 +411,7 @@ export default function ReviewWritePage() {
       0
     );
     if (totalCrops === 0)
-      return alert("저장된 영역이 없습니다. 영역 지정 후 캡쳐해 주세요.");
+      return alert("저장된 캡쳐가 없습니다. 먼저 캡쳐를 추가해 주세요.");
     setShowAILoadingModal(true);
     setIsAnalyzing(true);
     try {
@@ -435,9 +435,7 @@ export default function ReviewWritePage() {
   useEffect(() => {
     if (avgScore5 >= 4) {
       setEarnedStamp(true);
-      setStampBanner(
-        "축하합니다! 평균 별점 4.0점 이상으로 스탬프가 적립됩니다."
-      );
+      setStampBanner("축하합니다! 평균 별점 4.0점 이상으로 스탬프가 적립됩니다.");
     } else {
       setEarnedStamp(false);
       setStampBanner(null);
@@ -557,13 +555,13 @@ export default function ReviewWritePage() {
         </div>
       )}
 
-      {/* 스탬프 배너 */}
+      {/* 스탬프 배너 (보라색 톤) */}
       {stampBanner && (
         <div className="sticky top-0 z-20">
           <div className="mx-auto max-w-3xl p-3">
-            <div className="flex items-start gap-3 rounded-2xl border border-emerald-300/60 bg-emerald-50/90 dark:bg-emerald-900/30 px-4 py-3 backdrop-blur">
-              <CheckCircle className="h-5 w-5 shrink-0 text-emerald-600 dark:text-emerald-300 mt-0.5" />
-              <div className="text-sm text-emerald-800 dark:text-emerald-100">
+            <div className="flex items-start gap-3 rounded-2xl border border-purple-300/60 bg-purple-50/90 dark:bg-purple-900/30 px-4 py-3 backdrop-blur">
+              <CheckCircle className="h-5 w-5 shrink-0 text-purple-600 dark:text-purple-300 mt-0.5" />
+              <div className="text-sm text-purple-800 dark:text-purple-100">
                 <p className="font-semibold">스탬프 획득</p>
                 <p className="mt-0.5">{stampBanner}</p>
               </div>
@@ -630,20 +628,20 @@ export default function ReviewWritePage() {
           <Card className="backdrop-blur-xl bg-white/85 dark:bg-gray-900/85 border-white/20 shadow-xl rounded-2xl">
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-xl">
-                <div className="bg-gradient-to-br from-green-500 to-emerald-600 p-2 rounded-xl">
-                  <Camera className="h-5 w-5 text-white" />
+                <div className="bg-gradient-to-br from-purple-500 to-pink-500 p-2 rounded-xl">
+                  <CropIcon className="h-5 w-5 text-white" />
                 </div>
                 사진 업로드 & AI 분석
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-6">
-              <div className="rounded-xl border border-emerald-200/60 dark:border-emerald-700/60 bg-emerald-50/70 dark:bg-emerald-900/20 px-4 py-3 text-sm text-emerald-800 dark:text-emerald-200">
-                <b>영역 지정 후 분석</b>만 지원합니다. 한 장에 여러 그릇이 있을
-                경우, 각 그릇을 캡쳐하여 저장해 둔 뒤 아래 전역 버튼으로
+              <div className="rounded-xl border border-purple-300/60 dark:border-purple-700/60 bg-purple-50/70 dark:bg-purple-900/20 px-4 py-3 text-sm text-purple-900 dark:text-purple-200">
+                <b>캡쳐 후 분석</b>만 지원합니다. 한 장에 여러 그릇이 있다면, 각
+                그릇을 <b>캡쳐</b>로 저장해 둔 뒤 아래 <b>전체 분석</b> 버튼으로
                 분석하세요.
               </div>
 
-              <div className="border-2 border-dashed border-green-300 dark:border-green-700 rounded-2xl p-8 text-center bg-gradient-to-br from-green-50/60 to-sky-50/60 dark:from-green-900/20 dark:to-sky-900/20">
+              <div className="border-2 border-dashed border-purple-300 dark:border-purple-700 rounded-2xl p-8 text-center bg-gradient-to-br from-purple-50/60 to-pink-50/60 dark:from-purple-900/20 dark:to-pink-900/20">
                 <input
                   ref={fileInputRef}
                   type="file"
@@ -655,13 +653,13 @@ export default function ReviewWritePage() {
                 <Button
                   variant="outline"
                   onClick={() => fileInputRef.current?.click()}
-                  className="bg-white/80 dark:bg-gray-800/80 backdrop-blur-sm hover:bg-white dark:hover:bg-gray-800 border-green-200 dark:border-green-700 rounded-xl"
+                  className="bg-white/80 dark:bg-gray-800/80 backdrop-blur-sm hover:bg-white dark:hover:bg-gray-800 border-purple-200 dark:border-purple-700 rounded-xl"
                 >
                   <Upload className="h-4 w-4 mr-2" />
                   사진 선택
                 </Button>
                 <p className="text-sm text-gray-600 dark:text-gray-300 mt-3">
-                  사진 업로드 → 영역 지정 → 캡쳐 → <b>아래 전역 버튼으로 분석</b>.
+                  사진 업로드 → <b>캡쳐</b> 저장 → <b>아래 전체 분석</b>.
                 </p>
               </div>
 
@@ -685,26 +683,19 @@ export default function ReviewWritePage() {
                               alt="업로드"
                               className="w-full h-48 object-cover"
                             />
-                            <div className="absolute top-2 left-2 rounded-full bg-white/90 dark:bg-gray-800/90 px-3 py-1 text-[11px] font-medium text-emerald-700 dark:text-emerald-300 border border-emerald-200/70 dark:border-emerald-700/40 shadow-sm">
+                            <div className="absolute top-2 left-2 rounded-full bg-white/90 dark:bg-gray-800/90 px-3 py-1 text-[11px] font-medium text-purple-700 dark:text-purple-300 border border-purple-200/70 dark:border-purple-700/40 shadow-sm">
                               식사 후 (고정)
                             </div>
                             <div className="absolute top-2 right-2 flex gap-2">
-                              <Button
-                                variant="secondary"
-                                size="sm"
-                                className="rounded-full"
-                                onClick={() => openCropFor(image.id)}
-                                title="영역 지정(확대/드래그)"
-                              >
-                                <CropIcon className="h-4 w-4" />
-                              </Button>
+                              {/* 상단 작은 캡쳐 버튼 삭제, 삭제만 유지 */}
                               <Button
                                 variant="destructive"
                                 size="sm"
                                 className="rounded-full"
                                 onClick={() => removeImage(image.id)}
+                                title="삭제"
                               >
-                                삭제
+                                <Trash2 className="h-4 w-4" />
                               </Button>
                             </div>
                           </div>
@@ -713,13 +704,12 @@ export default function ReviewWritePage() {
                             {(image.multiCrops?.length ?? 0) > 0 ? (
                               <div className="space-y-3">
                                 <div className="text-xs text-gray-600 dark:text-gray-300">
-                                  저장된 영역들{" "}
+                                  저장된 캡쳐{" "}
                                   <span className="ml-1 font-semibold">
                                     ({image.multiCrops!.length})
                                   </span>
                                 </div>
 
-                                {/* 가로형 레이아웃 + 가독성 강화 */}
                                 <div className="flex gap-3 overflow-x-auto pb-1 md:flex-wrap md:overflow-x-visible">
                                   {image.multiCrops!.map((crop) => (
                                     <div
@@ -733,10 +723,10 @@ export default function ReviewWritePage() {
                                       />
                                       <div className="p-3 flex flex-col gap-2 text-sm">
                                         <div className="flex items-center justify-between">
-                                          <span className="text-sm font-bold text-emerald-600 dark:text-emerald-300">
+                                          <span className="text-sm font-bold text-purple-600 dark:text-purple-300">
                                             {typeof crop.ai?.score === "number"
                                               ? `${crop.ai.score.toFixed(1)}★`
-                                              : "미분석"}
+                                              : ""}
                                           </span>
                                           {crop.ai?.scoreLabel && (
                                             <span className="text-[11px] px-2 py-0.5 rounded-full border text-gray-600 dark:text-gray-200">
@@ -744,6 +734,13 @@ export default function ReviewWritePage() {
                                             </span>
                                           )}
                                         </div>
+
+                                        {/* 미분석 중앙 정렬 */}
+                                        {!crop.ai && (
+                                          <div className="w-full text-center text-[13px] text-gray-500">
+                                            미분석
+                                          </div>
+                                        )}
 
                                         {crop.ai?.ownerAnalysis && (
                                           <p className="text-[13px] leading-[1.35] text-gray-800 dark:text-gray-200 break-words">
@@ -769,20 +766,20 @@ export default function ReviewWritePage() {
                               </div>
                             ) : (
                               <div className="mt-2 text-xs text-gray-500">
-                                아직 저장된 영역이 없습니다. 상단{" "}
-                                <b>영역 지정</b> 버튼으로 원하는 부분을
-                                캡쳐하세요.
+                                아직 저장된 캡쳐가 없습니다. 아래{" "}
+                                <b>캡쳐</b> 버튼으로 원하는 부분을 저장하세요.
                               </div>
                             )}
 
                             <div className="mt-4">
+                              {/* 하단 메인 버튼: 영역 지정 -> 캡쳐로 이름 변경 */}
                               <Button
                                 variant="outline"
                                 onClick={() => openCropFor(image.id)}
-                                className="w-full rounded-xl border-emerald-200 dark:border-emerald-800"
+                                className="w-full rounded-xl border-purple-200 dark:border-purple-800"
                               >
                                 <Sparkles className="h-4 w-4 mr-2" />
-                                영역 지정
+                                캡쳐
                               </Button>
                             </div>
                           </CardContent>
@@ -796,10 +793,10 @@ export default function ReviewWritePage() {
                     <Button
                       disabled={isAnalyzing}
                       onClick={runAnalyzeAll}
-                      className="w-full gap-2 rounded-xl bg-emerald-600 hover:bg-emerald-700"
+                      className="w-full gap-2 rounded-xl bg-purple-600 hover:bg-purple-700"
                     >
                       <Sparkles className="w-4 h-4" />
-                      영역 지정 후 분석
+                      캡쳐 후 분석
                     </Button>
                     {isAnalyzing && (
                       <div className="mt-2">
@@ -812,7 +809,7 @@ export default function ReviewWritePage() {
             </CardContent>
           </Card>
 
-          {/* AI 종합 점수 (요약 섹션 없음) */}
+          {/* AI 종합 점수 */}
           {avgScore5 > 0 && (
             <Card className="backdrop-blur-xl bg-white/85 dark:bg-gray-900/85 border-white/20 shadow-xl rounded-2xl">
               <CardHeader>
@@ -824,7 +821,7 @@ export default function ReviewWritePage() {
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-5">
-                <div className="bg-gradient-to-r from-green-50 to-sky-50 dark:from-green-900/20 dark:to-sky-900/20 p-6 rounded-2xl border border-green-200 dark:border-green-700">
+                <div className="bg-gradient-to-r from-purple-50 to-pink-50 dark:from-purple-900/20 dark:to-pink-900/20 p-6 rounded-2xl border border-purple-200 dark:border-purple-700">
                   <div className="flex items-center justify-between mb-4">
                     <span className="text-lg font-semibold text-gray-800 dark:text-gray-200">
                       잔반 없음 별점(평균)
@@ -836,28 +833,27 @@ export default function ReviewWritePage() {
                             key={i}
                             className={`h-6 w-6 ${
                               i < Math.round(avgScore5)
-                                ? "text-green-500 fill-green-500"
+                                ? "text-purple-500 fill-purple-500"
                                 : "text-gray-300"
                             }`}
                           />
                         ))}
                       </div>
-                      <span className="text-lg font-bold bg-gradient-to-r from-green-600 to-sky-600 bg-clip-text text-transparent">
+                      <span className="text-lg font-bold bg-gradient-to-r from-purple-600 to-pink-600 bg-clip-text text-transparent">
                         {avgScore5.toFixed(1)} / 5
                       </span>
                     </div>
                   </div>
                   <Progress value={avgScore100} className="h-3" />
                   <p className="text-xs text-gray-600 dark:text-gray-300 mt-2">
-                    * 각 사진의 <b>크롭 점수 평균</b>(없으면 대표 점수)의
-                    평균입니다.
+                    * 각 사진의 <b>캡쳐 점수 평균</b>(없으면 대표 점수)의 평균입니다.
                   </p>
                 </div>
               </CardContent>
             </Card>
           )}
 
-          {/* 스탬프 */}
+          {/* 스탬프 카드 (기존 유지) */}
           {earnedStamp && avgScore5 >= 4 && (
             <motion.div
               initial={{ opacity: 0, y: 16, scale: 0.98 }}
@@ -883,7 +879,12 @@ export default function ReviewWritePage() {
                     <motion.div
                       initial={{ scale: 0 }}
                       animate={{ scale: 1 }}
-                      transition={{ type: "spring", stiffness: 300, damping: 12, delay: 0.05 }}
+                      transition={{
+                        type: "spring",
+                        stiffness: 300,
+                        damping: 12,
+                        delay: 0.05,
+                      }}
                       className="w-14 h-14 rounded-full bg-gradient-to-br from-purple-500 to-pink-500 text-white shadow-lg border-2 border-purple-400 flex items-center justify-center"
                     >
                       <StampIcon className="h-7 w-7" />
@@ -930,7 +931,7 @@ export default function ReviewWritePage() {
                       value={comment}
                       onChange={(e) => setComment(e.target.value)}
                       placeholder="식사 경험을 적어주세요…"
-                      className="bg-white/60 dark:bg-gray-800/60 border-gray-200 dark:border-gray-700 focus:border-green-500 focus:ring-green-500/20 rounded-xl"
+                      className="bg-white/60 dark:bg-gray-800/60 border-gray-200 dark:border-gray-700 focus:border-purple-500 focus:ring-purple-500/20 rounded-xl"
                       maxLength={500}
                     />
                     <p className="text-xs text-gray-500 dark:text-gray-400">
@@ -942,7 +943,7 @@ export default function ReviewWritePage() {
                     <Button
                       type="submit"
                       disabled={!canSubmit || submitting}
-                      className="w-full h-12 bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white font-medium shadow-lg hover:shadow-xl transition-all duration-300 rounded-xl"
+                      className="w-full h-12 bg-gradient-to-r from-purple-500 to-pink-600 hover:from-purple-600 hover:to-pink-700 text-white font-medium shadow-lg hover:shadow-xl transition-all duration-300 rounded-xl"
                     >
                       {submitting ? "제출 중…" : "리뷰 제출"}
                     </Button>
@@ -956,8 +957,8 @@ export default function ReviewWritePage() {
                     >
                       <AlertCircle className="h-4 w-4" />
                       <span>
-                        사진 업로드, <b>영역 캡쳐 후 분석</b>, 코멘트를 완료하면
-                        제출할 수 있어요.
+                        사진 업로드, <b>캡쳐 후 분석</b>, 코멘트를 완료하면 제출할 수
+                        있어요.
                       </span>
                     </motion.div>
                   )}

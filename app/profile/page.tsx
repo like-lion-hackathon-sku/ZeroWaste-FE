@@ -1,7 +1,7 @@
 // app/profile/page.tsx
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useState, useCallback } from "react"
 import { motion } from "framer-motion"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -10,19 +10,20 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Progress } from "@/components/ui/progress"
 import {
   ArrowLeft, User, Star, Heart, Award, Users, Edit, Loader2, Trash2,
-  MapPin, Phone, Leaf, Store, UserCheck, Plus, Stamp, ChevronLeft, ChevronRight,
-  QrCode, ShieldCheck, TimerReset,
+  MapPin, Phone, Leaf, Store, UserCheck, Plus, Stamp as StampIcon,
+  ChevronLeft, ChevronRight, QrCode, ShieldCheck, TimerReset,
 } from "lucide-react"
 import { useRouter } from "next/navigation"
 
 // ✅ Zustand
 import { useUserStore } from "@/lib/state/user"
 
-// ✅ 데이터 훅(즐겨찾기/리뷰/뱃지)
-import { useUserBadges, useFavorites, useUserReviews } from "@/lib/hooks/use-api-with-fallback"
+// ✅ 데이터 훅 (즐겨찾기/리뷰) — 뱃지는 FE 계산
+import { useFavorites, useUserReviews } from "@/lib/hooks/use-api-with-fallback"
 
 // ✅ API 클라이언트
 import { apiClient } from "@/lib/api/client"
+
 import { formatDate } from "@/lib/utils/database-helpers"
 import { UserRole } from "@/lib/types/database"
 
@@ -41,164 +42,122 @@ type TabKey = "리뷰" | "즐겨찾기" | "스탬프" | "뱃지" | "restaurant" 
 const toArray = <T,>(v: any): T[] => (Array.isArray(v) ? v : (v?.items ?? v?.success?.items ?? []))
 
 type RestaurantLite = { id: number; name: string; category?: string | null; address?: string | null; telephone?: string | null }
-type FavoriteItem = { id?: number; restaurant_id: number | null; restaurant?: RestaurantLite; name?: string; category?: string | null; restaurantId?: number; address?: string | null; telephone?: string | null }
+type FavoriteItem = { id?: number; restaurant_id: number | null; restaurant?: RestaurantLite }
 type ReviewVM = { id: number | string; restaurant?: { id: number; name: string; category?: string | null }; waste_rating: number; comment: string; created_at?: string | null }
-type OwnerRestaurant = { id: number; name: string; category?: string | null; address?: string | null; telephone?: string | null; rating?: number; reviewCount?: number }
 type RestaurantStamp = { restaurantId: number; restaurantName: string; totalStamps: number; maxStamps: number }
-type StampHistoryItem = {
-  id: number | string
-  restaurantId: number
-  restaurantName: string
-  type: "earn" | "use"
-  count: number
-  created_at?: string | null
+type StampHistoryVM = { id: number | string; restaurantId: number; restaurantName: string; type: "earn" | "use"; count: number; created_at?: string | null }
+
+function stringHash(s: string): number {
+  let h = 0
+  for (let i = 0; i < s.length; i++) { h = (h * 31 + s.charCodeAt(i)) | 0 }
+  return Math.abs(h) || 1
 }
 
 /* ─────────────────────────────────────────────────────────
-   스탬프 훅들 (API/ERD 포맷 모두 지원 + 폴백 포함)
-────────────────────────────────────────────────────────── */
-/* ─────────────────────────────────────────────────────────
-   스탬프 훅 (Swagger 응답: { success: { stamps: [] } } 대응)
+   스탬프 훅들 (BE 스펙 대응)
 ────────────────────────────────────────────────────────── */
 const useUserStampsData = () => {
   const [stamps, setStamps] = useState<RestaurantStamp[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [isUsingFallback, setIsUsingFallback] = useState(false)
 
-  // 폴백(목업)
-  const MOCK: RestaurantStamp[] = [
-    { restaurantId: 101, restaurantName: "그린 비스트로", totalStamps: 7, maxStamps: 5 },
-    { restaurantId: 202, restaurantName: "제로웨이스트 키친", totalStamps: 3, maxStamps: 5 },
-  ]
+  const refetch = useCallback(async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const res = await apiClient.getMyStamps()
+      if (!res?.success) throw new Error(res?.error || "failed")
 
-  useEffect(() => {
-    let ignore = false
-    ;(async () => {
-      setLoading(true)
-      setError(null)
-      try {
-        const res = await apiClient.getUserStamps()
-        if (!res?.success) throw new Error(res?.error || "failed")
-
-        // ✅ Swagger 구조를 우선 반영: res.data.success.stamps
-        // (백엔드에 따라 res.data 또는 res.data.items 형태도 유연하게 처리)
-        const raw = Array.isArray((res.data as any)?.stamps)
-          ? (res.data as any).stamps
-          : Array.isArray((res.data as any)?.success?.stamps)
-          ? (res.data as any).success.stamps
-          : Array.isArray(res.data)
-          ? (res.data as any)
-          : Array.isArray((res.data as any)?.items)
-          ? (res.data as any).items
-          : []
-
-        // ✅ 표준화: 레스토랑별 보유 개수로 변환
-        // - { restaurant: {id,name}, count } 혹은 { stamps: [...] } 등 다양한 경우 대응
-        const out: RestaurantStamp[] = raw.map((row: any) => {
-          const rid =
-            Number(row?.restaurant_id ?? row?.restaurantId ?? row?.restaurant?.id ?? row?.id)
-          const rname =
-            row?.restaurant?.name ??
-            row?.restaurantName ??
-            row?.name ??
-            (Number.isFinite(rid) ? `식당 ${rid}` : "식당")
-
-          // 서버가 count를 주면 우선 사용, 없으면 배열 길이 추정
-          const count =
-            Number(row?.count ?? row?.total ?? row?.totalStamps) ||
-            (Array.isArray(row?.stamps) ? row.stamps.length : 0)
-
-          return {
-            restaurantId: rid || 0,
-            restaurantName: rname,
-            totalStamps: Math.max(0, count),
-            maxStamps: 5,
-          } as RestaurantStamp
+      // BE 표준: { success: { stamps: [{ restaurant: "하오하오즈", count: 3 }, ...] } }
+      const raw = Array.isArray(res.data) ? res.data : (res as any)?.data?.stamps ?? []
+      // A) [{ restaurant: string, count: number }]
+      if (raw.length > 0 && typeof raw[0]?.restaurant === "string" && "count" in raw[0]) {
+        const out: RestaurantStamp[] = raw.map((r: any) => {
+          const name = String(r.restaurant)
+          const rid = stringHash(name)
+          const cnt = Number(r.count ?? 0)
+          return { restaurantId: rid, restaurantName: name, totalStamps: Math.max(0, cnt), maxStamps: 5 }
         })
-
-        if (!ignore) {
-          setStamps(out)
-          setIsUsingFallback(false)
+        setStamps(out)
+      } else {
+        // B) (fallback) 개별 스탬프 배열 → 미사용 합산
+        const counter = new Map<number, { name: string; count: number }>()
+        for (const r of raw as any[]) {
+          const rid = Number(r?.restaurant_id ?? r?.restaurantId ?? 0)
+          const usedAt = r?.used_at ?? r?.usedAt
+          if (usedAt) continue
+          const name = typeof r?.restaurant === "string" ? r.restaurant : r?.restaurant?.name ?? (rid ? `식당 ${rid}` : "알 수 없음")
+          const key = Number.isFinite(rid) && rid > 0 ? rid : stringHash(name)
+          const prev = counter.get(key)
+          if (prev) prev.count += 1
+          else counter.set(key, { name, count: 1 })
         }
-      } catch (e) {
-        if (!ignore) {
-          setStamps(MOCK)
-          setIsUsingFallback(true)
-          setError(e instanceof Error ? e.message : "failed to load stamps")
-        }
-      } finally {
-        if (!ignore) setLoading(false)
+        const out: RestaurantStamp[] = Array.from(counter.entries()).map(([rid, { name, count }]) => ({
+          restaurantId: rid, restaurantName: name, totalStamps: count, maxStamps: 5,
+        }))
+        setStamps(out)
       }
-    })()
-    return () => {
-      ignore = true
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "failed to load stamps")
+      setStamps([])
+    } finally {
+      setLoading(false)
     }
   }, [])
 
-  return { stamps, loading, error, isUsingFallback }
+  useEffect(() => { refetch() }, [refetch])
+
+  return { stamps, loading, error, refetch }
 }
 
-
 const useUserStampHistory = () => {
-  const [items, setItems] = useState<StampHistoryItem[]>([])
+  const [items, setItems] = useState<StampHistoryVM[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [isUsingFallback, setIsUsingFallback] = useState(false)
 
-  const MOCK: StampHistoryItem[] = [
-    { id: "m1", restaurantId: 101, restaurantName: "그린 비스트로", type: "earn", count: 1, created_at: new Date(Date.now()-864e5).toISOString() },
-    { id: "m2", restaurantId: 101, restaurantName: "그린 비스트로", type: "use",  count: 3, created_at: new Date(Date.now()-36e5).toISOString() },
-  ]
+  const refetch = useCallback(async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const res = await apiClient.getMyStampHistory()
+      if (!res?.success) throw new Error(res?.error || "failed")
+      const rows = Array.isArray(res.data) ? res.data : []
 
-  useEffect(() => {
-    let ignore = false
-    ;(async () => {
-      setLoading(true); setError(null)
-      try {
-        const res = await apiClient.getUserStampHistory()
-        if (!res?.success) throw new Error(res?.error || "failed")
+      const mapped: StampHistoryVM[] = rows.map((r: any): StampHistoryVM => {
+        const ridRaw = Number(r?.restaurant_id ?? r?.restaurantId ?? 0)
+        const rname = typeof r?.restaurant === "string"
+          ? r.restaurant
+          : r?.restaurant?.name ?? (ridRaw ? `식당 ${ridRaw}` : "식당 정보 없음")
 
-        const raw = Array.isArray(res.data) ? res.data : (res.data as any)?.items ?? []
-        const norm: StampHistoryItem[] = raw.map((r: any) => {
-          const rid = Number(r?.restaurant_id ?? r?.restaurantId ?? r?.restaurant?.id)
-          const rname = r?.restaurant?.name ?? r?.restaurantName ?? (Number.isFinite(rid) ? `식당 ${rid}` : "식당")
-          const isUse =
-            String(r?.type || "").toLowerCase() === "use" ||
-            r?.action === "USE" ||
-            r?.used === true ||
-            "stamp_reward_id" in (r || {}) ||
-            "code" in (r || {})
+        const rid = Number.isFinite(ridRaw) && ridRaw > 0 ? ridRaw : stringHash(String(rname ?? ""))
+        const isUse: boolean = Boolean(r?.used_at ?? r?.expiredAt ?? r?.stamp_reward_id)
 
-          return {
-            id: r?.id ?? crypto.getRandomValues(new Uint32Array(2)).join("-"),
-            restaurantId: rid || 0,
-            restaurantName: rname,
-            type: isUse ? "use" : "earn",
-            count: Number(r?.count ?? r?.stamps ?? r?.units ?? 1),
-            created_at: r?.createdAt ?? r?.created_at ?? null,
-          }
-        }).sort((a,b) => (new Date(b.created_at||0).getTime() - new Date(a.created_at||0).getTime()))
-
-        if (!ignore) { setItems(norm); setIsUsingFallback(false) }
-      } catch (e) {
-        if (!ignore) {
-          setItems(MOCK)
-          setIsUsingFallback(true)
-          setError(e instanceof Error ? e.message : "failed to load history")
+        return {
+          id: r?.id ?? crypto.getRandomValues(new Uint32Array(2)).join("-"),
+          restaurantId: rid,
+          restaurantName: String(rname ?? ""),
+          type: (isUse ? "use" : "earn"),
+          count: Number(r?.count ?? 1),
+          created_at: r?.created_at ?? r?.createdAt ?? null,
         }
-      } finally {
-        if (!ignore) setLoading(false)
-      }
-    })()
-    return () => { ignore = true }
+      })
+
+      mapped.sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime())
+      setItems(mapped)
+    } catch (e) {
+      setItems([])
+      setError(e instanceof Error ? e.message : "failed to load history")
+    } finally {
+      setLoading(false)
+    }
   }, [])
 
-  return { items, loading, error, isUsingFallback }
+  useEffect(() => { refetch() }, [refetch])
+  return { items, loading, error, refetch }
 }
 
 /* ─────────────────────────────────────────────────────────
-   얇은 래퍼: 로그인 여부만 보고 분기 (훅 거의 없음)
+   얇은 래퍼: 로그인 여부만 보고 분기
 ────────────────────────────────────────────────────────── */
 export default function ProfilePage() {
   const me = useUserStore((s) => s.user)
@@ -220,7 +179,7 @@ function LoginGate() {
 }
 
 /* ─────────────────────────────────────────────────────────
-   본 뷰: 모든 훅은 여기에서만 실행 → 훅 순서 고정
+   본 뷰
 ────────────────────────────────────────────────────────── */
 function LoggedInProfileView() {
   const router = useRouter()
@@ -228,44 +187,39 @@ function LoggedInProfileView() {
   const [userRole, setUserRole] = useState<UserRole>(UserRole.USER)
 
   // ✅ 스토어 사용자
-  const me = useUserStore((s) => s.user) as { nickname?: string; email?: string; created_at?: string | null; profile?: string | null }
+  const me = useUserStore((s) => s.user) as { id?: number; userId?: number; nickname?: string; email?: string; created_at?: string | null; profile?: string | null }
 
-  // ✅ 데이터 훅들 (항상 호출)
-  const { data: badges } = useUserBadges()
+  // ✅ 데이터 훅들
   const { data: favorites, loading: favoritesLoading, isUsingFallback: favoritesFallback } = useFavorites()
   const { data: reviews, loading: reviewsLoading, isUsingFallback: reviewsFallback } = useUserReviews()
 
-  const { stamps: restaurantStamps, loading: stampsLoading, isUsingFallback: stampsFallback } = useUserStampsData()
-  const { items: stampHistory, loading: historyLoading, isUsingFallback: historyFallback } = useUserStampHistory()
+  const { stamps: restaurantStamps, loading: stampsLoading, error: stampsError, refetch: refetchStamps } = useUserStampsData()
+  const { items: stampHistory, loading: historyLoading, error: historyError, refetch: refetchHistory } = useUserStampHistory()
 
   const isLoading = favoritesLoading || reviewsLoading || stampsLoading || historyLoading
 
-  // 즐겨찾기/리뷰/사장 식당 상태
+  // 즐겨찾기/리뷰 상태
   type ValidFavorite = FavoriteItem & { restaurant_id: number; restaurant: RestaurantLite }
   const [favList, setFavList] = useState<ValidFavorite[]>([])
   const [removingId, setRemovingId] = useState<number | null>(null)
   const [reviewList, setReviewList] = useState<ReviewVM[]>([])
   const [deletingId, setDeletingId] = useState<number | string | null>(null)
 
+  // 내 식당(사업자) 목록 (간단 노출)
+  type OwnerRestaurant = { id: number; name: string; category?: string | null; address?: string | null; telephone?: string | null; rating?: number; reviewCount?: number }
   const [ownerRestaurants, setOwnerRestaurants] = useState<OwnerRestaurant[]>([])
+
   useEffect(() => {
     let ignore = false
     ;(async () => {
       try {
         const res = await apiClient.getBusinessRestaurants()
         if (!res.success) throw new Error(res.error || "목록 로드 실패")
-  
         const data = (res.data ?? []) as any
-        const list: any[] = Array.isArray(data?.items)
-          ? data.items
-          : Array.isArray(data)
-          ? data
-          : []
-  
+        const list: any[] = Array.isArray(data?.items) ? data.items : Array.isArray(data) ? data : []
         const norm: OwnerRestaurant[] = list.map((r: any) => ([
           "id","name","category","address","telephone","rating","reviewCount"
         ] as const).reduce((acc,k)=>({...acc,[k]: r?.[k]}), {} as OwnerRestaurant)) as any
-  
         if (!ignore) setOwnerRestaurants(norm)
       } catch (e) {
         console.error(e)
@@ -281,19 +235,13 @@ function LoggedInProfileView() {
     if (!res.success) return alert(res.error || "삭제 실패")
     setOwnerRestaurants((prev) => prev.filter((r) => r.id !== id))
   }
-  
-  const handleQuickEdit = async (id: number, patch: { name?: string; category?: string; address?: string; telephone?: string }) => {
-    const res = await apiClient.updateBusinessRestaurant(id, patch)
-    if (!res.success) return alert(res.error || "수정 실패")
-    setOwnerRestaurants((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)))
-  }
 
   const ownerStats = useMemo(() => {
     const totalReceivedReviews = ownerRestaurants.reduce((s, r) => s + (r.reviewCount || 0), 0)
     const avgOwnerRating = ownerRestaurants.length > 0
       ? ownerRestaurants.reduce((s, r) => s + (r.rating || 0), 0) / ownerRestaurants.length
       : 0
-    const totalFavorites = ownerRestaurants.length * 156
+    const totalFavorites = ownerRestaurants.length * 156 // 대략값(예시)
     return { totalRestaurants: ownerRestaurants.length, totalReceivedReviews, avgOwnerRating: Math.round(avgOwnerRating * 10) / 10, totalFavorites }
   }, [ownerRestaurants])
 
@@ -327,40 +275,6 @@ function LoggedInProfileView() {
       created_at: r?.createdAt ?? r?.created_at ?? null,
     }))
     setReviewList(base)
-
-    const needIds = Array.from(new Set(
-      base.filter((v) => v.restaurant && (!v.restaurant.name || v.restaurant.name === "식당 정보 없음"))
-          .map((v) => v.restaurant!.id)
-          .filter((id): id is number => Number.isFinite(id)),
-    ))
-    if (needIds.length === 0) return
-
-    const cache = new Map<number, { name: string; category?: string | null }>()
-    ;(async () => {
-      const patched = await Promise.all(
-        base.map(async (v) => {
-          if (!v.restaurant) return v
-          const rid = v.restaurant.id
-          if (v.restaurant.name && v.restaurant.name !== "식당 정보 없음") return v
-          if (cache.has(rid)) {
-            const c = cache.get(rid)!
-            return { ...v, restaurant: { id: rid, name: c.name, category: c.category ?? null } }
-          }
-          try {
-            const resp = await apiClient.getRestaurantDetail(rid)
-            if (resp.success) {
-              const d: any = resp.data
-              const name = d?.name ?? "식당 정보 없음"
-              const category = d?.category ?? null
-              cache.set(rid, { name, category })
-              return { ...v, restaurant: { id: rid, name, category } }
-            }
-          } catch {}
-          return v
-        }),
-      )
-      setReviewList(patched)
-    })()
   }, [reviews])
 
   const handleDeleteReview = async (id: number | string) => {
@@ -387,64 +301,38 @@ function LoggedInProfileView() {
     return Math.max(0, Math.min(5, Math.round((sum / total) * 10) / 10))
   }, [reviewList])
 
-  /* ───────────── Badge 계산(리뷰 기반) ─────────────
-     - totalReviews: 누적 리뷰 수
-     - uniqueRestaurants: 서로 다른 식당 수
-     - badgeRules: 진행 규칙(필요 시 언제든 추가/변경)
-  */
+  // FE 뱃지 계산
   const badgeStats = useMemo(() => {
     const totalReviews = reviewList.length
-    const uniqueRestaurants = new Set(
-      reviewList.map((r) => r.restaurant?.id).filter(Boolean)
-    ).size
+    const uniqueRestaurants = new Set(reviewList.map((r) => r.restaurant?.id).filter(Boolean)).size
     return { totalReviews, uniqueRestaurants }
   }, [reviewList])
 
   const badgeRules = useMemo(() => ([
-    // 누적 리뷰 수
     { id: "good_customer_lv1", name: "착한 손님 Lv.1", icon: "🥢", description: "누적 리뷰 10개",  progress: badgeStats.totalReviews,     target: 10 },
     { id: "good_customer_lv2", name: "착한 손님 Lv.2", icon: "🍴", description: "누적 리뷰 30개",  progress: badgeStats.totalReviews,     target: 30 },
     { id: "good_customer_lv3", name: "착한 손님 Lv.3", icon: "🍃", description: "누적 리뷰 50개",  progress: badgeStats.totalReviews,     target: 50 },
-    // 다양한 식당 수
     { id: "food_explorer_lv1", name: "다양한 미식가 Lv.1", icon: "🌮", description: "서로 다른 식당 5곳 리뷰",  progress: badgeStats.uniqueRestaurants, target: 5 },
     { id: "food_explorer_lv2", name: "다양한 미식가 Lv.2", icon: "🍜", description: "서로 다른 식당 10곳 리뷰", progress: badgeStats.uniqueRestaurants, target: 10 },
     { id: "food_explorer_lv3", name: "다양한 미식가 Lv.3", icon: "🍣", description: "서로 다른 식당 20곳 리뷰", progress: badgeStats.uniqueRestaurants, target: 20 },
   ]), [badgeStats])
 
-  const earnedBadges = useMemo(
-    () => badgeRules.filter(b => b.progress >= b.target),
-    [badgeRules]
-  )
-  const inProgressBadges = useMemo(
-    () => badgeRules.filter(b => b.progress < b.target),
-    [badgeRules]
-  )
-  // 상단 카드에 표시할 획득 뱃지 카운트는 FE 계산치 사용
+  const earnedBadges = useMemo(() => badgeRules.filter(b => b.progress >= b.target), [badgeRules])
+  const inProgressBadges = useMemo(() => badgeRules.filter(b => b.progress < b.target), [badgeRules])
   const earnedBadgesCount = earnedBadges.length
 
   const handleRoleSwitch = () => {
-    if (userRole === UserRole.USER) {
-      setUserRole(UserRole.OWNER); setActiveTab("restaurant")
-    } else {
-      setUserRole(UserRole.USER); setActiveTab("리뷰")
-    }
+    if (userRole === UserRole.USER) { setUserRole(UserRole.OWNER); setActiveTab("restaurant") }
+    else { setUserRole(UserRole.USER); setActiveTab("리뷰") }
   }
 
-  // ───────────── 스탬프: ‘개수’ 단위 사용 + 페이징 ─────────────
+  // ───────────── 스탬프(개수) 사용/페이징 로직 ─────────────
   const [pageByRestaurant, setPageByRestaurant] = useState<Record<number, number>>({})
-  const [usedUnitsByRestaurant, setUsedUnitsByRestaurant] = useState<Record<number, number>>({})
-
-  const getAvailable = (s: RestaurantStamp) =>
-    Math.max(0, s.totalStamps - (usedUnitsByRestaurant[s.restaurantId] ?? 0))
-
   const getCurrentPage = (rid: number) => pageByRestaurant[rid] ?? 1
   const setPage = (rid: number, page: number) =>
     setPageByRestaurant((p) => ({ ...p, [rid]: Math.max(1, page) }))
 
-  const getTotalPages = (s: RestaurantStamp) =>
-    Math.max(1, Math.ceil(getAvailable(s) / s.maxStamps))
-
-  // 🔶 “사용하기” → 개수 선택 다이얼로그 & QR
+  // ✅ "사용하기" 다이얼로그 상태 (BE 세션 코드 기반)
   type StampDialogState =
     | { open: false }
     | {
@@ -454,16 +342,16 @@ function LoggedInProfileView() {
         maxUsable: number
         count: number
         generating: boolean
-        token?: string
-        payload?: string
-        expiresAt?: number
+        code?: string           // BE가 발급한 세션 코드
+        condition?: number      // 사용 조건(=사용 개수)
+        expiresAt?: number      // (선택) 타이머용
         remainSec?: number
       }
 
   const [stampDialog, setStampDialog] = useState<StampDialogState>({ open: false })
 
   const openUseDialog = (s: RestaurantStamp) => {
-    const avail = getAvailable(s)
+    const avail = s.totalStamps
     const maxUsable = Math.min(10, avail)
     if (avail < 3) {
       alert("스탬프가 3개 이상일 때만 사용할 수 있어요.")
@@ -479,67 +367,61 @@ function LoggedInProfileView() {
     })
   }
 
+  // ✅ BE 스펙: POST /stamps/me/use { restaurantId, condition } → { code }
+  const createUseSession = async (restaurantId: number, condition: number) => {
+    const base = process.env.NEXT_PUBLIC_API_URL || "/_be"
+    const res = await fetch(`${base}/stamps/me/use`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify({ restaurantId, condition }),
+    })
+    if (!res.ok) {
+      const txt = await res.text().catch(() => "")
+      // BE는 throw 시 error.message를 내려줘. 여기서 그대로 표출
+      throw new Error(txt || `HTTP ${res.status}`)
+    }
+    const json = await res.json().catch(() => ({}))
+    // { resultType: "SUCCESS", success: { code: "uuid..." } } 형태 지원
+    const code = json?.success?.code ?? json?.code
+    if (!code) throw new Error("세션 코드 발급 실패")
+    return String(code)
+  }
+
   async function generateUseQR(restaurant: RestaurantStamp, count: number) {
     try {
       setStampDialog((s) => ({ ...(s as any), generating: true }))
-      const be = await (apiClient as any).createStampUseIntent?.({
-        restaurantId: restaurant.restaurantId,
-        count,
-      })
-      let token = ""
-      let payload = ""
-      let expiresAt = Date.now() + 2 * 60 * 1000
+      const code = await createUseSession(restaurant.restaurantId, count)
 
-      if (be?.success) {
-        token = be.data?.token ?? ""
-        payload = be.data?.payload ?? ""
-        if (be.data?.expiresAt) expiresAt = new Date(be.data.expiresAt).getTime()
-      } else {
-        // 폴백: 로컬 페이로드
-        const nonce = crypto.getRandomValues(new Uint32Array(4)).join("-")
-        token = `local-${nonce}`
-        const userId = (me as any)?.id ?? (me as any)?.userId ?? "me"
-        const now = Date.now()
-        expiresAt = now + 2 * 60 * 1000
-        const localPayload = {
-          ver: 1,
-          type: "stamp.use",
-          rid: restaurant.restaurantId,
-          rname: restaurant.restaurantName,
-          uid: userId,
-          count,
-          ts: now,
-          exp: expiresAt,
-          nonce,
-        }
-        payload = JSON.stringify(localPayload)
-      }
+      // QR은 "사장님 단말이 이 code를 읽어서 /biz/stamps/use 로 사용 완료" 하는 흐름
+      // 유효시간은 백엔드에서 관리(여기서는 안내용 타이머만)
+      const expiresAt = Date.now() + 2 * 60 * 1000
 
       setStampDialog({
         open: true,
         step: "qr",
         restaurant,
-        maxUsable: Math.min(10, getAvailable(restaurant)),
+        maxUsable: Math.min(10, restaurant.totalStamps),
         count,
         generating: false,
-        token,
-        payload: payload || token,
+        code,
+        condition: count,
         expiresAt,
         remainSec: Math.max(0, Math.ceil((expiresAt - Date.now()) / 1000)),
       })
     } catch (e) {
       console.error(e)
-      alert("QR 생성에 실패했어요. 잠시 후 다시 시도해주세요.")
+      alert(e instanceof Error ? e.message : "QR 생성(세션 발급)에 실패했어요.")
       setStampDialog((s) => ({ ...(s as any), generating: false }))
     }
   }
 
   // 남은 시간 타이머
   useEffect(() => {
-    if (!stampDialog.open || stampDialog.step !== "qr" || !stampDialog.expiresAt) return
+    if (!(stampDialog.open && stampDialog.step === "qr" && stampDialog.expiresAt)) return
     const tick = () => {
       setStampDialog((s) => {
-        if (!s.open || s.step !== "qr" || !s.expiresAt) return s
+        if (!(s.open && s.step === "qr" && s.expiresAt)) return s
         const remain = Math.max(0, Math.ceil((s.expiresAt - Date.now()) / 1000))
         return { ...s, remainSec: remain }
       })
@@ -547,34 +429,7 @@ function LoggedInProfileView() {
     tick()
     const id = setInterval(tick, 1000)
     return () => clearInterval(id)
-  }, [stampDialog.open, stampDialog.step, stampDialog.expiresAt])
-
-  // 🔸 사장 처리 후: ‘개수’ 단위로 차감 & 페이지 보정
-  const markUsedLocally = () => {
-    if (!stampDialog.open || stampDialog.step !== "qr") return
-    const s = stampDialog.restaurant
-    const useCount = Math.min(stampDialog.count, getAvailable(s))
-    if (useCount <= 0) {
-      setStampDialog({ open: false })
-      return
-    }
-
-    setUsedUnitsByRestaurant((prev) => {
-      const cur = prev[s.restaurantId] ?? 0
-      return { ...prev, [s.restaurantId]: cur + useCount }
-    })
-
-    const afterAvail = Math.max(0, getAvailable(s) - useCount)
-    const totalPagesAfter = Math.max(1, Math.ceil(afterAvail / s.maxStamps))
-    setPageByRestaurant((prev) => {
-      const next = { ...prev }
-      const curPage = next[s.restaurantId] ?? 1
-      if (curPage > totalPagesAfter) next[s.restaurantId] = totalPagesAfter
-      return next
-    })
-
-    setStampDialog({ open: false })
-  }
+  }, [stampDialog.open, (stampDialog as any).step, (stampDialog as any).expiresAt])
 
   const handleRestaurantClick = (restaurantId: number) => router.push(`/restaurant/${restaurantId}`)
   const handleEditProfile = () => router.push("/profile/edit")
@@ -600,10 +455,7 @@ function LoggedInProfileView() {
     ;(async () => {
       const raw = (me as any)?.profile ?? (me as any)?.profileImage
       if (!raw) { setAvatarSrc("/placeholder.svg"); return }
-      if (/^https?:\/\//i.test(raw)) {
-        if (!ignore) setAvatarSrc(raw)
-        return
-      }
+      if (/^https?:\/\//i.test(raw)) { if (!ignore) setAvatarSrc(raw); return }
       const signed = await apiClient.getImageSignedUrl(0, raw).catch(() => "")
       const fallback = apiClient.getImageUrlByType(0, raw)
       if (!ignore) setAvatarSrc(signed || fallback)
@@ -611,8 +463,7 @@ function LoggedInProfileView() {
     return () => { ignore = true }
   }, [me])
 
-  const showFallbackWarning =
-    favoritesFallback || reviewsFallback || stampsFallback || historyFallback
+  const showFallbackWarning = favoritesFallback || reviewsFallback
 
   const [historyOpen, setHistoryOpen] = useState(false)
 
@@ -621,8 +472,6 @@ function LoggedInProfileView() {
   ────────────────────────────────────────────────────────── */
   return (
     <div className="min-h-screen bg-gray-50 pt/[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]">
-      
-
       {/* 헤더 */}
       <motion.header
         initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }}
@@ -698,6 +547,7 @@ function LoggedInProfileView() {
                 </motion.div>
               </div>
 
+              {/* 요약 카드들 */}
               <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.7 }} className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4">
                 {userRole === UserRole.USER ? (
                   <>
@@ -745,7 +595,7 @@ function LoggedInProfileView() {
                       <div className="text-2xl font-bold text-green-600 mb-1">{ownerStats.avgOwnerRating}</div>
                       <div className="text-sm text-gray-600 dark:text-gray-300">평균 별점</div>
                     </motion.div>
-                    <motion.div whileHover={{ scale: 1.03 }} className="text-center p-4 bg-gradient-to-br from紫-500/10 to-pink-500/10 backdrop-blur-sm rounded-2xl border border-purple-200/30">
+                    <motion.div whileHover={{ scale: 1.03 }} className="text-center p-4 bg-gradient-to-br from-purple-500/10 to-pink-500/10 backdrop-blur-sm rounded-2xl border border-purple-200/30">
                       <div className="text-2xl font-bold text-purple-600 mb-1">{ownerStats.totalFavorites}</div>
                       <div className="text-sm text-gray-600 dark:text-gray-300">받은 즐겨찾기</div>
                     </motion.div>
@@ -756,6 +606,12 @@ function LoggedInProfileView() {
                   </>
                 )}
               </motion.div>
+
+              {(showFallbackWarning || stampsError) && (
+                <div className="mt-4 text-xs text-amber-600 dark:text-amber-400">
+                  ⚠️ 일부 데이터는 임시 값 또는 로딩 오류가 있을 수 있어요.
+                </div>
+              )}
             </CardContent>
           </Card>
         </motion.div>
@@ -938,17 +794,22 @@ function LoggedInProfileView() {
                     <CardHeader className="p-4 sm:p-6">
                       <div className="flex items-center justify-between gap-3">
                         <CardTitle className="flex items-center gap-2 text-[clamp(16px,4vw,18px)]">
-                          <Stamp className="h-5 w-5 text-purple-500" />
+                          <StampIcon className="h-5 w-5 text-purple-500" />
                           내 스탬프 ({restaurantStamps.length})
                         </CardTitle>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setHistoryOpen(true)}
-                          className="border-purple-400 text-purple-600 hover:bg-purple-50 dark:hover:bg-purple-900/20"
-                        >
-                          사용/적립 내역 보기
-                        </Button>
+                        <div className="flex items-center gap-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setHistoryOpen(true)}
+                            className="border-purple-400 text-purple-600 hover:bg-purple-50 dark:hover:bg-purple-900/20"
+                          >
+                            사용/적립 내역 보기
+                          </Button>
+                          <Button variant="outline" size="sm" onClick={() => { refetchStamps(); refetchHistory() }}>
+                            새로고침
+                          </Button>
+                        </div>
                       </div>
                     </CardHeader>
 
@@ -962,13 +823,11 @@ function LoggedInProfileView() {
                           {restaurantStamps.length > 0 ? (
                             restaurantStamps.map((stamp, index) => {
                               const rid = stamp.restaurantId
-                              const avail = getAvailable(stamp)
-                              const totalPages = getTotalPages(stamp)
+                              const totalPages = Math.max(1, Math.ceil(stamp.totalStamps / stamp.maxStamps))
                               const curPage = getCurrentPage(rid)
                               const startIdx = (curPage - 1) * stamp.maxStamps
-                              const filledOnThisPage = Math.max(0, Math.min(stamp.maxStamps, avail - startIdx))
-                              const extraBeyondFirst = Math.max(0, avail - stamp.maxStamps)
-                              const booksUsed = Math.floor((usedUnitsByRestaurant[rid] ?? 0) / stamp.maxStamps)
+                              const filledOnThisPage = Math.max(0, Math.min(stamp.maxStamps, stamp.totalStamps - startIdx))
+                              const extraBeyondFirst = Math.max(0, stamp.totalStamps - stamp.maxStamps)
 
                               return (
                                 <motion.div
@@ -977,7 +836,7 @@ function LoggedInProfileView() {
                                   className="relative backdrop-blur-sm bg-white/50 dark:bg-gray-800/50 border border-white/20 rounded-2xl p-5 sm:p-6 hover:shadow-lg transition-all duration-300"
                                 >
                                   <div className="absolute right-5 top-5 text-sm text-gray-600 dark:text-gray-300">
-                                    {avail}/{stamp.maxStamps} 스탬프
+                                    {stamp.totalStamps}/{stamp.maxStamps} 스탬프
                                   </div>
 
                                   <h3 className="font-semibold text-gray-900 dark:text-white text-lg mb-3 sm:mb-4 truncate">{stamp.restaurantName}</h3>
@@ -992,14 +851,14 @@ function LoggedInProfileView() {
                                             : "bg-gray-100 dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-400"
                                         }`}
                                       >
-                                        <Stamp className="h-5 w-5 sm:h-6 sm:w-6" />
+                                        <StampIcon className="h-5 w-5 sm:h-6 sm:w-6" />
                                       </div>
                                     ))}
                                   </div>
 
                                   <div className="text-center w-full mx-auto">
                                     <p className="text-sm text-gray-600 dark:text-gray-300">
-                                      4점 이상 리뷰 {avail}개 보유 (부분 사용 즉시 반영)
+                                      4점 이상 리뷰 {stamp.totalStamps}개 보유
                                     </p>
                                     {extraBeyondFirst > 0 && curPage === 1 && (
                                       <div className="mt-2 text-xs text-amber-600 dark:text-amber-400 font-medium">
@@ -1012,7 +871,7 @@ function LoggedInProfileView() {
                                   <div className="mt-3 flex flex-col gap-3 sm:grid sm:grid-cols-[1fr_auto_1fr] sm:items-center">
                                     {/* 가운데: 사용하기 */}
                                     <div className="order-1 sm:order-2 justify-self-center text-center">
-                                      {avail >= 3 ? (
+                                      {stamp.totalStamps >= 3 ? (
                                         <div className="inline-flex items-center gap-2">
                                           <div className="inline-flex items-center gap-1 px-3 py-1 bg-gradient-to-r from-purple-500 to-pink-500 text-white text-xs rounded-full">
                                             <QrCode className="h-3 w-3" />
@@ -1055,9 +914,9 @@ function LoggedInProfileView() {
                                       </Button>
                                     </div>
 
-                                    {/* 오른쪽: 사용(책) 횟수 안내 */}
+                                    {/* 오른쪽: 힌트 */}
                                     <div className="order-3 sm:order-3 text-center sm:text-right">
-                                      {booksUsed > 0 && <div className="text-xs text-gray-600 dark:text-gray-300">사용(책) {booksUsed}회</div>}
+                                      <div className="text-xs text-gray-600 dark:text-gray-300">사장님이 QR 스캔 후 사용 처리</div>
                                     </div>
                                   </div>
                                 </motion.div>
@@ -1065,7 +924,7 @@ function LoggedInProfileView() {
                             })
                           ) : (
                             <div className="text-center text-gray-500 py-12">
-                              <Stamp className="h-16 w-16 mx-auto mb-4 opacity-30" />
+                              <StampIcon className="h-16 w-16 mx-auto mb-4 opacity-30" />
                               <h3 className="text-lg font-medium mb-2">스탬프가 없습니다</h3>
                               <p>4점 이상의 리뷰를 작성하면 스탬프를 받을 수 있어요</p>
                             </div>
@@ -1189,13 +1048,13 @@ function LoggedInProfileView() {
                                   <h3 className="font-semibold text-gray-900 dark:text-white mb-1 truncate">{r.name}</h3>
                                   <div className="flex items-center gap-4 text-sm text-gray-600 dark:text-gray-300">
                                     <span className="truncate">{r.category || "카테고리 없음"}</span>
-                                    {r.rating && (
+                                    {typeof r.rating === "number" && (
                                       <div className="flex items-center gap-1">
                                         <Star className="h-3 w-3 fill-current text-green-500" />
                                         <span>{r.rating.toFixed(1)}</span>
                                       </div>
                                     )}
-                                    {r.reviewCount && <span>리뷰 {r.reviewCount}개</span>}
+                                    {typeof r.reviewCount === "number" && <span>리뷰 {r.reviewCount}개</span>}
                                   </div>
                                 </div>
                               </div>
@@ -1276,8 +1135,7 @@ function LoggedInProfileView() {
                       </CardHeader>
                       <CardContent className="p-4 sm:p-6">
                         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                          {[
-                            { id: "good_owner", name: "친절한 사장님", icon: "🧡", description: "리뷰 50개 이상, 평균 4.5+", progress: 24, target: 50 },
+                          {[{ id: "good_owner", name: "친절한 사장님", icon: "🧡", description: "리뷰 50개 이상, 평균 4.5+", progress: 24, target: 50 },
                             { id: "eco_master", name: "에코 마스터", icon: "🌿", description: "에코 캠페인 10회 참여", progress: 6, target: 10 },
                           ].map((badge, idx) => (
                             <motion.div
@@ -1367,7 +1225,7 @@ function LoggedInProfileView() {
               <div className="w-full flex flex-col items-center gap-3 py-2">
                 <div className="p-3 rounded-2xl bg-white shadow-inner border">
                   <QRCodeCanvas
-                    value={stampDialog.payload || stampDialog.token || ""}
+                    value={stampDialog.code || ""}
                     size={220}
                     includeMargin
                   />
@@ -1377,17 +1235,17 @@ function LoggedInProfileView() {
                   남은 시간 {stampDialog.remainSec ?? 0}s
                 </div>
                 <p className="text-xs text-gray-500 text-center">
-                  • 유효시간 내 스캔해야 합니다. 스캔 후에는 화면을 닫아주세요.
+                  • 사장님 기기에서 QR을 스캔하면 사용 완료됩니다. (서버에서 검증/차감)
                 </p>
               </div>
 
               <DialogFooter className="flex flex-col sm:flex-row gap-2 sm:justify-between">
                 <Button variant="outline" onClick={() => setStampDialog({ open: false })}>닫기</Button>
                 <Button
-                  onClick={markUsedLocally}
+                  onClick={() => { setStampDialog({ open: false }); refetchStamps(); refetchHistory() }}
                   className="bg-gradient-to-r from-emerald-500 to-green-600 hover:from-emerald-600 hover:to-green-700 text-white"
                 >
-                  사용 완료로 표시
+                  새로고침
                 </Button>
               </DialogFooter>
             </>
@@ -1407,6 +1265,8 @@ function LoggedInProfileView() {
             <div className="flex items-center justify-center py-8">
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-500" />
             </div>
+          ) : historyError ? (
+            <div className="text-center text-red-500 py-6 text-sm">{historyError}</div>
           ) : (
             <div className="max-h-[60vh] overflow-auto space-y-2">
               {stampHistory.length === 0 ? (
@@ -1430,6 +1290,15 @@ function LoggedInProfileView() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* 전역 로딩 오버레이 (선택) */}
+      {isLoading && (
+        <div className="fixed bottom-4 right-4 pointer-events-none">
+          <div className="px-3 py-2 rounded-lg bg-white/90 shadow border text-sm text-gray-600">
+            로딩 중…
+          </div>
+        </div>
+      )}
     </div>
   )
 }
