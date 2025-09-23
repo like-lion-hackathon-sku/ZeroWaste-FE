@@ -408,26 +408,27 @@ function LoggedInProfileView() {
     })
   }
 
-  // ── restaurantId 자동매칭: 즐겨찾기 → 내 리뷰 → 검색
-  async function resolveRestaurantIdFor(s: RestaurantStamp): Promise<number> {
-    if (s.restaurantId) return s.restaurantId
+  // ── restaurantId 자동매칭: 즐겨찾기 → 내 리뷰 (검색 호출 제거)
+async function resolveRestaurantIdFor(s: RestaurantStamp): Promise<number> {
+  if (s.restaurantId) return s.restaurantId
 
-    const name = s.restaurantName.trim()
+  const name = (s.restaurantName || "").trim()
+  const norm = (x?: string | null) => (x ?? "").replace(/\s+/g, "").toLowerCase()
 
-    const fromFav = favList.find(f => f.restaurant?.name?.trim() === name)
-    if (fromFav?.restaurant?.id) return fromFav.restaurant.id
+  // 1) 즐겨찾기에서 매칭
+  const fav = favList.find(f => norm(f.restaurant?.name) === norm(name))
+  if (fav?.restaurant?.id) return fav.restaurant.id
 
-    const fromReview = reviewList.find(r => r.restaurant?.name?.trim() === name)
-    if (fromReview?.restaurant?.id) return fromReview.restaurant.id
+  // 2) 내가 쓴 리뷰에서 매칭
+  const rev = reviewList.find(r => norm(r.restaurant?.name) === norm(name))
+  if (rev?.restaurant?.id) return rev.restaurant.id
 
-    const sr = await apiClient.searchRestaurants(name)
-    const items = (sr?.data as any)?.items ?? (sr?.data as any) ?? []
-    const norm = (x: string) => x.replace(/\s+/g, "").toLowerCase()
-    const exact = items.find((x: any) => x?.name?.trim() === name) || items.find((x: any) => norm(x?.name || "") === norm(name))
-    if (exact?.id) return Number(exact.id)
+  // 3) 못 찾으면 실패 처리 (검색 없음)
+  throw new Error(
+    "즐겨찾기도 안하고 스탬프를 사용하려고 했나요? 양심이 없네요 얼른 즐겨찾기를 하러 가세요 ~"
+  )
+}
 
-    throw new Error("식당 ID를 자동으로 찾을 수 없어요. 식당 상세 화면에서 사용해 주세요.")
-  }
 
   // BE 세션 코드 발급 (POST /stamps/me/use)
   async function createUseSession(restaurantId: number, condition: number) {
