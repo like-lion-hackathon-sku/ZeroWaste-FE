@@ -2,8 +2,7 @@
 "use client"
 
 import { useSearchParams, useRouter } from "next/navigation"
-import { useCallback, useMemo, useRef, useState } from "react"
-import dynamic from "next/dynamic"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Button } from "@/components/ui/button"
 import {
   ArrowLeft,
@@ -17,52 +16,9 @@ import {
 } from "lucide-react"
 import { apiClient } from "@/lib/api/client"
 
-/* ───────────────── dynamic import: 모든 export 케이스 대응 ───────────────── */
-function resolveScanner(mod: any) {
-  // named export
-  if (mod?.QrScanner) return mod.QrScanner
-  if (mod?.Scanner) return mod.Scanner
-  // default 아래
-  if (mod?.default?.QrScanner) return mod.default.QrScanner
-  if (mod?.default?.Scanner) return mod.default.Scanner
-  // default 자체가 컴포넌트
-  if (typeof mod?.default === "function") return mod.default
-  return null
-}
-
-const QrScanner = dynamic(
-  async () => {
-    const mod: any = await import("@yudiel/react-qr-scanner")
-    const Comp = resolveScanner(mod)
-    if (Comp) return Comp
-    return function MissingScanner() {
-      return (
-        <div className="p-4 text-red-500 text-sm">
-          QR 스캐너 라이브러리를 불러오지 못했습니다. 패키지 버전/빌드를 확인하세요.
-        </div>
-      )
-    }
-  },
-  {
-    ssr: false,
-    loading: () => (
-      <div className="flex items-center justify-center h-32 text-sm text-white/80">
-        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-        카메라 준비 중…
-      </div>
-    ),
-  }
-)
-
-/* 라이브러리 prop 타입(동적 컴포넌트 any 억제용, 느슨하게 정의) */
-type QRProps = {
-  onDecode: (result: string | string[]) => void
-  onError?: (err: unknown) => void
-  constraints?: MediaTrackConstraints
-  containerStyle?: React.CSSProperties
-  videoStyle?: React.CSSProperties
-}
-const QrScannerTyped = QrScanner as unknown as React.ComponentType<QRProps>
+// ZXing
+import {BrowserMultiFormatReader, IScannerControls} from "@zxing/browser"
+import { BarcodeFormat, DecodeHintType } from "@zxing/library"
 
 /* ───────────────── 유틸: QR payload 파서 ───────────────── */
 function parseStampCode(raw: string): { code: string | null; meta?: any } {
@@ -73,17 +29,13 @@ function parseStampCode(raw: string): { code: string | null; meta?: any } {
     if (obj && typeof obj === "object" && typeof obj.code === "string" && obj.code.trim()) {
       return { code: obj.code.trim(), meta: obj }
     }
-  } catch {
-    /* noop */
-  }
+  } catch {}
   // 2) URL 형태: https://...?code=xxx
   try {
     const url = new URL(raw)
     const code = url.searchParams.get("code")
     if (code && code.trim()) return { code: code.trim(), meta: { url: raw } }
-  } catch {
-    /* noop */
-  }
+  } catch {}
   // 3) 순수 코드(UUID 등)
   if (/^[0-9a-fA-F-]{20,}$/.test(raw.trim())) return { code: raw.trim() }
   return { code: null }
@@ -100,18 +52,13 @@ export default function ScanPage() {
   const [status, setStatus] = useState<"idle" | "success" | "error">("idle")
   const [msg, setMsg] = useState<string>("")
   const [manualCode, setManualCode] = useState("")
-  const handledRef = useRef(false) // StrictMode & 중복콜 방지
+  const handledRef = useRef(false) // 중복 호출 방지
   const [submitting, setSubmitting] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
 
-  // 후면 카메라 우선 + 해상도 힌트
-  const videoConstraints: MediaTrackConstraints = useMemo(
-    () => ({
-      facingMode: { ideal: "environment" },
-      width: { ideal: 1280 },
-      height: { ideal: 720 },
-    }),
-    []
-  )
+  // ZXing refs
+  const videoRef = useRef<HTMLVideoElement | null>(null)
+  const zxingControlsRef = useRef<IScannerControls | null>(null)
 
   const vibrate = (pattern = [60]) => {
     try {
@@ -127,22 +74,21 @@ export default function ScanPage() {
       setSubmitting(true)
       setMsg("")
       try {
-        // ✅ 현재 클라 시그니처 유지: (restaurantId, code)
         const res = await apiClient.bizUseStamp(Number(restaurantId), code)
         if (!res?.success) throw new Error(res?.error || "스탬프 사용 처리 실패")
         setStatus("success")
         setMsg("확인되었습니다. 스탬프가 사용 처리되었습니다.")
         vibrate([20, 30, 20])
-        // 상세로 복귀(딥링크 파라미터로 완료 신호)
         setTimeout(() => {
-          router.replace(`/restaurant/${restaurantId}?stamp=done`)
+          router.replace(`/restaurant/${restaurantId}?isOwnerMode=true`)
         }, 550)
       } catch (e: any) {
         setStatus("error")
         setMsg(e?.message || "스탬프 사용 처리에 실패했습니다.")
         vibrate([80])
-        // 실패 시 재시도 허용
         handledRef.current = false
+        // 실패 시 스캐너 재가동 허용
+        startZXing()
       } finally {
         setSubmitting(false)
       }
@@ -150,25 +96,95 @@ export default function ScanPage() {
     [restaurantId, router]
   )
 
-  const handleDecode = useCallback(
-    async (result: string | string[]) => {
-      // 라이브러리마다 배열로 올 수 있으니 안전 처리
-      const text = Array.isArray(result) ? String(result[0] ?? "") : String(result ?? "")
-      if (!text || handledRef.current) return
-      handledRef.current = true
-      setDecoded(text)
+  // ZXing 시작
+  const startZXing = useCallback(async () => {
+    try {
+      setErr(null)
+      // 이전 스캐너 중지
+      zxingControlsRef.current?.stop()
+      zxingControlsRef.current = null
 
-      const { code } = parseStampCode(text)
-      if (!code) {
-        setStatus("error")
-        setMsg("유효한 스탬프 QR이 아닙니다. 다시 시도해주세요.")
-        handledRef.current = false
+      // 힌트: QR 전용으로 제한 → 정확도/속도 향상
+      const hints = new Map<DecodeHintType, any>()
+hints.set(DecodeHintType.POSSIBLE_FORMATS, [BarcodeFormat.QR_CODE])
+const reader = new BrowserMultiFormatReader(hints)
+
+
+      // 카메라 목록
+      const devices = await BrowserMultiFormatReader.listVideoInputDevices()
+      if (!devices.length) {
+        setErr("사용 가능한 카메라가 없어요.")
         return
       }
-      await callUseAPI(code)
-    },
-    [callUseAPI]
-  )
+      // 후면 우선 선택
+      const back =
+        devices.find((d) => /back|rear|environment/i.test(d.label)) ??
+        devices[devices.length - 1]
+
+      // 연속 디코딩
+      const controls = await reader.decodeFromVideoDevice(
+        back.deviceId,
+        videoRef.current!,
+        (result, _err) => {
+          if (result) {
+            const text = result.getText()
+            // console.log("[ZXING raw]", text) // 디버그용
+            if (!handledRef.current) {
+              handledRef.current = true
+              setDecoded(text)
+              const { code } = parseStampCode(text)
+              if (!code) {
+                setStatus("error")
+                setMsg("유효한 스탬프 QR이 아닙니다. 다시 시도해주세요.")
+                handledRef.current = false
+                return
+              }
+              // 중복 호출 방지 위해 즉시 정지
+              controls.stop()
+              zxingControlsRef.current = null
+              void callUseAPI(code)
+            }
+          }
+        }
+      )
+
+      // 포커스/프레임레이트 등 추가 제약 시도(가능한 기기에서만 적용)
+      try {
+  const stream = (videoRef.current as any)?.srcObject as MediaStream | undefined
+  const track = stream?.getVideoTracks?.()[0]
+  await (track as any)?.applyConstraints({
+    advanced: [
+      { focusMode: "continuous" }, // 타입엔 없지만 실장치에서 동작
+      { frameRate: 30 },
+      { width: 1280, height: 720 },
+      // { torch: true }, // 토치 켜려면 필요 시 주석 해제
+    ],
+  } as any)
+} catch {}
+
+      zxingControlsRef.current = controls
+    } catch (e: any) {
+      const name = e?.name || ""
+      if (name === "NotAllowedError") {
+        setErr("카메라 권한이 차단되었어요. 주소창의 카메라 아이콘에서 허용해주세요.")
+      } else if (name === "NotFoundError") {
+        setErr("카메라를 찾을 수 없어요.")
+      } else {
+        setErr(e?.message || "스캐너 초기화에 실패했어요.")
+      }
+    }
+  }, [callUseAPI])
+
+  const stopZXing = useCallback(() => {
+    zxingControlsRef.current?.stop()
+    zxingControlsRef.current = null
+  }, [])
+
+  useEffect(() => {
+    if (videoRef.current) startZXing()
+    return () => stopZXing()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [videoRef.current])
 
   const handleCancel = () => router.back()
 
@@ -185,6 +201,7 @@ export default function ScanPage() {
     setDecoded(null)
     setStatus("idle")
     setMsg("")
+    startZXing()
   }
 
   const title = type === "stamp" ? "스탬프 사용 (QR 스캔)" : "QR 스캔"
@@ -217,21 +234,24 @@ export default function ScanPage() {
             </div>
           </div>
 
-          {/* 카메라 영역 */}
+          {/* 카메라 영역 (ZXing) */}
           <div className="relative">
             <div className="relative bg-black">
               <div className="relative w-full h-[56vw] max-h-[520px] min-h-[280px]">
-                <QrScannerTyped
-                  constraints={videoConstraints}
-                  onDecode={handleDecode}
-                  onError={(err) => {
-                    console.error("QR scanner error:", err)
-                    setStatus("error")
-                    setMsg("카메라 접근에 실패했어요. 권한을 확인하거나 수동 입력을 이용하세요.")
-                  }}
-                  containerStyle={{ width: "100%", height: "100%" }}
-                  videoStyle={{ width: "100%", height: "100%", objectFit: "cover" }}
-                />
+                {!err ? (
+                  <video
+                    ref={videoRef}
+                    className="w-full h-full object-cover"
+                    autoPlay
+                    playsInline
+                    muted
+                  />
+                ) : (
+                  <div className="flex items-center justify-center h-64 text-sm text-red-400">
+                    {err}
+                  </div>
+                )}
+
                 {/* 가이드 프레임 */}
                 <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
                   <div className="w-[78%] max-w-[480px] aspect-square rounded-3xl border-2 border-emerald-400/80 shadow-[0_0_30px_rgba(16,185,129,0.55)]" />
@@ -243,9 +263,7 @@ export default function ScanPage() {
                 <div className="rounded-2xl px-4 py-3 bg-black/40 backdrop-blur-md border border-white/10 text-sm flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <Camera className="h-4 w-4 opacity-80" />
-                    <span className="opacity-90">
-                      카메라를 QR 코드에 맞춰주세요
-                    </span>
+                    <span className="opacity-90">카메라를 QR 코드에 맞춰주세요</span>
                   </div>
                   {decoded ? (
                     <div className="flex items-center gap-2 text-emerald-400">
@@ -282,7 +300,6 @@ export default function ScanPage() {
               </div>
             )}
 
-            {/* 버튼들 */}
             <div className="flex flex-wrap items-center gap-3">
               <Button
                 onClick={resetForRescan}
