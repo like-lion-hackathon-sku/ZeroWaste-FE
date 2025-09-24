@@ -42,6 +42,8 @@
     "@sveltejs/kit": "latest",
     "@vercel/analytics": "latest",
     "@yudiel/react-qr-scanner": "^2.3.1",
+    "@zxing/browser": "^0.1.5",
+    "@zxing/library": "^0.21.3",
     "autoprefixer": "^10.4.20",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
