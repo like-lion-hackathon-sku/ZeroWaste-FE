@@ -2,22 +2,13 @@
 "use client"
 
 import { useSearchParams, useRouter } from "next/navigation"
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { Button } from "@/components/ui/button"
-import {
-  ArrowLeft,
-  CheckCircle,
-  Camera,
-  QrCode,
-  RefreshCw,
-  AlertTriangle,
-  Keyboard,
-  Loader2,
-} from "lucide-react"
+import {ArrowLeft, CheckCircle, Camera, QrCode, RefreshCw, AlertTriangle, Keyboard, Loader2} from "lucide-react"
 import { apiClient } from "@/lib/api/client"
 
 // ZXing
-import {BrowserMultiFormatReader, IScannerControls} from "@zxing/browser"
+import { BrowserMultiFormatReader, IScannerControls } from "@zxing/browser"
 import { BarcodeFormat, DecodeHintType } from "@zxing/library"
 
 /* ───────────────── 유틸: QR payload 파서 ───────────────── */
@@ -52,13 +43,13 @@ export default function ScanPage() {
   const [status, setStatus] = useState<"idle" | "success" | "error">("idle")
   const [msg, setMsg] = useState<string>("")
   const [manualCode, setManualCode] = useState("")
-  const handledRef = useRef(false) // 중복 호출 방지
   const [submitting, setSubmitting] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
   // ZXing refs
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const zxingControlsRef = useRef<IScannerControls | null>(null)
+  const handledRef = useRef(false) // 중복 호출 방지
 
   const vibrate = (pattern = [60]) => {
     try {
@@ -74,20 +65,26 @@ export default function ScanPage() {
       setSubmitting(true)
       setMsg("")
       try {
-        const res = await apiClient.bizUseStamp(Number(restaurantId), code)
+        // ✅ client 최종본 기준: bizUseStamp는 code만 받음
+        const res = await apiClient.bizUseStamp(code)
         if (!res?.success) throw new Error(res?.error || "스탬프 사용 처리 실패")
         setStatus("success")
         setMsg("확인되었습니다. 스탬프가 사용 처리되었습니다.")
         vibrate([20, 30, 20])
+
+        // 소폭 지연 후 사장 모드 페이지로 이동 (필요 시 경로 조정)
         setTimeout(() => {
-          router.replace(`/restaurant/${restaurantId}?isOwnerMode=true`)
+          if (restaurantId) {
+            router.replace(`/restaurant/${restaurantId}?isOwnerMode=true`)
+          } else {
+            router.back()
+          }
         }, 550)
       } catch (e: any) {
         setStatus("error")
         setMsg(e?.message || "스탬프 사용 처리에 실패했습니다.")
         vibrate([80])
-        handledRef.current = false
-        // 실패 시 스캐너 재가동 허용
+        handledRef.current = false // 실패 시 재스캔 허용
         startZXing()
       } finally {
         setSubmitting(false)
@@ -104,11 +101,9 @@ export default function ScanPage() {
       zxingControlsRef.current?.stop()
       zxingControlsRef.current = null
 
-      // 힌트: QR 전용으로 제한 → 정확도/속도 향상
       const hints = new Map<DecodeHintType, any>()
-hints.set(DecodeHintType.POSSIBLE_FORMATS, [BarcodeFormat.QR_CODE])
-const reader = new BrowserMultiFormatReader(hints)
-
+      hints.set(DecodeHintType.POSSIBLE_FORMATS, [BarcodeFormat.QR_CODE])
+      const reader = new BrowserMultiFormatReader(hints)
 
       // 카메라 목록
       const devices = await BrowserMultiFormatReader.listVideoInputDevices()
@@ -118,49 +113,47 @@ const reader = new BrowserMultiFormatReader(hints)
       }
       // 후면 우선 선택
       const back =
-        devices.find((d) => /back|rear|environment/i.test(d.label)) ??
-        devices[devices.length - 1]
+        devices.find((d) => /back|rear|environment/i.test(d.label)) ?? devices[devices.length - 1]
 
       // 연속 디코딩
       const controls = await reader.decodeFromVideoDevice(
         back.deviceId,
         videoRef.current!,
-        (result, _err) => {
-          if (result) {
-            const text = result.getText()
-            // console.log("[ZXING raw]", text) // 디버그용
-            if (!handledRef.current) {
-              handledRef.current = true
-              setDecoded(text)
-              const { code } = parseStampCode(text)
-              if (!code) {
-                setStatus("error")
-                setMsg("유효한 스탬프 QR이 아닙니다. 다시 시도해주세요.")
-                handledRef.current = false
-                return
-              }
-              // 중복 호출 방지 위해 즉시 정지
-              controls.stop()
-              zxingControlsRef.current = null
-              void callUseAPI(code)
-            }
+        (result) => {
+          if (!result) return
+          const text = result.getText()
+          if (handledRef.current) return
+
+          handledRef.current = true
+          setDecoded(text)
+
+          const { code } = parseStampCode(text)
+          if (!code) {
+            setStatus("error")
+            setMsg("유효한 스탬프 QR이 아닙니다. 다시 시도해주세요.")
+            handledRef.current = false
+            return
           }
+
+          // 중복 호출 방지 위해 즉시 정지
+          controls.stop()
+          zxingControlsRef.current = null
+          void callUseAPI(code)
         }
       )
 
-      // 포커스/프레임레이트 등 추가 제약 시도(가능한 기기에서만 적용)
+      // 포커스/프레임레이트 제약 (가능한 기기에서만)
       try {
-  const stream = (videoRef.current as any)?.srcObject as MediaStream | undefined
-  const track = stream?.getVideoTracks?.()[0]
-  await (track as any)?.applyConstraints({
-    advanced: [
-      { focusMode: "continuous" }, // 타입엔 없지만 실장치에서 동작
-      { frameRate: 30 },
-      { width: 1280, height: 720 },
-      // { torch: true }, // 토치 켜려면 필요 시 주석 해제
-    ],
-  } as any)
-} catch {}
+        const stream = (videoRef.current as any)?.srcObject as MediaStream | undefined
+        const track = stream?.getVideoTracks?.()[0]
+        await (track as any)?.applyConstraints({
+          advanced: [
+            { focusMode: "continuous" }, // 일부 기기에서만 지원
+            { frameRate: 30 },
+            { width: 1280, height: 720 },
+          ],
+        } as any)
+      } catch {}
 
       zxingControlsRef.current = controls
     } catch (e: any) {
@@ -181,10 +174,9 @@ const reader = new BrowserMultiFormatReader(hints)
   }, [])
 
   useEffect(() => {
-    if (videoRef.current) startZXing()
+    startZXing()
     return () => stopZXing()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [videoRef.current])
+  }, [startZXing, stopZXing])
 
   const handleCancel = () => router.back()
 

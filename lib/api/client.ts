@@ -1,12 +1,29 @@
-// lib/api/client.ts
+// lib/api/client.ts — FINAL
 import type { ApiResponse } from "@/lib/types/database"
 
-type UpdateProfileJson = {
-  nickname?: string;
-  defaultImage?: boolean;
-};
+/*
+  ✅ Improvements over previous revision
+  - AbortController timeout (15s)
+  - 401 refresh retry once; if still fails → { success:false, error:"AUTH_EXPIRED" }
+  - Retry on 429/503/504 with simple backoff (once)
+  - GET 요청 시 Content-Type 제거 (일부 서버 호환성)
+  - bizUseStamp 시그니처 정리 (code만 전송) — 필요 시 오버로드로 restaurantId도 함께 전송 가능
+  - 에러 파싱 견고화
+*/
 
-let refreshPromise: Promise<Response> | null = null;
+type UpdateProfileJson = {
+  nickname?: string
+  defaultImage?: boolean
+}
+
+let refreshPromise: Promise<Response> | null = null
+
+const RETRYABLE = new Set([429, 503, 504])
+const DEFAULT_TIMEOUT_MS = 15_000
+
+function sleep(ms: number) {
+  return new Promise((r) => setTimeout(r, ms))
+}
 
 class ApiClient {
   private baseUrl: string
@@ -32,106 +49,131 @@ class ApiClient {
   }
 
   /** 공통 요청 래퍼 */
-private async request<T>(
-  endpoint: string,
-  options: RequestInit = {},
-  _retrying = false
-): Promise<ApiResponse<T>> {
-  try {
+  private async request<T>(
+    endpoint: string,
+    options: RequestInit = {},
+    _retrying = false,
+    _fromRefresh = false,
+  ): Promise<ApiResponse<T>> {
     const url = this.buildUrl(endpoint)
-    const isFormData =
-      typeof FormData !== "undefined" && options.body instanceof FormData
 
+    // --- Headers 준비
+    const isFormData = typeof FormData !== "undefined" && options.body instanceof FormData
     const headers: HeadersInit = { ...(options.headers || {}) }
+
+    // GET이면 Content-Type 제거 (호환성)
+    const method = (options.method || "GET").toUpperCase()
+
     if (!isFormData) {
-      if (!("Content-Type" in headers))
-        (headers as Record<string, string>)["Content-Type"] = "application/json"
-      if (!("Accept" in headers))
-        (headers as Record<string, string>)["Accept"] = "application/json"
+      if (method !== "GET" && !("Content-Type" in headers)) {
+        ;(headers as Record<string, string>)["Content-Type"] = "application/json"
+      }
+      if (!("Accept" in headers)) {
+        ;(headers as Record<string, string>)["Accept"] = "application/json"
+      }
     }
 
-    // ✅ Authorization 헤더 자동 부착
+    // ✅ Authorization 헤더 자동 부착 (HttpOnly 쿠키만 쓰면 제거 가능)
     if (typeof window !== "undefined") {
       const token =
         localStorage.getItem("accessToken") ||
         localStorage.getItem("authToken") ||
         document.cookie.match(/accessToken=([^;]+)/)?.[1]
       if (token && !("Authorization" in headers)) {
-        (headers as Record<string, string>)["Authorization"] = `Bearer ${token}`
+        ;(headers as Record<string, string>)["Authorization"] = `Bearer ${token}`
       }
     }
 
-    const res = await fetch(url, {
-      credentials: "include",
-      cache: "no-store",
-      ...options,
-      headers,
-    })
+    // --- AbortController (timeout)
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS)
 
-    // 401 → refresh 1회 시도
-    if (res.status === 401 && !_retrying) {
-      if (!refreshPromise) {
-        refreshPromise = fetch(this.buildUrl("/auth/refresh"), {
-          method: "POST",
-          credentials: "include",
-          cache: "no-store",
-          headers: { Accept: "application/json" },
-        }).finally(() => {
-          refreshPromise = null
-        })
-      }
-      const rr = await refreshPromise
-      if (rr?.ok) {
-        return this.request<T>(endpoint, options, true)
-      }
-    }
-
-    if (!res.ok) {
-      const bodyText = await res.text().catch(() => "")
-      let message = res.statusText
-      try {
-        const j = bodyText ? JSON.parse(bodyText) : {}
-        message = (j as any)?.message || (j as any)?.error || message
-        console.error("[API 4xx/5xx]", res.status, j)
-      } catch {
-        console.error("[API 4xx/5xx]", res.status, bodyText)
-      }
-      return {
-        success: false,
-        error: `HTTP ${res.status}: ${message}`,
-      } as ApiResponse<T>
-    }
-
-    const text = await res.text()
-    let data: any = {}
     try {
-      data = text ? JSON.parse(text) : {}
-    } catch {
-      data = { success: true, data: text }
-    }
+      const res = await fetch(url, {
+        credentials: "include",
+        cache: "no-store",
+        ...options,
+        headers,
+        signal: controller.signal,
+      })
 
-    // BE → FE 표준 정규화
-    if (data && typeof data === "object" && "resultType" in data) {
-      const { resultType, success, error } = data
-      if (String(resultType).toUpperCase() === "SUCCESS") {
-        return { success: true, data: (success ?? null) as T }
+      // 401 → refresh 1회 시도
+      if (res.status === 401 && !_retrying && !_fromRefresh) {
+        if (!refreshPromise) {
+          refreshPromise = fetch(this.buildUrl("/auth/refresh"), {
+            method: "POST",
+            credentials: "include",
+            cache: "no-store",
+            headers: { Accept: "application/json" },
+          }).finally(() => {
+            refreshPromise = null
+          })
+        }
+        const rr = await refreshPromise
+        if (rr?.ok) {
+          return this.request<T>(endpoint, options, true, true)
+        }
+        // ✅ refresh 실패
+        if (typeof window !== "undefined") {
+          try { alert("세션이 만료되었습니다. 다시 로그인 해주세요.") } catch {}
+          try { window.location.href = "/login" } catch {}
+        }
+        return { success: false, error: "AUTH_EXPIRED" } as ApiResponse<T>
       }
-      const reason =
-        error?.reason || error?.message || "요청이 실패했어요."
-      return { success: false, error: reason } as ApiResponse<T>
+
+      if (!res.ok) {
+        // 429/503/504 간단 재시도 (한 번만)
+        if (RETRYABLE.has(res.status) && !_retrying) {
+          await sleep(800)
+          return this.request<T>(endpoint, options, true)
+        }
+
+        const bodyText = await res.text().catch(() => "")
+        let message = res.statusText || `HTTP ${res.status}`
+        try {
+          const j = bodyText ? JSON.parse(bodyText) : {}
+          message = (j as any)?.message || (j as any)?.error || message
+          if (process.env.NODE_ENV !== "production") {
+            console.error("[API 4xx/5xx]", res.status, j)
+          }
+        } catch {
+          if (process.env.NODE_ENV !== "production") {
+            console.error("[API 4xx/5xx]", res.status, bodyText)
+          }
+        }
+        return { success: false, error: `HTTP ${res.status}: ${message}` } as ApiResponse<T>
+      }
+
+      const text = await res.text()
+      let data: any = {}
+      try {
+        data = text ? JSON.parse(text) : {}
+      } catch {
+        data = { success: true, data: text }
+      }
+
+      // BE → FE 표준 정규화
+      if (data && typeof data === "object" && "resultType" in data) {
+        const { resultType, success, error } = data
+        if (String(resultType).toUpperCase() === "SUCCESS") {
+          return { success: true, data: (success ?? null) as T }
+        }
+        const reason = error?.reason || error?.message || "요청이 실패했어요."
+        return { success: false, error: reason } as ApiResponse<T>
+      }
+
+      if (typeof data?.success === "boolean") return data as ApiResponse<T>
+      return { success: true, data } as ApiResponse<T>
+    } catch (error: any) {
+      const msg = error?.name === "AbortError" ? "요청이 시간 초과되었습니다." : (error instanceof Error ? error.message : "Unknown error occurred")
+      if (process.env.NODE_ENV !== "production") {
+        console.error("[API request failed]", msg)
+      }
+      return { success: false, error: msg } as ApiResponse<T>
+    } finally {
+      clearTimeout(timeout)
     }
-
-    if (typeof data?.success === "boolean") return data as ApiResponse<T>
-    return { success: true, data } as ApiResponse<T>
-  } catch (error) {
-    console.error("[v0] API request failed:", error)
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : "Unknown error occurred",
-    } as ApiResponse<T>
   }
-}
-
 
   // ───────────────────────── Auth
   async login(email: string, password: string) {
@@ -153,9 +195,9 @@ private async request<T>(
     }
     const body: UpdateProfileJson = {}
     if (typeof payload.nickname === "string" && payload.nickname.trim()) {
-      body.nickname = payload.nickname.trim();
+      body.nickname = payload.nickname.trim()
     }
-    if (payload.defaultImage === true) body.defaultImage = true;
+    if (payload.defaultImage === true) body.defaultImage = true
     return this.request("/auth/profile", { method: "POST", body: JSON.stringify(body) })
   }
   /** multipart 그대로 전달 */
@@ -171,7 +213,7 @@ private async request<T>(
 
   async getRestaurantsNearby(bbox: string, limit = 20, cursor = 0) {
     const sp = new URLSearchParams()
-    sp.set("bbox", bbox)
+    sp.set("bbox", String(bbox))
     sp.set("limit", String(limit))
     sp.set("cursor", String(cursor))
     return this.request(`/restaurants/nearby?${sp.toString()}`)
@@ -179,34 +221,28 @@ private async request<T>(
 
   async getRestaurantsInBounds(bounds: { minLat: number; maxLat: number; minLng: number; maxLng: number; category?: string; search?: string }) {
     const q = (bounds.search ?? "맛집").trim()
+    // TODO: 실제 bounds 기반 라우트가 열리면 교체
     return this.request(`/restaurants/nearby?q=${encodeURIComponent(q)}`)
   }
 
   async getRestaurantDetail(id: number) {
-    return this.request<{
-      id: number; name: string; category: string;
-      address?: string; telephone?: string;
-      photos?: { id: number; photo_name: string }[];
-      menus?: { id: number; name: string; photo?: string }[];
-    }>(`/restaurants/${id}/detail`, { method: "GET" });
+    return this.request<{ id: number; name: string; category: string; address?: string; telephone?: string; photos?: { id: number; photo_name: string }[]; menus?: { id: number; name: string; photo?: string }[] }>(
+      `/restaurants/${id}/detail`,
+      { method: "GET" },
+    )
   }
 
   async getRestaurantReviews(id: number) {
-    return this.request(`/restaurants/${id}/reviews`);
+    return this.request(`/restaurants/${id}/reviews`)
   }
 
   /** (옵션) 일반 사용자 메뉴 목록: BE 라우트 존재 시 */
   async getRestaurantMenus(id: number) {
-    return this.request<{ id: number; name: string; price?: number | null }[]>(
-      `/restaurants/${id}/menu`,
-      { method: "GET" }
-    )
+    return this.request<{ id: number; name: string; price?: number | null }[]>(`/restaurants/${id}/menu`, { method: "GET" })
   }
 
   // ───────────────────────── Favorites
-  async getFavorites() {
-    return this.request("/favorites")
-  }
+  async getFavorites() { return this.request("/favorites") }
   async addFavorite(restaurantId: number) {
     return this.request(`/favorites`, { method: "POST", body: JSON.stringify({ restaurantId }) })
   }
@@ -222,13 +258,15 @@ private async request<T>(
   async getUserStamps() { return this.request("/stamps/me", { method: "GET" }) }
   async getUserStampHistory() { return this.request("/stamps/me/history", { method: "GET" }) }
   async requestUseStamp(restaurantId: number, condition: number) {
-    return this.request<{ code: string }>(
-      "/stamps/me/use",
-      { method: "POST", body: JSON.stringify({ restaurantId, condition }) }
-    )
+    return this.request<{ code: string }>("/stamps/me/use", { method: "POST", body: JSON.stringify({ restaurantId, condition }) })
   }
-  async bizUseStamp(restaurantId: number, code: string) {
+  // 기본: code만 전송 (현재 BE 시그니처 기준)
+  async bizUseStamp(code: string) {
     return this.request("/biz/stamps/use", { method: "POST", body: JSON.stringify({ code }) })
+  }
+  // 필요 시 restaurantId 포함 버전 (오버로드처럼 사용)
+  async bizUseStampWithRestaurant(restaurantId: number, code: string) {
+    return this.request("/biz/stamps/use", { method: "POST", body: JSON.stringify({ restaurantId, code }) })
   }
 
   // ───────────────────────── Notifications
@@ -240,47 +278,41 @@ private async request<T>(
 
   /** ✅ 사업자 식당 생성: 멀티파트 전송 (이미지/메뉴/benefits 포함) */
   async createBusinessRestaurantMultipart(payload: {
-    name: string;
-    category: string;
-    address: string;
-    telephone?: string;
-    mapx: number;
-    mapy: number;
-    images?: File[];          // 식당 사진들
-    menuImages?: File[];      // 메뉴 사진들
-    menuMetadatas?: string[]; // 메뉴 이름들 (예: ["치즈버거","감자튀김"])
-    benefits?: { condition: number; reward: string }[]; // 스탬프 혜택
+    name: string
+    category: string
+    address: string
+    telephone?: string
+    mapx: number
+    mapy: number
+    images?: File[]
+    menuImages?: File[]
+    menuMetadatas?: string[]
+    benefits?: { condition: number; reward: string }[]
   }) {
-    const fd = new FormData();
-    fd.set("name", payload.name);
-    fd.set("category", payload.category);
-    fd.set("address", payload.address);
-    if (payload.telephone) fd.set("telephone", payload.telephone);
-    fd.set("mapx", String(Math.round(payload.mapx)));
-    fd.set("mapy", String(Math.round(payload.mapy)));
+    const fd = new FormData()
+    fd.set("name", payload.name)
+    fd.set("category", payload.category)
+    fd.set("address", payload.address)
+    if (payload.telephone) fd.set("telephone", payload.telephone)
+    fd.set("mapx", String(Math.round(payload.mapx)))
+    fd.set("mapy", String(Math.round(payload.mapy)))
 
-    for (const f of payload.images ?? []) fd.append("images", f);
-    for (const f of payload.menuImages ?? []) fd.append("menuImages", f);
+    for (const f of payload.images ?? []) fd.append("images", f)
+    for (const f of payload.menuImages ?? []) fd.append("menuImages", f)
 
-    // BE DTO가 JSON.parse(`[${body.menuMetadatas}]`) 형태라 안전한 문자열화 적용
-    // 예: '"치즈버거","감자튀김"'
-    const metaJoined = (payload.menuMetadatas ?? [])
-      .map(s => JSON.stringify(s))
-      .join(",");
-    if (metaJoined.length) fd.set("menuMetadatas", metaJoined);
+    // 텍스트 배열 안전 직렬화
+    const metaJoined = (payload.menuMetadatas ?? []).map((s) => JSON.stringify(s)).join(",")
+    if (metaJoined.length) fd.set("menuMetadatas", metaJoined)
 
     // benefits는 배열 JSON 문자열로 전달
-    fd.set("benefits", JSON.stringify(payload.benefits ?? []));
+    fd.set("benefits", JSON.stringify(payload.benefits ?? []))
 
-    return this.request("/biz/restaurants", { method: "POST", body: fd });
+    return this.request("/biz/restaurants", { method: "POST", body: fd })
   }
 
   /** ✅ 수정: PUT /biz/restaurants/:id (BE 구현에 맞춰 선택) */
   async updateBusinessRestaurant(id: number, data: { name?: string; category?: string; address?: string; telephone?: string }) {
-    return this.request(`/biz/restaurants/${id}`, {
-      method: "PUT", 
-      body: JSON.stringify(data),
-    });
+    return this.request(`/biz/restaurants/${id}`, { method: "PUT", body: JSON.stringify(data) })
   }
 
   /** ✅ 삭제: DELETE /biz/restaurants/:id */
@@ -295,19 +327,13 @@ private async request<T>(
   async uploadBusinessRestaurantPhoto(restaurantId: number, file: File) {
     const fd = new FormData()
     fd.append("file", file)
-    return this.request<{ id: number; fileName: string; url: string }>(
-      `/biz/restaurants/${restaurantId}/photos`,
-      { method: "POST", body: fd }
-    )
+    return this.request<{ id: number; fileName: string; url: string }>(`/biz/restaurants/${restaurantId}/photos`, { method: "POST", body: fd })
   }
   async deleteBusinessRestaurantPhoto(restaurantId: number, photoId: number) {
     return this.request(`/biz/restaurants/${restaurantId}/photos/${photoId}`, { method: "DELETE" })
   }
   async getBusinessMenu(restaurantId: number) {
-    return this.request<{ id: number; name: string; photo?: string }[]>(
-      `/biz/restaurants/${restaurantId}/menu`,
-      { method: "GET" }
-    )
+    return this.request<{ id: number; name: string; photo?: string }[]>(`/biz/restaurants/${restaurantId}/menu`, { method: "GET" })
   }
   async getBusinessReviews() { return this.request("/biz/reviews") }
   async getBusinessReviewFeedback(reviewId: number) { return this.request(`/biz/reviews/${reviewId}/feedback`) }
@@ -321,27 +347,18 @@ private async request<T>(
   /** 리뷰 생성(식당별) — POST /api/reviews/restaurants/{id} */
   async createReviewForRestaurant(
     restaurantId: number,
-    payload: {
-      content: string;
-      score: number;
-      images?: string[];
-      detailFeedback?: string | null;
-    }
+    payload: { content: string; score: number; images?: string[]; detailFeedback?: string | null },
   ) {
-    const norm = (v?: string | null) =>
-      typeof v === "string" && v.trim().length > 0 ? v.trim() : undefined;
+    const norm = (v?: string | null) => (typeof v === "string" && v.trim().length > 0 ? v.trim() : undefined)
 
     const body: any = {
       content: payload.content,
       score: payload.score,
       imageKeys: Array.isArray(payload.images) ? payload.images : [],
       detailFeedback: norm(payload.detailFeedback) ?? null,
-    };
+    }
 
-    return this.request(`/reviews/restaurants/${restaurantId}`, {
-      method: "POST",
-      body: JSON.stringify(body),
-    });
+    return this.request(`/reviews/restaurants/${restaurantId}`, { method: "POST", body: JSON.stringify(body) })
   }
 
   async updateReview(id: number, data: { contents?: string; score?: number }) {
@@ -366,14 +383,14 @@ private async request<T>(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
-    });
+    })
 
-    const data = await res.json().catch(() => ({}));
+    const data = await res.json().catch(() => ({}))
 
     if (!res.ok || !data?.ok) {
-      return { success: false, error: data?.error || `HTTP ${res.status}` } as ApiResponse<any>;
+      return { success: false, error: data?.error || `HTTP ${res.status}` } as ApiResponse<any>
     }
-    return { success: true, data: data.result } as ApiResponse<any>;
+    return { success: true, data: data.result } as ApiResponse<any>
   }
 
   // ───────────────────────── Images (presigned URL)
@@ -400,10 +417,7 @@ private async request<T>(
   async uploadImage(imageType: "profile" | "review", file: File) {
     const fd = new FormData()
     fd.append("file", file)
-    return this.request<{ ok: boolean; type: string; fileName: string; url: string }>(
-      `/images/${encodeURIComponent(imageType)}/upload`,
-      { method: "POST", body: fd },
-    )
+    return this.request<{ ok: boolean; type: string; fileName: string; url: string }>(`/images/${encodeURIComponent(imageType)}/upload`, { method: "POST", body: fd })
   }
 
   async analyzeImage(imageType: "profile" | "review", fileName: string) {
@@ -439,9 +453,6 @@ private async request<T>(
     return this.request(`/restaurants/search?${params.toString()}`)
   }
 
-  // ───────────────────────── User Profile Extras
-  async getUserStats() { return this.request("/auth/stats") }
-  async deleteAccount() { return this.request("/auth/delete", { method: "DELETE" }) }
 }
 
 // 싱글턴 인스턴스 export
