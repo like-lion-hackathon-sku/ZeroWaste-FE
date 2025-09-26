@@ -9,44 +9,27 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-
+import { Sparkles } from "lucide-react"
 import {
-  ArrowLeft,
-  Star,
-  MapPin,
-  Phone,
-  Clock,
-  Heart,
-  Share2,
-  Camera,
-  Edit3,
-  Leaf,
-  Users,
-  Loader2,
-  Award,
-  Sparkles,
-  Bot,
-  QrCode,
-  RefreshCw,
+  ArrowLeft, Star, MapPin, Phone, Clock, Heart, Share2, Camera, Edit3,
+  Leaf, Users, Loader2, Award, Bot, QrCode, RefreshCw,
 } from "lucide-react"
 
 import { apiClient } from "@/lib/api/client"
 import { calculateWasteStarRating } from "@/lib/utils/database-helpers"
 import { mockRestaurants } from "@/lib/mock/restaurant-presets"
 
+/* ───────────────── Utils ───────────────── */
+function parseRawText(text: string) {
+  if (!text) return ""
+  return text.replace(/\n/g, "<br />")
+}
+
 /* ───────────────── 별점(부분 채움) ───────────────── */
 function StarRating({
-  value,
-  outOf = 5,
-  size = 20,
-  colorClass = "text-green-500",
-  emptyClass = "text-gray-300",
+  value, outOf = 5, size = 20, colorClass = "text-green-500", emptyClass = "text-gray-300",
 }: {
-  value: number
-  outOf?: number
-  size?: number
-  colorClass?: string
-  emptyClass?: string
+  value: number; outOf?: number; size?: number; colorClass?: string; emptyClass?: string
 }) {
   const v = Math.max(0, Math.min(Number(value) || 0, outOf))
   return (
@@ -75,6 +58,7 @@ type UIReview = {
   comment?: string
   detailFeedback?: string | null
   images?: string[]
+  foodMenu?: { name: string; leftover_score?: number }[]
 }
 type UIMenuItem = {
   name?: string
@@ -102,29 +86,30 @@ type UIRestaurant = {
   infoSections?: { title: string; body: string }[]
 }
 
-/** 상세(raw)의 사진/메뉴 파일명을 presigned URL로 변환 */
+/** 상세(raw)의 사진/메뉴 파일명을 presigned URL로 변환
+ *  - API가 { success: { ... } } 래핑이어도 동작
+ */
 async function resolveSignedUrls(raw: any) {
-  // 갤러리: type 2 = restaurant
-  const photoNames: string[] = Array.isArray(raw?.photos)
-    ? raw.photos.map((p: any) => (typeof p === "string" ? p : p?.photo_name)).filter(Boolean)
+  const src = raw?.success ?? raw
+
+  const photoNames: string[] = Array.isArray(src?.photos)
+    ? src.photos.map((p: any) => (typeof p === "string" ? p : p?.photo_name)).filter(Boolean)
     : []
 
   const galleryUrls = await Promise.all(
     photoNames.map((fn) => apiClient.getImageSignedUrl(2, fn).catch(() => "")),
   )
 
-  // 메뉴: type 3 = menu
-  const menus: any[] = Array.isArray(raw?.menus) ? raw.menus : []
+  const menus: any[] = Array.isArray(src?.menus) ? src.menus : []
   const menuThumbUrls = await Promise.all(
     menus.map((m) =>
       m?.photo ? apiClient.getImageSignedUrl(3, m.photo).catch(() => "") : Promise.resolve(""),
     ),
   )
 
-  // 원본 메뉴 배열에 _thumbUrl 주입
   const menusWithThumb = menus.map((m, i) => ({ ...m, _thumbUrl: menuThumbUrls[i] || "" }))
 
-  return { galleryUrls: galleryUrls.filter(Boolean), menusWithThumb }
+  return { galleryUrls: galleryUrls.filter(Boolean), menusWithThumb, src }
 }
 
 /* ───────────────── 카테고리 라벨 정규화 ───────────────── */
@@ -187,26 +172,145 @@ function toCategoryLabel(raw: any): string | null {
   return label
 }
 
+/* ───────────────── 메뉴 이름 맵 ───────────────── */
+/** 식당 raw에서 메뉴 id → name 매핑 만들기 */
+function buildMenuNameMap(raw: any): Record<string, string> {
+  const map: Record<string, string> = {}
+
+  const src = raw?.success ?? raw
+  const itemsA: any[] = Array.isArray(raw?.tabs?.menu?.items) ? raw.tabs.menu.items : []
+  const itemsB: any[] = Array.isArray(src?.menus) ? src.menus : []
+
+  const push = (m: any) => {
+    if (!m) return
+    const id =
+      m?.id ?? m?.menu_id ?? m?.menuId ?? m?.item_id ?? m?.itemId ?? m?.code ?? m?.uid
+    const name =
+      m?.name ?? m?.menu ?? m?.menuName ?? m?.title ?? m?.label ?? m?.item ?? ""
+    if (id != null && String(name).trim()) {
+      map[String(id)] = String(name).trim()
+    }
+  }
+
+  itemsA.forEach(push)
+  itemsB.forEach(push)
+  return map
+}
+
 /* ───────────────── Review 정규화 ───────────────── */
-const normalizeReview = (r: any): UIReview => {
+function toStringArray(v: any): string[] {
+  if (!v) return []
+  if (Array.isArray(v)) {
+    return v
+      .map((x) => (typeof x === "string" ? x : x?.name ?? x?.menu ?? x?.title ?? ""))
+      .map((s) => String(s).trim())
+      .filter(Boolean)
+  }
+  return [String(v).trim()].filter(Boolean)
+}
+
+function extractMenuNames(r: any): string[] {
+  const candidates: any[] = [
+    r.menuNames, r.menus, r.items, r.orderedMenus, r.orderItems, r.dishes,
+    r.foods, r.food_names, r.menu, r.menu_name, r.dish, r.food, r.food_name, r.item,
+  ]
+  if (Array.isArray(r.food_menu)) {
+    candidates.push(r.food_menu.map((m: any) => m?.name ?? m?.menu ?? m?.item ?? m?.title ?? ""))
+  }
+  const names = candidates.flatMap(toStringArray).map((s) => s.replace(/\s+/g, " ").trim())
+  return Array.from(new Set(names.filter(Boolean)))
+}
+
+/** 메뉴 이름 맵을 사용해 리뷰 표준화 (menuId 지원) */
+const normalizeReview = (r: any, menuNameMap: Record<string, string> = {}): UIReview => {
   const u = r.user
   const name =
     typeof u === "string"
       ? u
       : (u?.name ?? u?.username ?? u?.nickname ?? r.nickname ?? r.userName ?? r.authorName ?? r.author ?? "익명")
 
-  const ratingRaw = r.score ?? r.leftoverRate ?? r.waste_rating ?? r.rating ?? r.stars ?? r.star ?? r.wasteScore ?? 0
+  const ratingRaw =
+    r.score ?? r.leftoverRate ?? r.waste_rating ?? r.rating ?? r.stars ?? r.star ?? r.wasteScore ?? 0
 
   const comment = r.contents ?? r.comment ?? r.content ?? r.text ?? ""
   const detail =
     r.detailFeedback ?? r.detail_feedback ?? r.feedback_detail ?? r.ai_feedback ?? null
 
-  const date = r.createdAt ?? r.created_at ?? r.date ?? r.created ?? ""
+  const date =
+    r.createdAt ?? r.created_at ?? r.date ?? r.created ?? ""
+
   const images = Array.isArray(r.images)
     ? r.images.map((x: any) => (typeof x === "string" ? x : x?.url)).filter(Boolean)
     : Array.isArray(r.photos)
       ? r.photos.map((x: any) => (typeof x === "string" ? x : x?.url)).filter(Boolean)
       : []
+
+  // ── 메뉴 추출 ──
+  let foodMenu: { name: string; leftover_score?: number }[] | undefined
+
+  if (Array.isArray(r.food_menu)) {
+    // 서버가 객체 배열로 줄 때
+    foodMenu = r.food_menu
+      .map((m: any) => {
+        // 이름 ← 주어진 값 or id를 이름맵에 치환
+        let nm =
+          m?.name ?? m?.menu ?? m?.menuName ?? m?.item ?? m?.title ?? m?.food ?? m?.label ?? ""
+        const rawId = m?.id ?? m?.menu_id ?? m?.menuId ?? m?.item_id ?? m?.itemId ?? m?.code ?? m?.uid
+        if ((!nm || !String(nm).trim()) && rawId != null) {
+          const mapped = menuNameMap[String(rawId)]
+          if (mapped) nm = mapped
+        }
+
+        const leftover =
+          typeof m?.leftover_score === "number"
+            ? m.leftover_score
+            : typeof m?.score === "number"
+              ? m.score
+              : undefined
+
+        const nameTrimmed = String(nm || "").trim()
+        if (!nameTrimmed) return null
+        return { name: nameTrimmed, leftover_score: leftover }
+      })
+      .filter(Boolean) as { name: string; leftover_score?: number }[]
+  } else if (r.menuId != null) {
+    // 단일 menuId만 있는 경우
+    const idStr = String(r.menuId)
+    const nm = menuNameMap[idStr] || "전체"
+    const baseScore = Number(r.wasteRating ?? ratingRaw) || 0
+    foodMenu = [{ name: nm, leftover_score: baseScore }]
+  } else {
+    // id 배열로 오는 경우
+    const ids =
+      (Array.isArray(r.menu_ids) && r.menu_ids) ||
+      (Array.isArray(r.menuIds) && r.menuIds) ||
+      (Array.isArray(r.item_ids) && r.item_ids) ||
+      null
+
+    if (ids && ids.length) {
+      const baseScore = Number(r.wasteRating ?? ratingRaw) || 0
+      foodMenu = ids
+        .map((id: any) => {
+          const nm = menuNameMap[String(id)] || ""
+          if (!nm) return null
+          return { name: nm, leftover_score: baseScore }
+        })
+        .filter(Boolean) as { name: string; leftover_score?: number }[]
+    } else {
+      // 문자열 키에서 추출 (fallback)
+      const names = extractMenuNames(r)
+      if (names.length) {
+        const baseScore = Number(r.wasteRating ?? ratingRaw) || 0
+        foodMenu = names
+          .map((nm) => {
+            const nameTrimmed = String(nm || "").trim()
+            if (!nameTrimmed) return null
+            return { name: nameTrimmed, leftover_score: baseScore }
+          })
+          .filter(Boolean) as { name: string; leftover_score?: number }[]
+      }
+    }
+  }
 
   return {
     id: Number(r.id ?? r.review_id ?? 0),
@@ -216,11 +320,34 @@ const normalizeReview = (r: any): UIReview => {
     comment,
     detailFeedback: typeof detail === "string" ? detail : null,
     images,
+    foodMenu,
   }
+}
+
+/* ───────────────── 리뷰 이미지: 파일명 → 서명 URL ───────────────── */
+async function signReviewImageNames(list: UIReview[]): Promise<UIReview[]> {
+  const cache = new Map<string, string>()
+  const toUrl = async (name: string) => {
+    if (!name) return ""
+    if (/^https?:\/\//i.test(name)) return name
+    if (cache.has(name)) return cache.get(name)!
+    const url = await apiClient.getImageSignedUrl(1, name).catch(() => "")
+    if (url) cache.set(name, url)
+    return url
+  }
+
+  return Promise.all(
+    list.map(async (r) => {
+      const names = Array.isArray(r.images) ? r.images : []
+      const urls = await Promise.all(names.map((n) => toUrl(String(n))))
+      return { ...r, images: urls.filter(Boolean) }
+    }),
+  )
 }
 
 /* ───────────────── Restaurant 정규화 ───────────────── */
 function normalizeRestaurant(raw: any): UIRestaurant {
+  // (1) 복합 구조(예: Naver 스타일)
   if (raw?.header && raw?.tabs) {
     const h = raw.header ?? {}
     const t = raw.tabs ?? {}
@@ -252,32 +379,33 @@ function normalizeRestaurant(raw: any): UIRestaurant {
     }
   }
 
-  const galleryFromSigned: string[] = Array.isArray(raw?._galleryUrls) ? raw._galleryUrls : []
-  const menuArr: any[] = Array.isArray(raw?.menus) ? raw.menus : []
+  // (2) 단순 detail 구조(네가 올린 스크린샷 형태)
+  const src = raw?.success ?? raw
+  const galleryFromSigned: string[] = Array.isArray(src?._galleryUrls) ? src._galleryUrls : []
+  const menuArr: any[] = Array.isArray(src?.menus) ? src.menus : []
   const menu: UIMenuItem[] = menuArr.map((m: any) => ({
-    name: m?.name,
-    price: "",
-    description: "",
-    thumb: m?._thumbUrl || "",
+    name: m?.name, price: "", description: "", thumb: m?._thumbUrl || "",
   }))
-  const fav = !!raw?.isFavorite || !!raw?.is_favorite || !!raw?.favorited
+  const fav = !!src?.isFavorite || !!src?.is_favorite || !!src?.favorited || !!src?.isMyFavorite
 
   return {
-    id: Number(raw?.id ?? 0),
-    name: String(raw?.name ?? "알 수 없는 식당"),
+    id: Number(src?.id ?? 0),
+    name: String(src?.name ?? "알 수 없는 식당"),
     image: galleryFromSigned[0] || null,
-    badge: raw?.badge ?? null,
+    badge: (src as any)?.badge ?? null,
     wasteScore:
-      typeof raw?.ecoScore === "number"
-        ? raw.ecoScore
-        : (typeof raw?.stats?.ecoScore === "number" ? raw.stats.ecoScore : null),
-    totalReviews: typeof raw?.reviewCount === "number" ? raw.reviewCount : 0,
-    category: raw?.category ?? null,
-    distance: raw?.distance ?? null,
-    address: raw?.address ?? null,
-    telephone: raw?.telephone ?? null,
-    hours: raw?.hours ?? null,
-    description: raw?.description ?? null,
+      typeof (src as any)?.ecoScore === "number"
+        ? (src as any).ecoScore
+        : typeof (src as any)?.stats?.ecoScore === "number"
+          ? (src as any).stats.ecoScore
+          : null,
+    totalReviews: typeof (src as any)?.reviewCount === "number" ? (src as any).reviewCount : 0,
+    category: (src as any)?.category ?? null,
+    distance: (src as any)?.distance ?? null,
+    address: (src as any)?.address ?? null,
+    telephone: (src as any)?.telephone ?? null,
+    hours: (src as any)?.hours ?? null,
+    description: (src as any)?.feedback ?? (src as any)?.description ?? null,
     favorited: fav,
     menu,
     gallery: galleryFromSigned,
@@ -289,30 +417,38 @@ function MenuThumb({ src, alt }: { src?: string | null; alt: string }) {
   return (
     <div className="relative shrink-0">
       <div className="h-20 w-20 md:h-24 md:w-24 rounded-2xl overflow-hidden border border-white/30 dark:border-slate-700/50 shadow-sm bg-muted">
-        <img
-          src={src || "/placeholder.svg"}
-          alt={alt}
-          className="w-full h-full object-cover"
-          loading="lazy"
-        />
+        <img src={src || "/placeholder.svg"} alt={alt} className="w-full h-full object-cover" loading="lazy" />
       </div>
     </div>
   )
 }
 
-/* ── 리뷰 → 배치분석 입력 포맷으로 변환 ── */
+/* ── 리뷰 → 배치분석 입력 포맷 ── */
 function buildBatchFromReviews(revs: UIReview[]) {
-  return revs.map((r) => ({
-    date: (r.date || "").slice(0, 10) || new Date().toISOString().slice(0, 10),
-    time: "점심",
-    food_menu: [
-      {
-        name: "전체", // 실제 메뉴명을 알면 교체
-        leftover_score: Number(r.wasteRating) || 0,
-        user_comment: (r.detailFeedback && r.detailFeedback.trim()) || (r.comment || ""), // ← 핵심
-      },
-    ],
-  }))
+  return revs.map((r) => {
+    const hasMenus = Array.isArray(r.foodMenu) && r.foodMenu.length > 0
+    type Item = { name: string; leftover_score: number; user_comment: string; detail_feedback?: string }
+
+    const menus: Item[] = hasMenus
+      ? r.foodMenu!.map((m: any): Item => ({
+          name: (m?.name ?? "").toString().trim() || "전체",
+          leftover_score: typeof m?.leftover_score === "number" ? m.leftover_score : Number(r.wasteRating) || 0,
+          user_comment: r.comment || "",
+          detail_feedback: r.detailFeedback?.trim() || undefined,
+        }))
+      : [{
+          name: "전체",
+          leftover_score: Number(r.wasteRating) || 0,
+          user_comment: r.comment || "",
+          detail_feedback: r.detailFeedback?.trim() || undefined,
+        }]
+
+    return {
+      date: (r.date || "").slice(0, 10) || new Date().toISOString().slice(0, 10),
+      time: "점심",
+      food_menu: menus,
+    }
+  })
 }
 
 /* ───────────────── Page ───────────────── */
@@ -325,6 +461,7 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [raw, setRaw] = useState<any | null>(null)
+  const [menuNameMap, setMenuNameMap] = useState<Record<string, string>>({})
 
   const [isOwnerMode, setIsOwnerMode] = useState(false)
 
@@ -334,12 +471,12 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
   const [reviewsError, setReviewsError] = useState<string | null>(null)
   const [reviewsFetched, setReviewsFetched] = useState(false)
 
-  // AI 호출 상태 (raw만 사용)
+  // AI 호출 상태
   const [aiLoading, setAiLoading] = useState(false)
   const [aiError, setAiError] = useState<string | null>(null)
   const [aiRaw, setAiRaw] = useState<any>(null)
 
-  async function loadReviewsOnce(id: number) {
+  async function loadReviewsOnce(id: number, nameMap: Record<string, string>) {
     if (!id || reviewsFetched) return
     setReviewsLoading(true)
     setReviewsError(null)
@@ -354,8 +491,9 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
           : Array.isArray(res.data)
             ? (res.data as any)
             : []
-        const norm = list.map((r: any) => normalizeReview(r))
-        setReviews(norm)
+        const norm = list.map((r: any) => normalizeReview(r, nameMap))
+        const withUrls = await signReviewImageNames(norm)
+        setReviews(withUrls)
       }
     } catch (e: any) {
       setReviews([])
@@ -382,10 +520,7 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
         body: JSON.stringify(payload),
       })
       const data = await res.json()
-      if (!res.ok || !data?.ok) {
-        throw new Error(data?.error || "분석 실패")
-      }
-      // 서버가 내려주는 raw 그대로 보관
+      if (!res.ok || !data?.ok) throw new Error(data?.error || "분석 실패")
       setAiRaw(data.raw ?? null)
     } catch (e: any) {
       setAiRaw(null)
@@ -410,10 +545,15 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
           setError(res.error || "식당 정보를 불러올 수 없습니다.")
           setRaw(null)
         } else {
-          const { galleryUrls, menusWithThumb } = await resolveSignedUrls(res.data)
-          const enriched = { ...res.data, _galleryUrls: galleryUrls, menus: menusWithThumb }
+          // detail 구조 래핑/서명 URL 처리
+          const { galleryUrls, menusWithThumb, src } = await resolveSignedUrls(res.data)
+          const enriched = { ...src, _galleryUrls: galleryUrls, menus: menusWithThumb }
           setRaw(enriched)
-          await loadReviewsOnce(restaurantId)
+
+          // 메뉴 이름 맵 구성 후 리뷰 로딩
+          const nameMap = buildMenuNameMap(enriched)
+          setMenuNameMap(nameMap)
+          await loadReviewsOnce(restaurantId, nameMap)
         }
       } catch (e: any) {
         if (!mounted) return
@@ -432,14 +572,13 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
   useEffect(() => {
     if (!reviewsFetched || aiLoading || aiRaw !== null) return
     analyzeOnServer()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reviewsFetched])
 
-  // 리뷰 탭 진입 시 미로드면 1회
+  // 리뷰 탭 진입 시 미로드면 1회 (메뉴맵 의존)
   useEffect(() => {
     if (activeTab !== "reviews" || !restaurantId || reviewsFetched) return
-    loadReviewsOnce(restaurantId)
-  }, [activeTab, restaurantId, reviewsFetched])
+    loadReviewsOnce(restaurantId, menuNameMap)
+  }, [activeTab, restaurantId, reviewsFetched, menuNameMap])
 
   useEffect(() => {
     const ownerModeParam = searchParams.get("isOwnerMode")
@@ -508,22 +647,14 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
     }
   }
 
-  const handleWriteReview = () => {
-    router.push(`/review/write?restaurantId=${restaurantId}`)
-  }
-
-  const handleEditRestaurant = () => {
-    router.push(`/restaurant/edit/${restaurantId}`)
-  }
-
-  const handleUseStamp = () => {
-    router.push(`/scan?type=stamp&restaurantId=${restaurantId}`)
-  }
+  const handleWriteReview = () => router.push(`/review/write?restaurantId=${restaurantId}`)
+  const handleEditRestaurant = () => router.push(`/restaurant/edit/${restaurantId}`)
+  const handleUseStamp = () => router.push(`/scan?type=stamp&restaurantId=${restaurantId}`)
 
   // 리뷰 평균(0점 제외)
   const reviewsAvg = useMemo(() => {
     if (!reviews.length) return null
-    const valid = reviews.map(r => Number(r.wasteRating) || 0).filter(v => v > 0)
+    const valid = reviews.map((r) => Number(r.wasteRating) || 0).filter((v) => v > 0)
     if (!valid.length) return null
     const sum = valid.reduce((a, b) => a + b, 0)
     return Math.round((sum / valid.length) * 10) / 10
@@ -564,25 +695,16 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
   }
 
   const starFromEco = calculateWasteStarRating(restaurant.wasteScore ?? 0)
-  const displayStar = (reviewsAvg ?? starFromEco)
+  const displayStar = (reviewsAvg ?? starFromEco ?? 0)
   const displayCategory = restaurant.category || "ETC"
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-green-50/30 to-sky-50/30 dark:from-slate-950 dark:via-green-950/20 dark:to-sky-950/20">
       {/* 헤더 */}
-      <motion.header
-        className="bg-white/80 dark:bg-slate-900/80 backdrop-blur-xl border-b border-white/20 dark:border-slate-800/50 p-4 sticky top-0 z-20 shadow-lg"
-        initial={{ opacity: 0, y: -20 }}
-        animate={{ opacity: 1, y: 0 }}
-      >
+      <motion.header className="bg-white/80 dark:bg-slate-900/80 backdrop-blur-xl border-b border-white/20 dark:border-slate-800/50 p-4 sticky top-0 z-20 shadow-lg" initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }}>
         <div className="flex items-center justify-between">
           <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => router.back()}
-              className="h-10 px-4 rounded-2xl bg-white/50 dark:bg-slate-800/50 backdrop-blur-sm hover:bg-white/80 dark:hover:bg-slate-700/80 shadow-lg transition-all duration-200"
-            >
+            <Button variant="ghost" size="sm" onClick={() => router.back()} className="h-10 px-4 rounded-2xl bg-white/50 dark:bg-slate-800/50 backdrop-blur-sm hover:bg-white/80 dark:hover:bg-slate-700/80 shadow-lg transition-all duration-200">
               <ArrowLeft className="h-4 w-4 mr-2" />
               뒤로가기
             </Button>
@@ -590,13 +712,7 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
           <div className="flex items-center gap-2">
             {isOwnerMode && (
               <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={handleUseStamp}
-                  title="스탬프 사용 (QR 스캔)"
-                  className="h-10 w-10 rounded-2xl bg-white/50 dark:bg-slate-800/50 backdrop-blur-sm hover:bg-purple-50 dark:hover:bg-purple-900/30 shadow-lg transition-all duration-200"
-                >
+                <Button variant="ghost" size="sm" onClick={handleUseStamp} title="스탬프 사용 (QR 스캔)" className="h-10 w-10 rounded-2xl bg-white/50 dark:bg-slate-800/50 backdrop-blur-sm hover:bg-purple-50 dark:hover:bg-purple-900/30 shadow-lg transition-all duration-200">
                   <QrCode className="h-4 w-4 text-purple-600" />
                 </Button>
               </motion.div>
@@ -604,26 +720,14 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
 
             {isOwnerMode && (
               <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={handleEditRestaurant}
-                  title="식당 정보 수정"
-                  className="h-10 w-10 rounded-2xl bg-white/50 dark:bg-slate-800/50 backdrop-blur-sm hover:bg-orange-50 dark:hover:bg-orange-900/30 shadow-lg transition-all duration-200"
-                >
+                <Button variant="ghost" size="sm" onClick={handleEditRestaurant} title="식당 정보 수정" className="h-10 w-10 rounded-2xl bg-white/50 dark:bg-slate-800/50 backdrop-blur-sm hover:bg-orange-50 dark:hover:bg-orange-900/30 shadow-lg transition-all duration-200">
                   <Edit3 className="h-4 w-4 text-orange-600" />
                 </Button>
               </motion.div>
             )}
 
             <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={handleShare}
-                title="공유하기"
-                className="h-10 w-10 rounded-2xl bg-white/50 dark:bg-slate-800/50 backdrop-blur-sm hover:bg-blue-50 dark:hover:bg-blue-900/30 shadow-lg transition-all duration-200"
-              >
+              <Button variant="ghost" size="sm" onClick={handleShare} title="공유하기" className="h-10 w-10 rounded-2xl bg-white/50 dark:bg-slate-800/50 backdrop-blur-sm hover:bg-blue-50 dark:hover:bg-blue-900/30 shadow-lg transition-all duration-200">
                 <Share2 className="h-4 w-4 text-blue-600" />
               </Button>
             </motion.div>
@@ -646,32 +750,15 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
       </motion.header>
 
       {/* 히어로 */}
-      <motion.div
-        className="relative h-80 bg-muted overflow-hidden"
-        initial={{ opacity: 0, scale: 1.1 }}
-        animate={{ opacity: 1, scale: 1 }}
-        transition={{ duration: 0.8 }}
-      >
-        <img
-          src={restaurant.image || "/placeholder.svg"}
-          alt={restaurant.name}
-          className="w-full h-full object-cover"
-        />
+      <motion.div className="relative h-80 bg-muted overflow-hidden" initial={{ opacity: 0, scale: 1.1 }} animate={{ opacity: 1, scale: 1 }} transition={{ duration: 0.8 }}>
+        <img src={restaurant.image || "/placeholder.svg"} alt={restaurant.name} className="w-full h-full object-cover" />
         <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-black/20 to-transparent" />
         <div className="absolute inset-0 bg-gradient-to-r from-green-900/20 to-emerald-900/20" />
-        <motion.div
-          className="absolute bottom-6 left-6 right-6"
-          initial={{ opacity: 0, y: 30 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.3 }}
-        >
+        <motion.div className="absolute bottom-6 left-6 right-6" initial={{ opacity: 0, y: 30 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }}>
           <div className="flex items-center gap-3 mb-4">
             {restaurant.badge && (
               <motion.div initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: 0.5 }}>
-                <Badge
-                  variant={restaurant.badge === "착한 식당" ? "default" : "secondary"}
-                  className="bg-green-500/90 text-white border-green-400 shadow-lg backdrop-blur-sm px-3 py-1 text-sm"
-                >
+                <Badge variant={restaurant.badge === "착한 식당" ? "default" : "secondary"} className="bg-green-500/90 text-white border-green-400 shadow-lg backdrop-blur-sm px-3 py-1 text-sm">
                   <Award className="h-3 w-3 mr-1" />
                   {restaurant.badge}
                 </Badge>
@@ -686,7 +773,7 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
           <motion.div className="flex items-center gap-6 text-white/90" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.6 }}>
             <div className="flex items-center gap-2 bg-white/20 backdrop-blur-sm rounded-2xl px-4 py-2">
               <StarRating value={displayStar} size={18} colorClass="text-green-400" emptyClass="text-white/60" />
-              <span className="font-bold text-lg ml-2">{displayStar.toFixed(1)}</span>
+              <span className="font-bold text-lg ml-2">{Number(displayStar).toFixed(1)}</span>
               <span className="text-sm opacity-75">({reviews.length || restaurant.totalReviews || 0})</span>
             </div>
             {displayCategory && (
@@ -754,26 +841,16 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
 
                       {restaurant.description && (
                         <div className="p-6 bg-gradient-to-br from-slate-50 to-green-50/50 dark:from-slate-800/50 dark:to-green-900/20 rounded-2xl">
-                          <p className="text-muted-foreground leading-relaxed whitespace-pre-wrap text-base">
-                            {restaurant.description}
-                          </p>
+                          <p className="text-muted-foreground leading-relaxed whitespace-pre-wrap text-base">{restaurant.description}</p>
                         </div>
                       )}
 
                       {restaurant.infoSections?.length ? (
                         <div className="mt-6 space-y-4">
                           {restaurant.infoSections.map((sec, i) => (
-                            <motion.details
-                              key={`${sec.title}-${i}`}
-                              className="rounded-2xl border border-white/20 dark:border-slate-700/50 p-4 bg-white/50 dark:bg-slate-800/50 backdrop-blur-sm shadow-lg"
-                              whileHover={{ scale: 1.01 }}
-                            >
-                              <summary className="cursor-pointer font-semibold text-foreground text-lg py-2">
-                                {sec.title}
-                              </summary>
-                              <div className="mt-4 text-sm text-muted-foreground whitespace-pre-wrap leading-relaxed">
-                                {sec.body}
-                              </div>
+                            <motion.details key={`${sec.title}-${i}`} className="rounded-2xl border border-white/20 dark:border-slate-700/50 p-4 bg-white/50 dark:bg-slate-800/50 backdrop-blur-sm shadow-lg" whileHover={{ scale: 1.01 }}>
+                              <summary className="cursor-pointer font-semibold text-foreground text-lg py-2">{sec.title}</summary>
+                              <div className="mt-4 text-sm text-muted-foreground whitespace-pre-wrap leading-relaxed">{sec.body}</div>
                             </motion.details>
                           ))}
                         </div>
@@ -829,40 +906,24 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
                               className="group rounded-2xl border border-white/20 dark:border-slate-700/50 bg-white/70 dark:bg-slate-800/70 backdrop-blur-sm shadow-sm hover:shadow-lg hover:bg-white/90 dark:hover:bg-slate-800/90 transition-all duration-200"
                             >
                               <div className="p-4 md:p-5 flex items-center gap-4 md:gap-5">
-                                {item.thumb ? (
-                                  <MenuThumb src={item.thumb} alt={item.name || "menu"} />
-                                ) : (
-                                  <MenuThumb src={null} alt={item.name || "menu"} />
-                                )}
-
+                                {item.thumb ? <MenuThumb src={item.thumb} alt={item.name || "menu"} /> : <MenuThumb src={null} alt={item.name || "menu"} />}
                                 <div className="min-w-0 flex-1">
                                   <div className="flex items-start justify-between gap-3">
-                                    <h3 className="font-semibold text-foreground text-base md:text-lg leading-snug line-clamp-1">
-                                      {item.name || "메뉴"}
-                                    </h3>
+                                    <h3 className="font-semibold text-foreground text-base md:text-lg leading-snug line-clamp-1">{item.name || "메뉴"}</h3>
                                     {item.price && (
                                       <span className="shrink-0 px-3 py-1.5 rounded-xl text-sm md:text-base font-bold bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-300 border border-green-200/50 dark:border-green-800/60">
                                         {item.price}
                                       </span>
                                     )}
                                   </div>
-
-                                  {item.description && (
-                                    <p className="mt-1.5 text-sm text-muted-foreground leading-relaxed line-clamp-2">
-                                      {item.description}
-                                    </p>
-                                  )}
+                                  {item.description && <p className="mt-1.5 text-sm text-muted-foreground leading-relaxed line-clamp-2">{item.description}</p>}
                                 </div>
                               </div>
                             </motion.div>
                           ))}
                         </div>
                       ) : (
-                        <motion.div
-                          className="text-center text-muted-foreground py-16 bg-slate-50 dark:bg-slate-800/50 rounded-2xl"
-                          initial={{ opacity: 0 }}
-                          animate={{ opacity: 1 }}
-                        >
+                        <motion.div className="text-center text-muted-foreground py-16 bg-slate-50 dark:bg-slate-800/50 rounded-2xl" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
                           <Sparkles className="h-16 w-16 mx-auto mb-4 opacity-30" />
                           <p className="text-lg">메뉴 정보가 없습니다</p>
                         </motion.div>
@@ -896,11 +957,7 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
                               transition={{ delay: index * 0.1 }}
                               whileHover={{ scale: 1.02 }}
                             >
-                              <img
-                                src={image || "/placeholder.svg"}
-                                alt={`${restaurant.name} 사진 ${index + 1}`}
-                                className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500 cursor-pointer"
-                              />
+                              <img src={image || "/placeholder.svg"} alt={`${restaurant.name} 사진 ${index + 1}`} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500 cursor-pointer" />
                             </motion.div>
                           ))
                         ) : (
@@ -931,9 +988,7 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
                     <CardContent className="p-6">
                       <div className="grid grid-cols-2 gap-6 text-center">
                         <div className="p-6 bg-gradient-to-br from-blue-50 to-cyan-50 dark:from-blue-900/20 dark:to-cyan-900/20 rounded-2xl">
-                          <div className="text-3xl font-bold text-blue-600 mb-2">
-                            {reviews.length || restaurant.totalReviews || 0}
-                          </div>
+                          <div className="text-3xl font-bold text-blue-600 mb-2">{reviews.length || restaurant.totalReviews || 0}</div>
                           <div className="text-sm text-muted-foreground font-medium">총 리뷰</div>
                         </div>
                         <div className="p-6 bg-gradient-to-br from-green-50 to-emerald-50 dark:from-green-900/20 dark:to-emerald-900/20 rounded-2xl">
@@ -944,7 +999,7 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
                     </CardContent>
                   </Card>
 
-                  {/* AI 원본(raw) 출력 */}
+                  {/* AI raw — 사장님 모드에서만 */}
                   {isOwnerMode && (
                     <Card className="bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm border-white/20 dark:border-slate-700/50 shadow-xl rounded-3xl overflow-hidden">
                       <CardHeader className="bg-gradient-to-r from-purple-500/10 to-pink-500/10 border-b border-white/20 dark:border-slate-700/50">
@@ -955,13 +1010,7 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
                             </div>
                             AI 원본 결과 (raw)
                           </span>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={analyzeOnServer}
-                            className="rounded-xl hover:bg-white/60 dark:hover:bg-slate-700/50"
-                            title="다시 분석"
-                          >
+                          <Button variant="ghost" size="sm" onClick={analyzeOnServer} className="rounded-xl hover:bg-white/60 dark:hover:bg-slate-700/50" title="다시 분석">
                             <RefreshCw className={`h-4 w-4 ${aiLoading ? "animate-spin" : ""}`} />
                           </Button>
                         </CardTitle>
@@ -972,19 +1021,17 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
                             <Loader2 className="h-5 w-5 animate-spin mr-2" /> 분석 중…
                           </div>
                         ) : aiError ? (
-                          <div className="text-center text-red-500 py-8 bg-red-50 dark:bg-red-900/20 rounded-xl">
-                            {aiError}
-                          </div>
+                          <div className="text-center text-red-500 py-8 bg-red-50 dark:bg-red-900/20 rounded-xl">{aiError}</div>
                         ) : aiRaw == null ? (
-                          <div className="text-center text-muted-foreground py-8">
-                            아직 보여줄 결과가 없어요.
-                          </div>
+                          <div className="text-center text-muted-foreground py-8">아직 보여줄 결과가 없어요.</div>
                         ) : typeof aiRaw === "string" ? (
-                          <pre className="whitespace-pre-wrap text-sm leading-relaxed">{aiRaw}</pre>
+                          <pre className="whitespace-pre-wrap text-sm leading-relaxed" dangerouslySetInnerHTML={{ __html: parseRawText(aiRaw) }} />
+                        ) : Array.isArray(aiRaw) ? (
+                          <pre className="whitespace-pre-wrap text-sm leading-relaxed">{aiRaw.join("\n")}</pre>
+                        ) : typeof aiRaw === "object" ? (
+                          <pre className="whitespace-pre overflow-auto rounded-xl bg-slate-50 dark:bg-slate-900/40 p-4 text-xs">{JSON.stringify(aiRaw, null, 2)}</pre>
                         ) : (
-                          <pre className="whitespace-pre overflow-auto rounded-xl bg-slate-50 dark:bg-slate-900/40 p-4 text-xs">
-                            {JSON.stringify(aiRaw, null, 2)}
-                          </pre>
+                          <div>알 수 없는 데이터 형식</div>
                         )}
                       </CardContent>
                     </Card>
@@ -1001,13 +1048,9 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
                           <Loader2 className="h-6 w-6 animate-spin mr-2" /> 불러오는 중…
                         </div>
                       ) : reviewsError ? (
-                        <div className="text-center text-red-500 py-12 bg-red-50 dark:bg-red-900/20">
-                          {reviewsError}
-                        </div>
+                        <div className="text-center text-red-500 py-12 bg-red-50 dark:bg-red-900/20">{reviewsError}</div>
                       ) : reviews.length === 0 ? (
-                        <div className="text-center text-muted-foreground py-16 bg-slate-50 dark:bg-slate-800/50">
-                          아직 등록된 리뷰가 없어요.
-                        </div>
+                        <div className="text-center text-muted-foreground py-16 bg-slate-50 dark:bg-slate-800/50">아직 등록된 리뷰가 없어요.</div>
                       ) : (
                         <ul className="divide-y divide-white/20 dark:divide-slate-700/50">
                           {reviews.map((rv) => (
@@ -1024,21 +1067,26 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
                                   <div className="mt-1">
                                     <StarRating value={Number(rv.wasteRating) || 0} size={16} />
                                   </div>
-                                  {rv.comment && (
-                                    <p className="mt-2 text-sm text-foreground whitespace-pre-wrap leading-relaxed">
-                                      {rv.comment}
-                                    </p>
+
+                                  {/* 메뉴 라벨 (있을 때만) */}
+                                  {rv.foodMenu && rv.foodMenu.length > 0 && (
+                                    <div className="mt-2 flex flex-wrap gap-1.5">
+                                      {rv.foodMenu.slice(0, 6).map((m, i) => (
+                                        <span key={`${m.name}-${i}`} className="inline-flex items-center px-2 py-0.5 text-xs rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 dark:bg-emerald-900/20 dark:text-emerald-300 dark:border-emerald-800">
+                                          {m.name}
+                                        </span>
+                                      ))}
+                                    </div>
                                   )}
-                                  {rv.images && rv.images.length > 0 && (
+
+                                  {rv.comment && <p className="mt-2 text-sm text-foreground whitespace-pre-wrap leading-relaxed">{rv.comment}</p>}
+
+                                  {/* 사용자 모드에서는 리뷰 사진 숨김 */}
+                                  {isOwnerMode && rv.images && rv.images.length > 0 && (
                                     <div className="mt-3 grid grid-cols-3 gap-2">
                                       {rv.images.slice(0, 6).map((img, idx) => (
                                         <div key={idx} className="aspect-square rounded-lg overflow-hidden bg-muted">
-                                          <img
-                                            src={img || "/placeholder.svg"}
-                                            alt={`review-${rv.id}-${idx}`}
-                                            className="w-full h-full object-cover"
-                                            loading="lazy"
-                                          />
+                                          <img src={img || "/placeholder.svg"} alt={`review-${rv.id}-${idx}`} className="w-full h-full object-cover" loading="lazy" />
                                         </div>
                                       ))}
                                     </div>
@@ -1057,19 +1105,8 @@ export default function RestaurantDetailPage({ params }: { params: { id: string 
           </Tabs>
 
           {!isOwnerMode && (
-            <motion.div
-              className="fixed bottom-8 right-8 z-10"
-              initial={{ opacity: 0, scale: 0.8, y: 20 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              transition={{ delay: 1 }}
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-            >
-              <Button
-                onClick={handleWriteReview}
-                size="lg"
-                className="h-14 px-6 rounded-3xl shadow-2xl bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 border-2 border-white/20 backdrop-blur-sm transition-all duration-300"
-              >
+            <motion.div className="fixed bottom-8 right-8 z-10" initial={{ opacity: 0, scale: 0.8, y: 20 }} animate={{ opacity: 1, scale: 1, y: 0 }} transition={{ delay: 1 }} whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}>
+              <Button onClick={handleWriteReview} size="lg" className="h-14 px-6 rounded-3xl shadow-2xl bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 border-2 border-white/20 backdrop-blur-sm transition-all duration-300">
                 <Edit3 className="h-5 w-5 mr-2" />
                 리뷰 작성
               </Button>

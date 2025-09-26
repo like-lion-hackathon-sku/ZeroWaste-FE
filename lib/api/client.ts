@@ -2,18 +2,30 @@
 import type { ApiResponse } from "@/lib/types/database"
 
 /*
-  ✅ Improvements over previous revision
+  ✅ Improvements
   - AbortController timeout (15s)
   - 401 refresh retry once; if still fails → { success:false, error:"AUTH_EXPIRED" }
   - Retry on 429/503/504 with simple backoff (once)
-  - GET 요청 시 Content-Type 제거 (일부 서버 호환성)
-  - bizUseStamp 시그니처 정리 (code만 전송) — 필요 시 오버로드로 restaurantId도 함께 전송 가능
-  - 에러 파싱 견고화
+  - GET 요청 시 Content-Type 자동 미설정
+  - createReviewForRestaurant: 오버로드 + 타입가드 (FormData/JSON 모두 지원)
 */
 
 type UpdateProfileJson = {
   nickname?: string
   defaultImage?: boolean
+}
+
+type ReviewCreateJsonPayload = {
+  content: string
+  score: number
+  images?: string[]
+  detailFeedback?: string | null
+  menuIds?: number[]
+}
+
+/** SSR 환경에서도 안전한 FormData 판별 */
+function isFormDataPayload(x: unknown): x is FormData {
+  return !!x && typeof (x as any).append === "function" && typeof (x as any).set === "function"
 }
 
 let refreshPromise: Promise<Response> | null = null
@@ -41,10 +53,7 @@ class ApiClient {
   toAbsoluteUrl(url: string) {
     if (!url) return url
     if (/^https?:\/\//i.test(url)) return url
-    const origin =
-      typeof window !== "undefined"
-        ? window.location.origin
-        : (process.env.NEXT_PUBLIC_SITE_ORIGIN || "")
+    const origin = typeof window !== "undefined" ? window.location.origin : (process.env.NEXT_PUBLIC_SITE_ORIGIN || "")
     return origin ? `${origin}${url.startsWith("/") ? url : `/${url}`}` : url
   }
 
@@ -57,11 +66,9 @@ class ApiClient {
   ): Promise<ApiResponse<T>> {
     const url = this.buildUrl(endpoint)
 
-    // --- Headers 준비
+    // --- Headers
     const isFormData = typeof FormData !== "undefined" && options.body instanceof FormData
     const headers: HeadersInit = { ...(options.headers || {}) }
-
-    // GET이면 Content-Type 제거 (호환성)
     const method = (options.method || "GET").toUpperCase()
 
     if (!isFormData) {
@@ -73,7 +80,7 @@ class ApiClient {
       }
     }
 
-    // ✅ Authorization 헤더 자동 부착 (HttpOnly 쿠키만 쓰면 제거 가능)
+    // Authorization (쿠키만 쓰면 제거)
     if (typeof window !== "undefined") {
       const token =
         localStorage.getItem("accessToken") ||
@@ -84,7 +91,7 @@ class ApiClient {
       }
     }
 
-    // --- AbortController (timeout)
+    // Timeout
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS)
 
@@ -97,7 +104,7 @@ class ApiClient {
         signal: controller.signal,
       })
 
-      // 401 → refresh 1회 시도
+      // 401 → refresh 1회
       if (res.status === 401 && !_retrying && !_fromRefresh) {
         if (!refreshPromise) {
           refreshPromise = fetch(this.buildUrl("/auth/refresh"), {
@@ -113,7 +120,6 @@ class ApiClient {
         if (rr?.ok) {
           return this.request<T>(endpoint, options, true, true)
         }
-        // ✅ refresh 실패
         if (typeof window !== "undefined") {
           try { alert("세션이 만료되었습니다. 다시 로그인 해주세요.") } catch {}
           try { window.location.href = "/login" } catch {}
@@ -121,8 +127,8 @@ class ApiClient {
         return { success: false, error: "AUTH_EXPIRED" } as ApiResponse<T>
       }
 
+      // 재시도 가능한 상태코드
       if (!res.ok) {
-        // 429/503/504 간단 재시도 (한 번만)
         if (RETRYABLE.has(res.status) && !_retrying) {
           await sleep(800)
           return this.request<T>(endpoint, options, true)
@@ -133,13 +139,9 @@ class ApiClient {
         try {
           const j = bodyText ? JSON.parse(bodyText) : {}
           message = (j as any)?.message || (j as any)?.error || message
-          if (process.env.NODE_ENV !== "production") {
-            console.error("[API 4xx/5xx]", res.status, j)
-          }
+          if (process.env.NODE_ENV !== "production") console.error("[API 4xx/5xx]", res.status, j)
         } catch {
-          if (process.env.NODE_ENV !== "production") {
-            console.error("[API 4xx/5xx]", res.status, bodyText)
-          }
+          if (process.env.NODE_ENV !== "production") console.error("[API 4xx/5xx]", res.status, bodyText)
         }
         return { success: false, error: `HTTP ${res.status}: ${message}` } as ApiResponse<T>
       }
@@ -166,51 +168,41 @@ class ApiClient {
       return { success: true, data } as ApiResponse<T>
     } catch (error: any) {
       const msg = error?.name === "AbortError" ? "요청이 시간 초과되었습니다." : (error instanceof Error ? error.message : "Unknown error occurred")
-      if (process.env.NODE_ENV !== "production") {
-        console.error("[API request failed]", msg)
-      }
+      if (process.env.NODE_ENV !== "production") console.error("[API request failed]", msg)
       return { success: false, error: msg } as ApiResponse<T>
     } finally {
       clearTimeout(timeout)
     }
   }
 
-  // ───────────────────────── Auth
+  // ───────── Auth
   async login(email: string, password: string) {
     return this.request("/auth/login", { method: "POST", body: JSON.stringify({ email, password }) })
   }
-  async logout() {
-    return this.request("/auth/logout", { method: "POST" })
-  }
+  async logout() { return this.request("/auth/logout", { method: "POST" }) }
   async signup(email: string, password: string) {
     return this.request("/auth/signup", { method: "POST", body: JSON.stringify({ email, password }) })
   }
-  async refresh() {
-    return this.request("/auth/refresh", { method: "POST" })
-  }
+  async refresh() { return this.request("/auth/refresh", { method: "POST" }) }
 
   async updateProfile(payload: FormData | UpdateProfileJson) {
     if (payload instanceof FormData) {
       return this.request("/auth/profile", { method: "POST", body: payload })
     }
     const body: UpdateProfileJson = {}
-    if (typeof payload.nickname === "string" && payload.nickname.trim()) {
-      body.nickname = payload.nickname.trim()
-    }
+    if (typeof payload.nickname === "string" && payload.nickname.trim()) body.nickname = payload.nickname.trim()
     if (payload.defaultImage === true) body.defaultImage = true
     return this.request("/auth/profile", { method: "POST", body: JSON.stringify(body) })
   }
-  /** multipart 그대로 전달 */
   async updateProfileMultipart(form: FormData) {
     return this.request("/auth/profile", { method: "POST", body: form })
   }
 
-  // ───────────────────────── Restaurants (Consumer)
+  // ───────── Restaurants (Consumer)
   async getRestaurants(params?: { search?: string }) {
     const q = (params?.search ?? "맛집").trim()
     return this.request(`/restaurants/nearby?q=${encodeURIComponent(q)}`)
   }
-
   async getRestaurantsNearby(bbox: string, limit = 20, cursor = 0) {
     const sp = new URLSearchParams()
     sp.set("bbox", String(bbox))
@@ -218,30 +210,20 @@ class ApiClient {
     sp.set("cursor", String(cursor))
     return this.request(`/restaurants/nearby?${sp.toString()}`)
   }
-
   async getRestaurantsInBounds(bounds: { minLat: number; maxLat: number; minLng: number; maxLng: number; category?: string; search?: string }) {
     const q = (bounds.search ?? "맛집").trim()
-    // TODO: 실제 bounds 기반 라우트가 열리면 교체
     return this.request(`/restaurants/nearby?q=${encodeURIComponent(q)}`)
   }
-
   async getRestaurantDetail(id: number) {
     return this.request<{ id: number; name: string; category: string; address?: string; telephone?: string; photos?: { id: number; photo_name: string }[]; menus?: { id: number; name: string; photo?: string }[] }>(
-      `/restaurants/${id}/detail`,
-      { method: "GET" },
-    )
+      `/restaurants/${id}/detail`, { method: "GET" })
   }
-
-  async getRestaurantReviews(id: number) {
-    return this.request(`/restaurants/${id}/reviews`)
-  }
-
-  /** (옵션) 일반 사용자 메뉴 목록: BE 라우트 존재 시 */
+  async getRestaurantReviews(id: number) { return this.request(`/restaurants/${id}/reviews`) }
   async getRestaurantMenus(id: number) {
     return this.request<{ id: number; name: string; price?: number | null }[]>(`/restaurants/${id}/menu`, { method: "GET" })
   }
 
-  // ───────────────────────── Favorites
+  // ───────── Favorites
   async getFavorites() { return this.request("/favorites") }
   async addFavorite(restaurantId: number) {
     return this.request(`/favorites`, { method: "POST", body: JSON.stringify({ restaurantId }) })
@@ -250,33 +232,27 @@ class ApiClient {
     const payload = { ...place, mapx: Math.round(place.mapx), mapy: Math.round(place.mapy) }
     return this.request(`/favorites`, { method: "POST", body: JSON.stringify({ place: payload }) })
   }
-  async removeFavorite(restaurantId: number) {
-    return this.request(`/favorites/${restaurantId}`, { method: "DELETE" })
-  }
+  async removeFavorite(restaurantId: number) { return this.request(`/favorites/${restaurantId}`, { method: "DELETE" }) }
 
-  // ─────────── Stamps
+  // ───────── Stamps
   async getUserStamps() { return this.request("/stamps/me", { method: "GET" }) }
   async getUserStampHistory() { return this.request("/stamps/me/history", { method: "GET" }) }
   async requestUseStamp(restaurantId: number, condition: number) {
     return this.request<{ code: string }>("/stamps/me/use", { method: "POST", body: JSON.stringify({ restaurantId, condition }) })
   }
-  // 기본: code만 전송 (현재 BE 시그니처 기준)
   async bizUseStamp(code: string) {
     return this.request("/biz/stamps/use", { method: "POST", body: JSON.stringify({ code }) })
   }
-  // 필요 시 restaurantId 포함 버전 (오버로드처럼 사용)
   async bizUseStampWithRestaurant(restaurantId: number, code: string) {
     return this.request("/biz/stamps/use", { method: "POST", body: JSON.stringify({ restaurantId, code }) })
   }
 
-  // ───────────────────────── Notifications
+  // ───────── Notifications
   async getNotifications() { return this.request("/notifications") }
   async markNotificationAsRead(notificationId: number) { return this.request(`/notifications/${notificationId}`, { method: "PATCH" }) }
 
-  // ───────────────────────── Business (Owner)
+  // ───────── Business (Owner)
   async getBusinessRestaurants() { return this.request("/biz/restaurants") }
-
-  /** ✅ 사업자 식당 생성: 멀티파트 전송 (이미지/메뉴/benefits 포함) */
   async createBusinessRestaurantMultipart(payload: {
     name: string
     category: string
@@ -296,34 +272,22 @@ class ApiClient {
     if (payload.telephone) fd.set("telephone", payload.telephone)
     fd.set("mapx", String(Math.round(payload.mapx)))
     fd.set("mapy", String(Math.round(payload.mapy)))
-
     for (const f of payload.images ?? []) fd.append("images", f)
     for (const f of payload.menuImages ?? []) fd.append("menuImages", f)
-
-    // 텍스트 배열 안전 직렬화
     const metaJoined = (payload.menuMetadatas ?? []).map((s) => JSON.stringify(s)).join(",")
     if (metaJoined.length) fd.set("menuMetadatas", metaJoined)
-
-    // benefits는 배열 JSON 문자열로 전달
     fd.set("benefits", JSON.stringify(payload.benefits ?? []))
-
     return this.request("/biz/restaurants", { method: "POST", body: fd })
   }
-
-  /** ✅ 수정: PUT /biz/restaurants/:id (BE 구현에 맞춰 선택) */
   async updateBusinessRestaurant(id: number, data: { name?: string; category?: string; address?: string; telephone?: string }) {
     return this.request(`/biz/restaurants/${id}`, { method: "PUT", body: JSON.stringify(data) })
   }
-
-  /** ✅ 삭제: DELETE /biz/restaurants/:id */
   async deleteBusinessRestaurant(restaurantId: number) {
     return this.request(`/biz/restaurants/${restaurantId}`, { method: "DELETE" })
   }
-
   async getBusinessRestaurantDetail(restaurantId: number) {
     return this.request(`/biz/restaurants/${restaurantId}`)
   }
-
   async uploadBusinessRestaurantPhoto(restaurantId: number, file: File) {
     const fd = new FormData()
     fd.append("file", file)
@@ -343,57 +307,67 @@ class ApiClient {
     return this.request(`/biz/analytics${params}`)
   }
 
-  // ───────────────────────── Reviews
-  /** 리뷰 생성(식당별) — POST /api/reviews/restaurants/{id} */
+  // ───────── Reviews
+
+  // 오버로드 시그니처
+  async createReviewForRestaurant(restaurantId: number, payload: FormData): Promise<ApiResponse<any>>
   async createReviewForRestaurant(
     restaurantId: number,
-    payload: { content: string; score: number; images?: string[]; detailFeedback?: string | null },
-  ) {
-    const norm = (v?: string | null) => (typeof v === "string" && v.trim().length > 0 ? v.trim() : undefined)
+    payload: ReviewCreateJsonPayload
+  ): Promise<ApiResponse<any>>
 
-    const body: any = {
-      content: payload.content,
-      score: payload.score,
-      imageKeys: Array.isArray(payload.images) ? payload.images : [],
-      detailFeedback: norm(payload.detailFeedback) ?? null,
+  async createReviewForRestaurant(
+    restaurantId: number,
+    payload: FormData | ReviewCreateJsonPayload
+  ): Promise<ApiResponse<any>> {
+    const url = `/reviews/restaurants/${restaurantId}`
+
+    if (isFormDataPayload(payload)) {
+      // 멀티파트는 Content-Type 자동 세팅
+      return this.request(url, { method: "POST", body: payload })
     }
 
-    return this.request(`/reviews/restaurants/${restaurantId}`, { method: "POST", body: JSON.stringify(body) })
+    // JSON 경로
+    const p = payload as ReviewCreateJsonPayload
+    const norm = (v?: string | null) => (typeof v === "string" && v.trim().length > 0 ? v.trim() : undefined)
+
+    const body = {
+      content: p.content,
+      score: p.score,
+      imageKeys: Array.isArray(p.images) ? p.images : [],
+      detailFeedback: norm(p.detailFeedback) ?? null,
+      menuIds: Array.isArray(p.menuIds) ? p.menuIds : [],
+    }
+
+    return this.request(url, { method: "POST", body: JSON.stringify(body) })
   }
 
   async updateReview(id: number, data: { contents?: string; score?: number }) {
     return this.request(`/reviews/${id}`, { method: "PUT", body: JSON.stringify(data) })
   }
-
-  /** DELETE /api/reviews/{reviewId} */
   async deleteReview(id: number) { return this.request(`/reviews/${id}`, { method: "DELETE" }) }
-
-  /** GET /api/reviews/me */
   async getUserReviews() { return this.request("/reviews/me") }
 
-  /** (옵션) 분석 라우트가 존재할 때만 사용 */
   async analyzeReview(id: number, form?: FormData) {
     if (form) return this.request(`/reviews/${id}/analyze`, { method: "POST", body: form })
     return this.request(`/reviews/${id}/analyze`, { method: "POST" })
   }
 
   async analyzeWasteBatch(payload: any) {
-    // 내부 Next 라우트이므로 baseUrl('/_be')를 타지 말고 직접 호출
+    // 내부 Next 라우트 호출
     const res = await fetch("/api/ai/waste/analyze-batch", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     })
-
     const data = await res.json().catch(() => ({}))
-
     if (!res.ok || !data?.ok) {
       return { success: false, error: data?.error || `HTTP ${res.status}` } as ApiResponse<any>
     }
     return { success: true, data: data.result } as ApiResponse<any>
   }
 
-  // ───────────────────────── Images (presigned URL)
+  // ───────── Images (presigned URL)
   private async fetchPresignedUrl(fileType: 0 | 1 | 2 | 3, fileName: string): Promise<string | null> {
     if (!fileName) return null
     const res = await this.request<{ url: string }>(`/images/${fileType}/${encodeURIComponent(fileName)}`)
@@ -406,7 +380,7 @@ class ApiClient {
   async getRestaurantImageUrl(fileName: string) { return this.fetchPresignedUrl(2, fileName) }
   async getMenuImageUrl(fileName: string)       { return this.fetchPresignedUrl(3, fileName) }
 
-  /** (구버전) 경로 문자열만 반환 — 새 코드에선 presigned URL 사용 권장 */
+  /** (구버전) 경로 문자열만 반환 — 새 코드에선 presigned URL 권장 */
   getImageUrl(imageType: "profile" | "review" | "restaurant", fileName: string) {
     return this.buildUrl(`/images/${encodeURIComponent(imageType)}/${encodeURIComponent(fileName)}`)
   }
@@ -419,32 +393,15 @@ class ApiClient {
     fd.append("file", file)
     return this.request<{ ok: boolean; type: string; fileName: string; url: string }>(`/images/${encodeURIComponent(imageType)}/upload`, { method: "POST", body: fd })
   }
-
   async analyzeImage(imageType: "profile" | "review", fileName: string) {
     return this.request(`/images/${encodeURIComponent(imageType)}/${encodeURIComponent(fileName)}/analyze`, { method: "POST" })
   }
-
   async getImageSignedUrl(type: 0 | 1 | 2 | 3, fileName: string): Promise<string> {
     const res = await this.request<{ url: string }>(`/images/${type}/${encodeURIComponent(fileName)}`, { method: "GET" })
     return res?.success ? ((res.data as any)?.url ?? "") : ""
   }
 
-  /** 우리 Next API(Gradio 프록시)를 통해 공개 이미지 URL 분석 */
-  async analyzeWasteByPublicUrl(imageUrl: string) {
-    const abs = this.toAbsoluteUrl(imageUrl)
-    const res = await fetch("/api/ai/waste/analyze", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ imageUrl: abs }),
-    })
-    const data = await res.json().catch(() => ({}))
-    if (!res.ok || !data?.ok) {
-      return { success: false, error: data?.error || `AI analyze failed (${res.status})` } as ApiResponse<any>
-    }
-    return { success: true, data } as ApiResponse<any>
-  }
-
-  // ───────────────────────── Search
+  // ───────── Search
   async searchRestaurants(query: string, filters?: { category?: string; location?: string }) {
     const params = new URLSearchParams()
     params.set("q", query)
@@ -452,7 +409,6 @@ class ApiClient {
     if (filters?.location) params.set("location", filters.location)
     return this.request(`/restaurants/search?${params.toString()}`)
   }
-
 }
 
 // 싱글턴 인스턴스 export
