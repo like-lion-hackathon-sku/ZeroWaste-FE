@@ -218,7 +218,7 @@ export default function ReviewWritePage() {
 
   // ✅ 메뉴 상태 (detail에서 같이 세팅)
   const [menus, setMenus] = useState<MenuItem[]>([]);
-  const [selectedMenuIds, setSelectedMenuIds] = useState<number[]>([]);
+  const [selectedMenuId, setSelectedMenuId] = useState<number[]>([]);
 
   const [uploadedImages, setUploadedImages] = useState<UploadedImage[]>([]);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -472,27 +472,23 @@ export default function ReviewWritePage() {
     e.preventDefault();
     if (!Number.isFinite(restaurantId)) return alert("잘못된 식당 ID 입니다.");
     if (submitting) return;
-
+  
     setSubmitError(null);
     setConflict409(null);
     try {
       setSubmitting(true);
-
-      // feedback/detailFeedback 생성
+  
+      // feedback/detailFeedback 생성 (기존 로직 그대로)
       const allCrops = uploadedImages.flatMap((img) => img.multiCrops ?? []);
-
       const feedback: string | null =
         allCrops.find((c) => c.ai?.ownerAnalysis)?.ai?.ownerAnalysis ??
         allCrops.find((c) => c.ai?.userComment)?.ai?.userComment ??
         null;
-
+  
       const detailFeedback: string | null = allCrops.length
         ? allCrops
             .map((c, i) => {
-              const s =
-                typeof c.ai?.score === "number"
-                  ? `${c.ai!.score.toFixed(1)}★`
-                  : "";
+              const s = typeof c.ai?.score === "number" ? `${c.ai!.score.toFixed(1)}★` : "";
               const oa = c.ai?.ownerAnalysis?.trim() ?? "";
               const uc = c.ai?.userComment?.trim() ?? "";
               const parts = [
@@ -504,48 +500,49 @@ export default function ReviewWritePage() {
             })
             .join("\n")
         : null;
-
-      const payload = {
-        content: comment.trim(),
-        score: Number(avgScore5.toFixed(1)),
-        images: uploadedImages.map((img) => img.fileName),
-        feedback,
-        detailFeedback,
-        // ✅ 선택한 메뉴들 포함
-        menuIds: selectedMenuIds,
-      };
-
-      const resp = await apiClient.createReviewForRestaurant(
-        restaurantId,
-        payload as any
-      );
-
+  
+      // ★★★ FormData 로 전송
+      const fd = new FormData();
+      fd.append("content", comment.trim());
+      fd.append("score", String(Number(avgScore5.toFixed(1))));
+      if (feedback) fd.append("feedback", feedback);
+      if (detailFeedback) fd.append("detailFeedback", detailFeedback);
+  
+      // 메뉴 다중 선택
+      selectedMenuId.forEach((id) => fd.append("menuId", String(id)));
+  
+      // 파일 첨부: 크롭이 있으면 크롭 파일들, 없으면 원본 이미지 파일
+      for (const img of uploadedImages) {
+        const crops = img.multiCrops ?? [];
+        if (crops.length > 0) {
+          for (const c of crops) {
+            if (c.file) fd.append("images", c.file); // ← 필드명 반드시 'images'
+          }
+        } else if (img.file) {
+          fd.append("images", img.file);
+        }
+      }
+  
+      // apiClient 가 JSON이 아니라 멀티파트를 그대로 보내도록 호출
+      const resp = await apiClient.createReviewForRestaurant(restaurantId, fd); // ← fd 그대로 전달
+  
       if (!resp.success) {
         const err = String(resp.error || "");
         if (err.includes("401")) {
           alert("로그인이 필요해요. 로그인 페이지로 이동합니다.");
-          router.push("/login");
-          return;
+          router.push("/login"); return;
         }
         if (err.includes("409") || err.includes("이미 작성한 리뷰가 존재")) {
-          setConflict409(
-            "이미 작성한 리뷰가 존재합니다. 기존 리뷰를 수정하거나 삭제 후 다시 시도해주세요."
-          );
-          try {
-            window.scrollTo({ top: 0, behavior: "smooth" });
-          } catch {}
+          setConflict409("이미 작성한 리뷰가 존재합니다. 기존 리뷰를 수정하거나 삭제 후 다시 시도해주세요.");
+          window.scrollTo({ top: 0, behavior: "smooth" });
           return;
         }
         throw new Error(err || "리뷰 생성에 실패했어요.");
       }
-
+  
       const earned = avgScore5 >= 4 ? 1 : 0;
       if (earned) alert("축하합니다! 평균 4.0 이상으로 스탬프가 적립됩니다.");
-      router.replace(
-        `/review/success?restaurantId=${restaurantId}${
-          earned ? "&stampEarned=1" : ""
-        }`
-      );
+      router.replace(`/review/success?restaurantId=${restaurantId}${earned ? "&stampEarned=1" : ""}`);
     } catch (err: any) {
       console.error(err);
       setSubmitError(err?.message || "리뷰 제출 중 오류가 발생했어요.");
@@ -695,7 +692,7 @@ export default function ReviewWritePage() {
               ) : (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   {menus.map((m) => {
-                    const checked = selectedMenuIds.includes(m.id);
+                    const checked = selectedMenuId.includes(m.id);
                     return (
                       <label
                         key={m.id}
@@ -715,7 +712,7 @@ export default function ReviewWritePage() {
                             className="h-4 w-4"
                             checked={checked}
                             onChange={(e) =>
-                              setSelectedMenuIds((prev) =>
+                              setSelectedMenuId((prev) =>
                                 e.target.checked
                                   ? [...prev, m.id]
                                   : prev.filter((id) => id !== m.id)
@@ -734,9 +731,9 @@ export default function ReviewWritePage() {
                   })}
                 </div>
               )}
-              {selectedMenuIds.length > 0 && (
+              {selectedMenuId.length > 0 && (
                 <p className="text-xs text-gray-600 mt-1">
-                  선택한 메뉴: {selectedMenuIds.length}개
+                  선택한 메뉴: {selectedMenuId.length}개
                 </p>
               )}
             </CardContent>
